@@ -3,17 +3,24 @@ import { RISK, INITIAL_CASH } from "../config/constants";
 import { fmt, fmtPct, calcPortfolioValue } from "../utils/formatters";
 import { card, FONTS } from "../styles/theme";
 
-export function StatsBar({ cash, positions, priceHist, tradeCount, idleSpyShares = 0 }) {
-  const totalValue = calcPortfolioValue(cash, positions, priceHist);
-  const totalReturn = (totalValue - INITIAL_CASH) / INITIAL_CASH;
+export function StatsBar({ cash, positions, priceHist, tradeCount, idleSpyShares = 0, portfolioValue, initialPortfolioValue }) {
+  // Prefer Alpaca's reported portfolio_value; fall back to manual calc for sim mode
+  const totalValue = portfolioValue ?? calcPortfolioValue(cash, positions, priceHist);
+  // Use the actual starting balance captured at connect time; INITIAL_CASH only as last resort
+  const baseline = initialPortfolioValue ?? INITIAL_CASH;
+  const totalReturn = baseline > 0 ? (totalValue - baseline) / baseline : 0;
+  // Total P&L: derive from Alpaca data when available, fall back to tradeCount
+  const totalPnL = initialPortfolioValue != null ? totalValue - initialPortfolioValue : tradeCount.totalPnL;
   const winRate =
     tradeCount.wins + tradeCount.losses > 0
       ? (tradeCount.wins / (tradeCount.wins + tradeCount.losses) * 100).toFixed(1)
       : "—";
 
-  const spyPrice    = priceHist?.SPY?.[priceHist.SPY.length - 1] ?? 0;
-  const idleSpyVal  = idleSpyShares * spyPrice;
-  const idleSpyPct  = totalValue > 0 ? idleSpyVal / totalValue : 0;
+  // Use Alpaca's market_value for SPY idle when available; fall back to priceHist
+  const spyMarketValue = positions?.SPY?.marketValue;
+  const spyPrice       = priceHist?.SPY?.[priceHist.SPY.length - 1] ?? 0;
+  const idleSpyVal     = spyMarketValue != null ? spyMarketValue : idleSpyShares * spyPrice;
+  const idleSpyPct     = totalValue > 0 ? idleSpyVal / totalValue : 0;
 
   // Active positions excludes idle SPY (it's a cash substitute, not a trade slot)
   const activePositions = Object.keys(positions).filter(s => s !== "SPY").length;
@@ -24,7 +31,7 @@ export function StatsBar({ cash, positions, priceHist, tradeCount, idleSpyShares
     { label: "Cash",       val: fmt(cash),         color: "#0ea5e9", icon: <DollarSign size={13} /> },
     { label: "Positions",  val: `${activePositions} / ${RISK.MAX_OPEN_POSITIONS}`, color: "#8b5cf6", icon: <Target size={13} /> },
     { label: "Win Rate",   val: winRate + (winRate !== "—" ? "%" : ""), color: "#f59e0b", icon: <Zap size={13} /> },
-    { label: "Total P&L",  val: fmt(tradeCount.totalPnL), color: tradeCount.totalPnL >= 0 ? "#10b981" : "#ef4444", icon: <Activity size={13} /> },
+    { label: "Total P&L",  val: fmt(totalPnL), color: totalPnL >= 0 ? "#10b981" : "#ef4444", icon: <Activity size={13} /> },
     ...(idleSpyShares > 0 ? [{
       label: "SPY Idle",
       val:   `${fmt(idleSpyVal)} (${fmtPct(idleSpyPct)})`,

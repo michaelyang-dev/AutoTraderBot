@@ -36,14 +36,16 @@ export function calcPortfolioValue(cash, positions, priceHist, trendPositions = 
 
 /**
  * Get enriched position entries with current price, P&L, P&L %.
+ * Uses Alpaca-reported values (unrealizedPl, unrealizedPlPct, currentPrice)
+ * when available; falls back to manual calculation for simulated mode.
  */
 export function getPositionEntries(positions, priceHist) {
   return Object.entries(positions)
     .map(([sym, p]) => {
       const prices = priceHist[sym];
-      const curr = prices ? prices[prices.length - 1] : p.avgPrice;
-      const pnl = (curr - p.avgPrice) * p.shares;
-      const pnlPct = (curr - p.avgPrice) / p.avgPrice;
+      const curr = p.currentPrice ?? (prices ? prices[prices.length - 1] : p.avgPrice);
+      const pnl = p.unrealizedPl ?? (curr - p.avgPrice) * p.shares;
+      const pnlPct = p.unrealizedPlPct ?? ((p.avgPrice > 0) ? (curr - p.avgPrice) / p.avgPrice : 0);
       return { sym, ...p, curr, pnl, pnlPct };
     })
     .sort((a, b) => b.pnl - a.pnl);

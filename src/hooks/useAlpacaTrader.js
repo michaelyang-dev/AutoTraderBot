@@ -21,6 +21,9 @@ export function useAlpacaTrader() {
   const [speed, setSpeed] = useState(PRICE_POLL_MS);
   const [paused, setPaused] = useState(false);
   const [cash, setCash] = useState(INITIAL_CASH);
+  const [portfolioValue, setPortfolioValue] = useState(INITIAL_CASH);
+  const [initialPortfolioValue, setInitialPortfolioValue] = useState(null);
+  const initialPortfolioValueSet = useRef(false);        // set once on first connect
   const [positions, setPositions] = useState({});
   const [priceHist, setPriceHist] = useState({});
   const [portfolioHist, setPortfolioHist] = useState([]);
@@ -74,17 +77,28 @@ export function useAlpacaTrader() {
 
         // Fetch account
         const account = await alpaca.getAccount();
-        setCash(account.cash);
-        setPortfolioHist([{ tick: 0, value: account.portfolio_value }]);
-        addLog(`💰 Account balance: $${account.portfolio_value.toFixed(2)}`, "system");
+        const pv = parseFloat(account.portfolio_value);
+        setCash(parseFloat(account.cash));
+        setPortfolioValue(pv);
+        // Capture starting balance once — never overwrite so return % stays anchored
+        if (!initialPortfolioValueSet.current) {
+          setInitialPortfolioValue(pv);
+          initialPortfolioValueSet.current = true;
+        }
+        setPortfolioHist([{ tick: 0, value: pv }]);
+        addLog(`💰 Account balance: $${pv.toFixed(2)}`, "system");
 
         // Fetch current positions
         const pos = await alpaca.getPositions();
         const posMap = {};
         pos.forEach((p) => {
           posMap[p.symbol] = {
-            shares: p.qty,
-            avgPrice: p.avg_entry_price,
+            shares: parseFloat(p.qty),
+            avgPrice: parseFloat(p.avg_entry_price),
+            currentPrice: parseFloat(p.current_price),
+            unrealizedPl: parseFloat(p.unrealized_pl),
+            unrealizedPlPct: parseFloat(p.unrealized_plpc),
+            marketValue: parseFloat(p.market_value),
             entryTick: 0,
           };
         });
@@ -182,17 +196,22 @@ export function useAlpacaTrader() {
         volHistRef.current = updatedVolHist;
         setTick((t) => t + 1);
 
-        setCash(account.cash);
+        setCash(parseFloat(account.cash));
+        setPortfolioValue(parseFloat(account.portfolio_value));
         setPortfolioHist((prev) => [
           ...prev.slice(-200),
-          { tick: prev.length, value: account.portfolio_value },
+          { tick: prev.length, value: parseFloat(account.portfolio_value) },
         ]);
 
         const posMap = {};
         pos.forEach((p) => {
           posMap[p.symbol] = {
-            shares: p.qty,
-            avgPrice: p.avg_entry_price,
+            shares: parseFloat(p.qty),
+            avgPrice: parseFloat(p.avg_entry_price),
+            currentPrice: parseFloat(p.current_price),
+            unrealizedPl: parseFloat(p.unrealized_pl),
+            unrealizedPlPct: parseFloat(p.unrealized_plpc),
+            marketValue: parseFloat(p.market_value),
             entryTick: 0,
           };
         });
@@ -282,8 +301,10 @@ export function useAlpacaTrader() {
     marketOpen,
     regime,
     error,
-    mlSignals,     // array for display in MarketScanner (may be stale)
-    mlStatus,      // "ok" | "stale" | "down" for Header badge
-    idleSpyShares, // shares of SPY held as idle cash substitute
+    mlSignals,             // array for display in MarketScanner (may be stale)
+    mlStatus,              // "ok" | "stale" | "down" for Header badge
+    idleSpyShares,         // shares of SPY held as idle cash substitute
+    portfolioValue,        // account.portfolio_value straight from Alpaca
+    initialPortfolioValue, // balance at first connect — return % baseline
   };
 }

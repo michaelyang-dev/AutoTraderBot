@@ -104,6 +104,8 @@ function Dashboard({ trader }) {
         priceHist={trader.priceHist}
         tradeCount={trader.tradeCount}
         idleSpyShares={trader.idleSpyShares ?? 0}
+        portfolioValue={trader.portfolioValue}
+        initialPortfolioValue={trader.initialPortfolioValue}
       />
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
