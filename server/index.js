@@ -12,6 +12,58 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const Alpaca = require("@alpacahq/alpaca-trade-api");
+const Database = require("better-sqlite3");
+
+// ── Trade Journal SQLite database ──
+const TRADE_DB_PATH = path.join(__dirname, "..", "ml_service", "data", "trades.db");
+const db = new Database(TRADE_DB_PATH);
+db.pragma("journal_mode = WAL");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    symbol TEXT NOT NULL,
+    action TEXT NOT NULL,
+    shares REAL NOT NULL,
+    price REAL NOT NULL,
+    strategy TEXT NOT NULL,
+    ml_confidence REAL,
+    portfolio_value REAL,
+    pnl REAL,
+    notes TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    portfolio_value REAL NOT NULL,
+    cash REAL NOT NULL,
+    positions_count INTEGER NOT NULL,
+    daily_pnl REAL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+  CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_snapshots(date);
+`);
+
+const insertTrade = db.prepare(`
+  INSERT INTO trades (timestamp, symbol, action, shares, price, strategy, ml_confidence, portfolio_value, pnl, notes)
+  VALUES (@timestamp, @symbol, @action, @shares, @price, @strategy, @ml_confidence, @portfolio_value, @pnl, @notes)
+`);
+
+const insertSnapshot = db.prepare(`
+  INSERT INTO daily_snapshots (date, portfolio_value, cash, positions_count, daily_pnl)
+  VALUES (@date, @portfolio_value, @cash, @positions_count, @daily_pnl)
+  ON CONFLICT(date) DO UPDATE SET
+    portfolio_value = @portfolio_value,
+    cash = @cash,
+    positions_count = @positions_count,
+    daily_pnl = @daily_pnl
+`);
+
+console.log(`📓 Trade journal DB: ${TRADE_DB_PATH}`);
 
 // ── Backtest cache directories ──
 const CACHE_ROOT = path.join(__dirname, "backtest_data");
@@ -225,14 +277,14 @@ app.get("/api/quote/:symbol", async (req, res) => {
     const snapshot = await alpaca.getSnapshot(symbol.toUpperCase());
     res.json({
       symbol: symbol.toUpperCase(),
-      price: parseFloat(snapshot.latestTrade?.p || snapshot.dailyBar?.c || 0),
-      bid: parseFloat(snapshot.latestQuote?.bp || 0),
-      ask: parseFloat(snapshot.latestQuote?.ap || 0),
-      high: parseFloat(snapshot.dailyBar?.h || 0),
-      low: parseFloat(snapshot.dailyBar?.l || 0),
-      open: parseFloat(snapshot.dailyBar?.o || 0),
-      close: parseFloat(snapshot.dailyBar?.c || 0),
-      volume: parseInt(snapshot.dailyBar?.v || 0),
+      price: parseFloat(snapshot.LatestTrade?.Price || snapshot.DailyBar?.ClosePrice || 0),
+      bid: parseFloat(snapshot.LatestQuote?.BidPrice || 0),
+      ask: parseFloat(snapshot.LatestQuote?.AskPrice || 0),
+      high: parseFloat(snapshot.DailyBar?.HighPrice || 0),
+      low: parseFloat(snapshot.DailyBar?.LowPrice || 0),
+      open: parseFloat(snapshot.DailyBar?.OpenPrice || 0),
+      close: parseFloat(snapshot.DailyBar?.ClosePrice || 0),
+      volume: parseInt(snapshot.DailyBar?.Volume || 0),
     });
   } catch (err) {
     console.error("Quote error:", err.message);
@@ -249,18 +301,22 @@ app.get("/api/snapshots", async (req, res) => {
     }
 
     const snapshots = await alpaca.getSnapshots(symbols);
+    // Alpaca SDK returns an array of snapshot objects (not a symbol→snapshot map).
+    // Property names are PascalCase: LatestTrade.Price, DailyBar.ClosePrice, etc.
     const result = {};
-    for (const [sym, snap] of Object.entries(snapshots)) {
+    for (const snap of snapshots) {
+      const sym = snap.symbol;
+      if (!sym) continue;
       result[sym] = {
-        price: parseFloat(snap.latestTrade?.p || snap.dailyBar?.c || 0),
-        bid: parseFloat(snap.latestQuote?.bp || 0),
-        ask: parseFloat(snap.latestQuote?.ap || 0),
-        high: parseFloat(snap.dailyBar?.h || 0),
-        low: parseFloat(snap.dailyBar?.l || 0),
-        open: parseFloat(snap.dailyBar?.o || 0),
-        close: parseFloat(snap.dailyBar?.c || 0),
-        prevClose: parseFloat(snap.prevDailyBar?.c || 0),
-        volume: parseInt(snap.dailyBar?.v || 0),
+        price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
+        bid: parseFloat(snap.LatestQuote?.BidPrice || 0),
+        ask: parseFloat(snap.LatestQuote?.AskPrice || 0),
+        high: parseFloat(snap.DailyBar?.HighPrice || 0),
+        low: parseFloat(snap.DailyBar?.LowPrice || 0),
+        open: parseFloat(snap.DailyBar?.OpenPrice || 0),
+        close: parseFloat(snap.DailyBar?.ClosePrice || 0),
+        prevClose: parseFloat(snap.PrevDailyBar?.ClosePrice || 0),
+        volume: parseInt(snap.DailyBar?.Volume || 0),
       };
     }
     res.json(result);
@@ -275,15 +331,25 @@ app.get("/api/bars/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
     const { timeframe = "1Day", limit = 60 } = req.query;
+    const numLimit = parseInt(limit);
 
-    const bars = [];
+    // Alpaca getBarsV2 requires a "start" date — without it only ~1 bar returns.
+    // Fetch all bars from start to now, then return the last `numLimit` bars so
+    // the result always includes the most recent data up to today.
+    const calendarDaysNeeded = Math.ceil(numLimit * 1.6) + 10; // 1.6x for weekends/holidays + buffer
+    const start = new Date();
+    start.setDate(start.getDate() - calendarDaysNeeded);
+    const startISO = start.toISOString().split("T")[0]; // "YYYY-MM-DD"
+
+    const allBars = [];
     const barIterator = alpaca.getBarsV2(symbol.toUpperCase(), {
       timeframe,
-      limit: parseInt(limit),
+      start: startISO,
+      adjustment: "split",
     });
 
     for await (const bar of barIterator) {
-      bars.push({
+      allBars.push({
         t: bar.Timestamp,
         o: parseFloat(bar.OpenPrice),
         h: parseFloat(bar.HighPrice),
@@ -293,6 +359,9 @@ app.get("/api/bars/:symbol", async (req, res) => {
       });
     }
 
+    // Return only the last N bars (most recent) to match the requested limit
+    const bars = allBars.slice(-numLimit);
+    console.log(`Bars ${symbol}: requested ${numLimit}, fetched ${allBars.length}, returning ${bars.length} (start: ${startISO}, last: ${bars.length > 0 ? bars[bars.length-1].t : 'none'})`);
     res.json(bars);
   } catch (err) {
     console.error("Bars error:", err.message);
@@ -343,11 +412,19 @@ app.get("/api/screener", async (req, res) => {
       const batch = symbols.slice(i, i + batchSize);
       try {
         const snapshots = await alpaca.getSnapshots(batch);
-        for (const [sym, snap] of Object.entries(snapshots)) {
-          const price = parseFloat(snap.latestTrade?.p || 0);
-          const volume = parseInt(snap.dailyBar?.v || 0);
-          const tradeCount = parseInt(snap.dailyBar?.n || 0);
-          const prevClose = parseFloat(snap.prevDailyBar?.c || 0);
+        for (const snap of snapshots) {
+          const sym = snap.symbol;
+          if (!sym) continue;
+          const price = parseFloat(snap.LatestTrade?.Price || 0);
+          // Use today's DailyBar when market is open; fall back to PrevDailyBar
+          // when market is closed (DailyBar Volume = 0 before open)
+          const todayVol = parseInt(snap.DailyBar?.Volume || 0);
+          const prevVol  = parseInt(snap.PrevDailyBar?.Volume || 0);
+          const todayN   = parseInt(snap.DailyBar?.TradeCount || 0);
+          const prevN    = parseInt(snap.PrevDailyBar?.TradeCount || 0);
+          const volume     = todayVol > 0 ? todayVol : prevVol;
+          const tradeCount = todayN   > 0 ? todayN   : prevN;
+          const prevClose = parseFloat(snap.PrevDailyBar?.ClosePrice || 0);
           const change = prevClose > 0 ? (price - prevClose) / prevClose : 0;
 
           if (
@@ -401,12 +478,12 @@ app.get("/api/earnings", async (req, res) => {
     const from = fmt(new Date());
     const to   = fmt(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
 
-    const url = `https://financialmodelingprep.com/api/v3/earning_calendar?from=${from}&to=${to}&apikey=${FMP_API_KEY}`;
+    const url = `https://financialmodelingprep.com/stable/earnings-calendar?from=${from}&to=${to}&apikey=${FMP_API_KEY}`;
     const events = await fetchJSON(url);
 
     if (!Array.isArray(events)) {
-      // FMP returns { "Error Message": "..." } on bad key / rate limit
-      const msg = events?.["Error Message"] || "Unexpected FMP response";
+      // FMP returned an error object (bad key, rate limit, or endpoint issue)
+      const msg = events?.["Error Message"] || JSON.stringify(events);
       console.warn("FMP earnings warning:", msg);
       return res.json({});
     }
@@ -488,7 +565,7 @@ async function fetchDailyBars(sym, start, end) {
 async function fetchEarnings(start, end) {
   if (!FMP_API_KEY) return {};
   try {
-    const url = `https://financialmodelingprep.com/api/v3/earning_calendar?from=${start}&to=${end}&apikey=${FMP_API_KEY}`;
+    const url = `https://financialmodelingprep.com/stable/earnings-calendar?from=${start}&to=${end}&apikey=${FMP_API_KEY}`;
     const events = await fetchJSON(url);
     if (!Array.isArray(events)) return {};
     const result = {};
@@ -616,6 +693,70 @@ app.get("/api/backtest/cache-status", (req, res) => {
 });
 
 // ══════════════════════════════════════════
+//  TRADE JOURNAL
+// ══════════════════════════════════════════
+
+app.post("/api/trade-journal", (req, res) => {
+  try {
+    const { timestamp, symbol, action, shares, price, strategy, ml_confidence, portfolio_value, pnl, notes } = req.body;
+    insertTrade.run({
+      timestamp: timestamp || new Date().toISOString(),
+      symbol, action,
+      shares: parseFloat(shares),
+      price: parseFloat(price),
+      strategy,
+      ml_confidence: ml_confidence != null ? parseFloat(ml_confidence) : null,
+      portfolio_value: portfolio_value != null ? parseFloat(portfolio_value) : null,
+      pnl: pnl != null ? parseFloat(pnl) : null,
+      notes: notes || null,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Trade journal insert error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/trade-journal", (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const trades = db.prepare("SELECT * FROM trades ORDER BY id DESC LIMIT ?").all(limit);
+    res.json(trades);
+  } catch (err) {
+    console.error("Trade journal query error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/trade-journal/snapshot", (req, res) => {
+  try {
+    const { date, portfolio_value, cash, positions_count, daily_pnl } = req.body;
+    insertSnapshot.run({
+      date,
+      portfolio_value: parseFloat(portfolio_value),
+      cash: parseFloat(cash),
+      positions_count: parseInt(positions_count),
+      daily_pnl: daily_pnl != null ? parseFloat(daily_pnl) : null,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Snapshot insert error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/trade-journal/snapshots", (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 30, 365);
+    const snapshots = db.prepare("SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?").all(limit);
+    res.json(snapshots);
+  } catch (err) {
+    console.error("Snapshot query error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════
 //  HEALTH CHECK
 // ══════════════════════════════════════════
 
@@ -634,11 +775,95 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ══════════════════════════════════════════
+//  TRADING ENGINE — Server-side autonomous trading
+// ══════════════════════════════════════════
+
+const createTradingEngine = require("./tradingEngine");
+
+// Build the FMP earnings fetcher for the trading engine (returns { SYMBOL: "nearest-date" })
+function fetchEarningsFromFMP(symbols) {
+  if (!FMP_API_KEY) return Promise.resolve({});
+  const fmt = (d) => d.toISOString().split("T")[0];
+  const from = fmt(new Date());
+  const to   = fmt(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
+  const url  = `https://financialmodelingprep.com/stable/earnings-calendar?from=${from}&to=${to}&apikey=${FMP_API_KEY}`;
+  return fetchJSON(url).then((events) => {
+    if (!Array.isArray(events)) return {};
+    const result = {};
+    const symSet = new Set(symbols.map(s => s.toUpperCase()));
+    for (const e of events) {
+      if (!e.symbol || !e.date) continue;
+      if (symSet.size && !symSet.has(e.symbol)) continue;
+      if (!result[e.symbol] || e.date < result[e.symbol]) {
+        result[e.symbol] = e.date;
+      }
+    }
+    return result;
+  }).catch(() => ({}));
+}
+
+const engine = createTradingEngine({
+  alpaca,
+  insertTrade,
+  insertSnapshot,
+  fetchEarningsFromFMP,
+});
+
+// Get full trading state (polled by React frontend)
+app.get("/api/trading-state", (req, res) => {
+  try {
+    const state = engine.getState();
+    res.json(state);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get activity feed / logs
+app.get("/api/activity-feed", (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+    const feed = engine.getActivityFeed(limit);
+    res.json(feed);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Start trading engine
+app.post("/api/trading/start", async (req, res) => {
+  try {
+    if (engine.isRunning()) {
+      return res.json({ status: "already_running" });
+    }
+    await engine.start();
+    res.json({ status: "started" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Stop trading engine
+app.post("/api/trading/stop", (req, res) => {
+  try {
+    engine.stop();
+    res.json({ status: "stopped" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Engine status (lightweight check)
+app.get("/api/trading/status", (req, res) => {
+  res.json({ running: engine.isRunning() });
+});
+
+// ══════════════════════════════════════════
 //  START
 // ══════════════════════════════════════════
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`\n⚡ AutoTrader API server running on http://localhost:${PORT}`);
   console.log(`   Mode: PAPER TRADING`);
   console.log(`   Endpoints:`);
@@ -653,5 +878,23 @@ app.listen(PORT, () => {
   console.log(`     GET  /api/earnings    — upcoming earnings (FMP)`);
   console.log(`     GET  /api/backtest/fetch   — download + cache historical data (SSE)`);
   console.log(`     GET  /api/backtest/data    — retrieve cached backtest data`);
-  console.log(`     GET  /api/backtest/cache-status — check cache completeness\n`);
+  console.log(`     GET  /api/backtest/cache-status — check cache completeness`);
+  console.log(`     GET  /api/trade-journal  — recent trades`);
+  console.log(`     POST /api/trade-journal  — record a trade`);
+  console.log(`     GET  /api/trade-journal/snapshots — daily snapshots`);
+  console.log(`     GET  /api/trading-state  — full engine state (poll)`);
+  console.log(`     GET  /api/activity-feed  — engine activity log`);
+  console.log(`     POST /api/trading/start  — start trading engine`);
+  console.log(`     POST /api/trading/stop   — stop trading engine`);
+  console.log(`     GET  /api/trading/status — engine running status\n`);
+
+  // Auto-start trading engine on server boot
+  console.log("🚀 Auto-starting trading engine...");
+  try {
+    await engine.start();
+    console.log("✅ Trading engine started successfully.");
+  } catch (err) {
+    console.error("❌ Trading engine failed to start:", err.message);
+    console.error("   The server is still running — you can start the engine manually via POST /api/trading/start");
+  }
 });

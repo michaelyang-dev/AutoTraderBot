@@ -78,3 +78,23 @@ async function mlRequest(path) {
 
 export const getMLSignals = () => mlRequest("/signals");
 export const getMLHealth  = () => mlRequest("/health");
+
+// ── Trade Journal ──
+export function recordTrade(trade) {
+  // Fire-and-forget — don't let journal failures affect trading
+  fetch(`${API}/trade-journal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(trade),
+  }).catch((err) => console.warn("Trade journal write failed:", err.message));
+}
+
+export function recordDailySnapshot(snapshot) {
+  fetch(`${API}/trade-journal/snapshot`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(snapshot),
+  }).catch((err) => console.warn("Daily snapshot write failed:", err.message));
+}
+
+export const getTradeJournal = (limit = 100) => request(`/trade-journal?limit=${limit}`);

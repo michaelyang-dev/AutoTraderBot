@@ -1,29 +1,30 @@
 // ══════════════════════════════════════════
-//  useAlpacaTrader — Live trading hook (Alpaca paper)
-//  Drop-in replacement for useAutoTrader
-//  Same interface, real market data + real paper orders
+//  useAlpacaTrader — Thin polling client
+//  Reads trading state from the Express server's trading engine.
+//  All trading logic runs server-side (server/tradingEngine.js).
+//  This hook just polls GET /api/trading-state every 5 seconds.
 // ══════════════════════════════════════════
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { INITIAL_CASH, UNIVERSE, RISK } from "../config/constants";
-import { screenStocks } from "../engine/stockScreener";
-import { initLivePriceHistory, updateLivePrices } from "../engine/livePriceEngine";
-import { executeLiveTradingCycle } from "../engine/liveTradeExecutor";
-import { computeRegime, REGIME_RECOVERY_DAYS } from "../engine/regimeEngine";
-import * as alpaca from "../engine/alpacaClient";
+import { useState, useEffect, useRef } from "react";
+import { INITIAL_CASH } from "../config/constants";
 
-// How often to poll prices (ms) and trade (ms)
-const PRICE_POLL_MS = 15000;     // every 15 seconds
-const TRADE_CYCLE_MS = 60000;    // every 60 seconds
+const STATE_POLL_MS = 5000;   // poll trading state every 5 seconds
+const FEED_POLL_MS  = 5000;   // poll activity feed every 5 seconds
+const API = "/api";
+
+async function fetchJSON(path) {
+  const res = await fetch(`${API}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
 
 export function useAlpacaTrader() {
   const [tick, setTick] = useState(0);
-  const [speed, setSpeed] = useState(PRICE_POLL_MS);
+  const [speed, setSpeed] = useState(STATE_POLL_MS);
   const [paused, setPaused] = useState(false);
   const [cash, setCash] = useState(INITIAL_CASH);
   const [portfolioValue, setPortfolioValue] = useState(INITIAL_CASH);
   const [initialPortfolioValue, setInitialPortfolioValue] = useState(null);
-  const initialPortfolioValueSet = useRef(false);        // set once on first connect
   const [positions, setPositions] = useState({});
   const [priceHist, setPriceHist] = useState({});
   const [portfolioHist, setPortfolioHist] = useState([]);
@@ -36,252 +37,77 @@ export function useAlpacaTrader() {
   const [marketOpen, setMarketOpen] = useState(false);
   const [error, setError] = useState(null);
   const [regime, setRegime] = useState("BULLISH");
-  const [mlSignals, setMlSignals] = useState(null);   // array | null
-  const [mlStatus, setMlStatus] = useState("down");   // "ok" | "stale" | "down"
-  const [idleSpyShares, setIdleSpyShares] = useState(0); // shares parked in SPY as cash substitute
-  const tradeCycleRef = useRef(0);
-  const screenedRef = useRef(UNIVERSE);
-  const idleSpySharesRef = useRef(0);                 // mutated in-place by executor
-  const trailingPeaksRef    = useRef({});
-  const prevRegimeRef       = useRef("BULLISH");
-  const cooldownsRef        = useRef({});
-  const volHistRef          = useRef({});
-  const priceHistRef        = useRef({});
-  const trendPositionsRef   = useRef({});
-  const trendBreakCountsRef = useRef({});
-  const mlSignalsRef        = useRef(null);   // passed to executor each cycle
+  const [mlSignals, setMlSignals] = useState(null);
+  const [mlStatus, setMlStatus] = useState("down");
+  const [idleSpyShares, setIdleSpyShares] = useState(0);
 
+  const lastFeedLength = useRef(0);
 
-  const addLog = useCallback((msg, type = "info") => {
-    setActivityLog((prev) => [
-      ...prev.slice(-100),
-      { msg, type, tick: 0, time: new Date().toLocaleTimeString() },
-    ]);
-  }, []);
-
-  // ── INIT: Connect to Alpaca + load historical data ──
+  // ── Poll trading state from server ──
   useEffect(() => {
+    if (paused) return;
+
     let cancelled = false;
 
-    async function init() {
-      addLog("🔌 Connecting to Alpaca paper trading...", "system");
-
+    async function poll() {
       try {
-        // Health check
-        const health = await alpaca.checkHealth();
-        if (!health.connected) {
-          throw new Error("Cannot connect to Alpaca. Check your API keys.");
-        }
-        setConnected(true);
-        addLog("✅ Connected to Alpaca paper trading account.", "system");
+        const state = await fetchJSON("/trading-state");
+        if (cancelled) return;
 
-        // Fetch account
-        const account = await alpaca.getAccount();
-        const pv = parseFloat(account.portfolio_value);
-        setCash(parseFloat(account.cash));
-        setPortfolioValue(pv);
-        // Capture starting balance once — never overwrite so return % stays anchored
-        if (!initialPortfolioValueSet.current) {
-          setInitialPortfolioValue(pv);
-          initialPortfolioValueSet.current = true;
-        }
-        setPortfolioHist([{ tick: 0, value: pv }]);
-        addLog(`💰 Account balance: $${pv.toFixed(2)}`, "system");
-
-        // Fetch current positions
-        const pos = await alpaca.getPositions();
-        const posMap = {};
-        pos.forEach((p) => {
-          posMap[p.symbol] = {
-            shares: parseFloat(p.qty),
-            avgPrice: parseFloat(p.avg_entry_price),
-            currentPrice: parseFloat(p.current_price),
-            unrealizedPl: parseFloat(p.unrealized_pl),
-            unrealizedPlPct: parseFloat(p.unrealized_plpc),
-            marketValue: parseFloat(p.market_value),
-            entryTick: 0,
-          };
-        });
-        setPositions(posMap);
-        if (pos.length > 0) {
-          addLog(`📦 Loaded ${pos.length} existing position(s).`, "system");
-        }
-
-        // Check market clock
-        const clock = await alpaca.getClock();
-        setMarketOpen(clock.is_open);
-        addLog(
-          clock.is_open
-            ? "🟢 Market is OPEN. Bot will trade live."
-            : `🔴 Market is CLOSED. Next open: ${new Date(clock.next_open).toLocaleString()}`,
-          "system"
-        );
-
-        // Run stock screener
-        addLog("🔍 Running stock screener on full market...", "system");
-        const screened = await screenStocks();
-        if (screened && screened.length > 0) {
-          addLog(`✅ Screener found ${screened.length} tradeable stocks.`, "system");
-          // Store screened universe for use by trade executor
-          screenedRef.current = screened;
-        } else {
-          addLog("⚠️ Screener unavailable, using default 12 stocks.", "system");
-          screenedRef.current = UNIVERSE;
-        }
-
-        // Load historical bars for indicators
-        addLog("📊 Loading historical bars for indicators...", "system");
-        const { hist, volHist: initVolHist } = await initLivePriceHistory(screenedRef.current);
-        if (!cancelled) {
-          setPriceHist(hist);
-          priceHistRef.current = hist;
-          setVolHist(initVolHist);
-          volHistRef.current = initVolHist;
-          const loadedCount = Object.keys(hist).length;
-          addLog(`✅ Loaded historical data for ${loadedCount} stocks. Bot is ready.`, "system");
-          addLog(
-            `⚙️ Config: ${RISK.MAX_POSITION_PCT * 100}% max position, ${Math.abs(RISK.STOP_LOSS_PCT) * 100}% SL, ${RISK.TAKE_PROFIT_PCT * 100}% TP, max ${RISK.MAX_OPEN_POSITIONS} positions.`,
-            "system"
-          );
-        }
+        setTick(state.tick || 0);
+        setCash(state.cash || 0);
+        setPortfolioValue(state.portfolioValue || 0);
+        setInitialPortfolioValue(state.initialPortfolioValue);
+        setPositions(state.positions || {});
+        setPriceHist(state.priceHist || {});
+        setPortfolioHist(state.portfolioHist || []);
+        setTradeCount(state.tradeCount || { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 });
+        setVolHist(state.volHist || {});
+        setConnected(state.connected || false);
+        setMarketOpen(state.marketOpen || false);
+        setError(state.error || null);
+        setRegime(state.regime || "BULLISH");
+        setMlSignals(state.mlSignals || null);
+        setMlStatus(state.mlStatus || "down");
+        setIdleSpyShares(state.idleSpyShares || 0);
       } catch (err) {
-        setError(err.message);
-        addLog(`❌ Init failed: ${err.message}`, "error");
+        if (!cancelled) {
+          setError(err.message);
+          setConnected(false);
+        }
       }
     }
 
-    init();
-    return () => { cancelled = true; };
-  }, []);
+    // Poll immediately, then on interval
+    poll();
+    const iv = setInterval(poll, speed);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [paused, speed]);
 
-  // ── PRICE POLLING ──
+  // ── Poll activity feed from server ──
   useEffect(() => {
-    if (paused || !connected) return;
+    if (paused) return;
 
-    const iv = setInterval(async () => {
+    let cancelled = false;
+
+    async function pollFeed() {
       try {
-        // Fetch prices, account, positions, and clock in parallel
-        const [
-          { hist: updatedHist, volHist: updatedVolHist },
-          account,
-          pos,
-          clock,
-          mlData,
-        ] = await Promise.all([
-          updateLivePrices(priceHistRef.current, volHistRef.current),
-          alpaca.getAccount(),
-          alpaca.getPositions(),
-          alpaca.getClock(),
-          alpaca.getMLSignals(),
-        ]);
-
-        // Update ML state — stale signals → fallback (pass null to executor)
-        if (mlData && Array.isArray(mlData.signals) && !mlData.is_stale) {
-          mlSignalsRef.current = mlData.signals;
-          setMlSignals(mlData.signals);
-          setMlStatus("ok");
-        } else if (mlData && Array.isArray(mlData.signals) && mlData.is_stale) {
-          mlSignalsRef.current = null;
-          setMlSignals(mlData.signals);   // keep for display in scanner
-          setMlStatus("stale");
-        } else {
-          mlSignalsRef.current = null;
-          setMlSignals(null);
-          setMlStatus("down");
+        const feed = await fetchJSON("/activity-feed?limit=200");
+        if (cancelled) return;
+        // Only update if feed has grown (avoid re-renders on identical data)
+        if (feed.length !== lastFeedLength.current) {
+          lastFeedLength.current = feed.length;
+          setActivityLog(feed);
         }
-
-        setPriceHist(updatedHist);
-        priceHistRef.current = updatedHist;
-        setVolHist(updatedVolHist);
-        volHistRef.current = updatedVolHist;
-        setTick((t) => t + 1);
-
-        setCash(parseFloat(account.cash));
-        setPortfolioValue(parseFloat(account.portfolio_value));
-        setPortfolioHist((prev) => [
-          ...prev.slice(-200),
-          { tick: prev.length, value: parseFloat(account.portfolio_value) },
-        ]);
-
-        const posMap = {};
-        pos.forEach((p) => {
-          posMap[p.symbol] = {
-            shares: parseFloat(p.qty),
-            avgPrice: parseFloat(p.avg_entry_price),
-            currentPrice: parseFloat(p.current_price),
-            unrealizedPl: parseFloat(p.unrealized_pl),
-            unrealizedPlPct: parseFloat(p.unrealized_plpc),
-            marketValue: parseFloat(p.market_value),
-            entryTick: 0,
-          };
-        });
-        setPositions(posMap);
-
-        setMarketOpen(clock.is_open);
-
-        // ── Compute SPY market regime ──
-        const spyPrices = updatedHist.SPY;
-        if (spyPrices && spyPrices.length >= 200) {
-          const { regime: rawRegime, sma50, sma200, consecutiveDaysAbove50 } = computeRegime(spyPrices);
-
-          // Recovery rule: after BEARISH, require 3 consecutive days above 50-SMA
-          let effectiveRegime = rawRegime;
-          if (prevRegimeRef.current === "BEARISH" && rawRegime !== "BEARISH" && consecutiveDaysAbove50 < REGIME_RECOVERY_DAYS) {
-            effectiveRegime = "BEARISH"; // still confirming recovery
-          }
-
-          if (effectiveRegime !== prevRegimeRef.current) {
-            const emoji = { BULLISH: "🟢", CAUTIOUS: "🟡", BEARISH: "🔴" }[effectiveRegime];
-            const spyPrice = spyPrices[spyPrices.length - 1];
-            addLog(
-              `${emoji} Regime change: ${prevRegimeRef.current} → ${effectiveRegime} | SPY $${spyPrice.toFixed(2)} | SMA50 $${sma50?.toFixed(2)} | SMA200 $${sma200?.toFixed(2)}`,
-              "system"
-            );
-            if (effectiveRegime === "BEARISH") {
-              addLog("🔴 BEARISH regime active — all new buys suspended until SPY recovers.", "system");
-            } else if (effectiveRegime === "CAUTIOUS") {
-              addLog("🟡 CAUTIOUS regime active — STRONG BUY only, position sizes halved.", "system");
-            } else {
-              addLog("🟢 BULLISH regime restored — resuming normal trading.", "system");
-            }
-          }
-
-          prevRegimeRef.current = effectiveRegime;
-          setRegime(effectiveRegime);
-        }
-      } catch (err) {
-        console.error("Poll error:", err.message);
+      } catch {
+        // non-critical — state poll handles connectivity errors
       }
-    }, speed);
+    }
 
-    return () => clearInterval(iv);
-  }, [paused, connected, speed]);
-
-  // ── TRADE CYCLE (runs less frequently than price polling) ──
-  useEffect(() => {
-    if (paused || !connected || !marketOpen) return;
-
-    const iv = setInterval(async () => {
-      tradeCycleRef.current++;
-      addLog(`🔄 Trade cycle #${tradeCycleRef.current} — scanning...`, "system");
-
-      const result = await executeLiveTradingCycle({ priceHist: priceHistRef.current, volHist: volHistRef.current, trailingPeaks: trailingPeaksRef.current, regime, cooldowns: cooldownsRef.current, cycleNumber: tradeCycleRef.current, trendPositions: trendPositionsRef.current, trendBreakCounts: trendBreakCountsRef.current, mlSignals: mlSignalsRef.current, idleSpyRef: idleSpySharesRef });
-      result.logs.forEach((l) => addLog(l.msg, l.type));
-      setIdleSpyShares(idleSpySharesRef.current);
-
-      // Update trade counts from order history
-      try {
-        const orders = await alpaca.getOrders("filled", 100);
-        const buys = orders.filter((o) => o.side === "buy").length;
-        const sells = orders.filter((o) => o.side === "sell").length;
-        setTradeCount((prev) => ({ ...prev, buys, sells }));
-      } catch (err) {
-        // non-critical
-      }
-    }, TRADE_CYCLE_MS);
-
-    return () => clearInterval(iv);
-  }, [paused, connected, marketOpen]);
+    pollFeed();
+    const iv = setInterval(pollFeed, FEED_POLL_MS);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [paused]);
 
   return {
     tick,
@@ -301,10 +127,10 @@ export function useAlpacaTrader() {
     marketOpen,
     regime,
     error,
-    mlSignals,             // array for display in MarketScanner (may be stale)
-    mlStatus,              // "ok" | "stale" | "down" for Header badge
-    idleSpyShares,         // shares of SPY held as idle cash substitute
-    portfolioValue,        // account.portfolio_value straight from Alpaca
-    initialPortfolioValue, // balance at first connect — return % baseline
+    mlSignals,
+    mlStatus,
+    idleSpyShares,
+    portfolioValue,
+    initialPortfolioValue,
   };
 }

@@ -29,12 +29,20 @@ export async function initLivePriceHistory(universe = null) {
 
   results.forEach((result) => {
     if (result.status === "fulfilled") {
-      hist[result.value.sym] = result.value.closes;
-      volHist[result.value.sym] = result.value.volumes;
+      const { sym, closes, volumes } = result.value;
+      hist[sym] = closes;
+      volHist[sym] = volumes;
+      if (closes.length < 35) {
+        console.warn(`⚠️ ${sym}: only ${closes.length} bars loaded (need 35 for indicators)`);
+      }
     } else {
       console.error("Failed to fetch bars:", result.reason);
     }
   });
+
+  // Summary log for debugging
+  const barCounts = Object.entries(hist).map(([sym, arr]) => `${sym}:${arr.length}`);
+  console.log(`📊 Price history loaded — ${barCounts.length} symbols: ${barCounts.join(", ")}`);
 
   // Always fetch SPY with 220 bars — SMA200 needs 200+ closes for the regime filter.
   // Do this separately so universe stocks aren't penalised with extra fetches.

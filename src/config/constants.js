@@ -34,6 +34,19 @@ export const MARKET_HOURS = {
   CLOSE_BUFFER_MINS: 30,        // block new buys in last 30 min before close (overnight risk)
 };
 
+// Blacklist — leveraged, inverse, and volatility-decay products unsuitable for swing trading
+export const NEVER_BUY = new Set([
+  "VIXY","UVXY","VXX","SVXY",         // volatility
+  "TQQQ","SQQQ","QQQ3",               // leveraged Nasdaq
+  "SPXU","SPXS","SDS","UPRO",         // leveraged S&P
+  "QID","SDOW",                        // leveraged Dow / Nasdaq inverse
+  "LABU","LABD",                       // leveraged biotech
+  "JNUG","JDST","NUGT","DUST",        // leveraged gold miners
+  "FNGU","FNGD",                       // leveraged FAANG
+  "SOXL","SOXS",                       // leveraged semis
+  "YANG","YINN",                       // leveraged China
+]);
+
 // Stock Universe — 37 symbols: 12 individual stocks + 25 ETFs
 export const UNIVERSE = [
   // ── Individual Stocks (12) ──
