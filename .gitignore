@@ -1,0 +1,12 @@
+node_modules/
+build/
+.env
+.DS_Store
+*.log
+backtest_data/
+ml_service/data/
+server/backtest_data/
+*.parquet
+*.lgb
+*.png
+ml_service/venv/

@@ -1,0 +1,9 @@
+export { Header } from "./Header";
+export { StatsBar } from "./StatsBar";
+export { EquityChart } from "./EquityChart";
+export { AllocationChart } from "./AllocationChart";
+export { PositionsPanel } from "./PositionsPanel";
+export { ActivityFeed } from "./ActivityFeed";
+export { MarketScanner } from "./MarketScanner";
+export { StrategyLegend } from "./StrategyLegend";
+export { BacktestTab } from "./BacktestTab";
