@@ -126,11 +126,10 @@ ALPACA_SECRET_KEY=your_paper_secret_key_here
 # Optional — earnings calendar will be disabled without this
 FMP_API_KEY=your_fmp_api_key_here
 
-# Telegram Notifications (optional — leave blank to disable)
-# 1. Message @BotFather on Telegram → /newbot → copy the token
-# 2. Message @userinfobot on Telegram → copy your chat ID
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+# Email Notifications (optional — Gmail SMTP)
+# Generate an App Password: Google Account → Security → 2-Step Verification → App Passwords
+EMAIL_USER=
+EMAIL_APP_PASSWORD=
 ENVEOF
     echo "   Created $ENV_FILE — edit this with your real API keys!"
 fi

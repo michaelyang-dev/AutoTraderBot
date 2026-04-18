@@ -417,7 +417,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     try {
       return await alpaca.createOrder({ symbol, qty, side, type, time_in_force });
     } catch (err) {
-      notify.sendTelegram(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
+      notify.send(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
     }
   }
@@ -426,7 +426,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     try {
       return await alpaca.closePosition(symbol);
     } catch (err) {
-      notify.sendTelegram(`🚨 ORDER REJECTED — ${symbol} close | Reason: ${err.message}`, { deduplicate: true, immediate: true });
+      notify.send(`🚨 ORDER REJECTED — ${symbol} close | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
     }
   }
@@ -657,7 +657,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       error = err.message;
       connected = false;
       addLog(`Initialization failed: ${err.message}`, "error");
-      notify.sendTelegram(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
+      notify.send(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
     }
   }
@@ -743,9 +743,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       // ML status transition notifications
       if (prevMlStatus === "ok" && mlStatus !== "ok") {
-        notify.sendTelegram("🚨 ML SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
+        notify.send("🚨 ML SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
       } else if (prevMlStatus !== "ok" && mlStatus === "ok") {
-        notify.sendTelegram("✅ ML SERVER RECOVERED — ML signals active again.", { immediate: true });
+        notify.send("✅ ML SERVER RECOVERED — ML signals active again.", { immediate: true });
       }
       prevMlStatus = mlStatus;
 
@@ -767,7 +767,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       // Market open transition notification
       if (marketOpen && !prevMarketOpen) {
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
-        notify.sendTelegram(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. ML signals: ${buyCount} BUY.`);
+        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. ML signals: ${buyCount} BUY.`);
       }
       prevMarketOpen = marketOpen;
 
@@ -775,7 +775,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       error = null;
     } catch (err) {
       addLog(`Price poll error: ${err.message}`, "error");
-      notify.sendTelegram(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
+      notify.send(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
       error = err.message;
     }
   }
@@ -826,7 +826,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       if (circuitBreaker.date !== todayDate) {
         // Notify circuit breaker reset if it was tripped yesterday
         if (circuitBreaker.tripped) {
-          notify.sendTelegram("✅ CIRCUIT BREAKER RESET — New trading day, buys enabled.", { immediate: true });
+          notify.send("✅ CIRCUIT BREAKER RESET — New trading day, buys enabled.", { immediate: true });
         }
         circuitBreaker.date = todayDate;
         circuitBreaker.morningValue = cyclePortfolioValue;
@@ -852,7 +852,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         skipNewBuys = true;
         const dropPct = (((cyclePortfolioValue - circuitBreaker.morningValue) / circuitBreaker.morningValue) * 100).toFixed(2);
         addLog(`Circuit breaker activated -- portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}), no new buys until tomorrow.`, "error");
-        notify.sendTelegram(`🚨 CIRCUIT BREAKER — Portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}). No new buys until tomorrow.`, { deduplicate: true, immediate: true });
+        notify.send(`🚨 CIRCUIT BREAKER — Portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}). No new buys until tomorrow.`, { deduplicate: true, immediate: true });
       }
 
       // Fetch upcoming earnings (cached)
@@ -907,7 +907,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "stop-loss", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-            notify.sendTelegram(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
+            notify.send(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
@@ -923,7 +923,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "take-profit", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
             dailyStats.sells++;
             dailyStats.wins++;
-            notify.sendTelegram(`🎯 TAKE-PROFIT ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Gain: +$${unrealized_pl.toFixed(2)} (+${(unrealized_plpc * 100).toFixed(1)}%)`);
+            notify.send(`🎯 TAKE-PROFIT ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Gain: +$${unrealized_pl.toFixed(2)} (+${(unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
@@ -949,7 +949,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: "earnings-sell", portfolio_value: cyclePortfolioValue, pnl: pos.unrealized_pl });
             dailyStats.sells++;
             if (pos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-            notify.sendTelegram(`📉 SELL ${pos.symbol} | ${pos.qty} shares @ $${pos.current_price.toFixed(2)} | Earnings tomorrow — P&L: $${pos.unrealized_pl.toFixed(2)} (${(pos.unrealized_plpc * 100).toFixed(1)}%)`);
+            notify.send(`📉 SELL ${pos.symbol} | ${pos.qty} shares @ $${pos.current_price.toFixed(2)} | Earnings tomorrow — P&L: $${pos.unrealized_pl.toFixed(2)} (${(pos.unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Earnings sell failed ${pos.symbol}: ${err.message}`, "error");
           }
@@ -1007,7 +1007,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
                 dailyStats.sells++;
                 if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-                notify.sendTelegram(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | Blacklisted — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
+                notify.send(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | Blacklisted — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
               }
             } catch (err) {
               addLog(`Sell failed ${sym}: ${err.message}`, "error");
@@ -1035,7 +1035,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
               recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
               dailyStats.sells++;
               if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-              notify.sendTelegram(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | ${analysis.consensus} — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
+              notify.send(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | ${analysis.consensus} — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
             }
           } catch (err) {
             addLog(`Sell failed ${sym}: ${err.message}`, "error");
@@ -1152,7 +1152,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           idleSpyShares = 0;
           addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`, "system");
           recordTrade({ symbol: "SPY", action: "sell", shares: spyShareCount, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
-          notify.sendTelegram(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`);
+          notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`);
           // Refresh cash after selling idle SPY
           const freshAcct = await getAccount();
           cycleCash = freshAcct.cash;
@@ -1235,7 +1235,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           tradeCount.buys++;
           dailyStats.buys++;
           recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: opp.mlConf != null ? "ml" : "consensus", ml_confidence: opp.mlConf, portfolio_value: cyclePortfolioValue });
-          notify.sendTelegram(opp.mlConf != null
+          notify.send(opp.mlConf != null
             ? `🤖 ML BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | Confidence: ${(opp.mlConf * 100).toFixed(0)}% | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
             : `📊 BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
         } catch (err) {
@@ -1270,7 +1270,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             recordTrade({ symbol: sym, action: "sell", shares: pos.qty, price: curr, strategy: "trend-stop", portfolio_value: cyclePortfolioValue, pnl: trendPnl });
             dailyStats.sells++;
             if (trendPnl >= 0) dailyStats.wins++; else dailyStats.losses++;
-            notify.sendTelegram(`📈 TREND SELL ${sym} | ${pos.qty} shares @ $${curr.toFixed(2)} | Trail-stop hit, peak $${peak.toFixed(2)} | P&L: $${trendPnl.toFixed(2)}`);
+            notify.send(`📈 TREND SELL ${sym} | ${pos.qty} shares @ $${curr.toFixed(2)} | Trail-stop hit, peak $${peak.toFixed(2)} | P&L: $${trendPnl.toFixed(2)}`);
           } catch (err) {
             addLog(`Trend-stop close failed ${sym}: ${err.message}`, "error");
           }
@@ -1302,7 +1302,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 recordTrade({ symbol: sym, action: "sell", shares: breakPos.qty, price: breakPos.current_price, strategy: "trend-break", portfolio_value: cyclePortfolioValue, pnl: breakPos.unrealized_pl });
                 dailyStats.sells++;
                 if (breakPos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-                notify.sendTelegram(`📈 TREND SELL ${sym} | ${breakPos.qty} shares @ $${breakPos.current_price.toFixed(2)} | 200-SMA break | P&L: $${breakPos.unrealized_pl.toFixed(2)}`);
+                notify.send(`📈 TREND SELL ${sym} | ${breakPos.qty} shares @ $${breakPos.current_price.toFixed(2)} | 200-SMA break | P&L: $${breakPos.unrealized_pl.toFixed(2)}`);
               }
             } catch (err) {
               addLog(`Trend-break close failed ${sym}: ${err.message}`, "error");
@@ -1348,7 +1348,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 tradeCount.buys++;
                 dailyStats.buys++;
                 recordTrade({ symbol: sym, action: "buy", shares, price: currPrice, strategy: "trend", portfolio_value: cyclePortfolioValue });
-                notify.sendTelegram(`📈 TREND BUY ${sym} | ${shares} shares @ $${currPrice.toFixed(2)} | ${ts.daysAbove200}/40 days above 200-SMA`);
+                notify.send(`📈 TREND BUY ${sym} | ${shares} shares @ $${currPrice.toFixed(2)} | ${ts.daysAbove200}/40 days above 200-SMA`);
                 if (Object.keys(trendPositions).length >= 8) break;
               } catch (err) {
                 addLog(`Trend buy failed ${sym}: ${err.message}`, "error");
@@ -1377,7 +1377,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 idleSpyShares += spySharesToBuy;
                 addLog(`[idle-spy] Parking $${parkAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })} -> ${spySharesToBuy} SPY @ $${spyPrice.toFixed(2)} | Total idle SPY: ${idleSpyShares} shares`, "system");
                 recordTrade({ symbol: "SPY", action: "buy", shares: spySharesToBuy, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
-                notify.sendTelegram(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
+                notify.send(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
               }
             }
           }
@@ -1442,7 +1442,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           summary += `\nRegime: ${regime}`;
           summary += `\nSPY Idle: ${idleSpyShares} shares ($${spyIdleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
 
-          notify.sendTelegram(summary, { immediate: true });
+          notify.send(summary, { immediate: true });
         }
       }
 
