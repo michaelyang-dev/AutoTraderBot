@@ -125,6 +125,12 @@ ALPACA_SECRET_KEY=your_paper_secret_key_here
 # Financial Modeling Prep (https://financialmodelingprep.com → API Key)
 # Optional — earnings calendar will be disabled without this
 FMP_API_KEY=your_fmp_api_key_here
+
+# Telegram Notifications (optional — leave blank to disable)
+# 1. Message @BotFather on Telegram → /newbot → copy the token
+# 2. Message @userinfobot on Telegram → copy your chat ID
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
 ENVEOF
     echo "   Created $ENV_FILE — edit this with your real API keys!"
 fi

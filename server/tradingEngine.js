@@ -6,6 +6,7 @@
 // ══════════════════════════════════════════════════════════════════════
 
 const http = require("http");
+const notify = require("./notifications");
 
 // ══════════════════════════════════════════
 //  CONSTANTS (inlined from frontend config)
@@ -413,11 +414,21 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   }
 
   async function placeOrder({ symbol, qty, side, type = "market", time_in_force = "day" }) {
-    return await alpaca.createOrder({ symbol, qty, side, type, time_in_force });
+    try {
+      return await alpaca.createOrder({ symbol, qty, side, type, time_in_force });
+    } catch (err) {
+      notify.sendTelegram(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
+      throw err;
+    }
   }
 
   async function closePosition(symbol) {
-    return await alpaca.closePosition(symbol);
+    try {
+      return await alpaca.closePosition(symbol);
+    } catch (err) {
+      notify.sendTelegram(`🚨 ORDER REJECTED — ${symbol} close | Reason: ${err.message}`, { deduplicate: true, immediate: true });
+      throw err;
+    }
   }
 
   async function getOrders(status = "all", limit = 50) {
@@ -536,6 +547,12 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   let tradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
   let pricePollInterval = null;
   let tradeCycleInterval = null;
+  let prevMlStatus = "down";
+  let prevMarketOpen = false;
+  let dailyStats = {
+    date: null, buys: 0, sells: 0, wins: 0, losses: 0,
+    summarySent: false, weekStartValue: null,
+  };
 
   // ── Activity log ──
 
@@ -640,6 +657,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       error = err.message;
       connected = false;
       addLog(`Initialization failed: ${err.message}`, "error");
+      notify.sendTelegram(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
     }
   }
@@ -723,6 +741,14 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         mlStatus = "down";
       }
 
+      // ML status transition notifications
+      if (prevMlStatus === "ok" && mlStatus !== "ok") {
+        notify.sendTelegram("🚨 ML SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
+      } else if (prevMlStatus !== "ok" && mlStatus === "ok") {
+        notify.sendTelegram("✅ ML SERVER RECOVERED — ML signals active again.", { immediate: true });
+      }
+      prevMlStatus = mlStatus;
+
       // Compute regime with recovery logic
       const regimeResult = computeRegime(priceHist.SPY);
       prevRegime = regime;
@@ -738,10 +764,18 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         regime = regimeResult.regime;
       }
 
+      // Market open transition notification
+      if (marketOpen && !prevMarketOpen) {
+        const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
+        notify.sendTelegram(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. ML signals: ${buyCount} BUY.`);
+      }
+      prevMarketOpen = marketOpen;
+
       connected = true;
       error = null;
     } catch (err) {
       addLog(`Price poll error: ${err.message}`, "error");
+      notify.sendTelegram(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
       error = err.message;
     }
   }
@@ -790,9 +824,22 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       // Daily loss circuit breaker
       const todayDate = new Date().toISOString().split("T")[0];
       if (circuitBreaker.date !== todayDate) {
+        // Notify circuit breaker reset if it was tripped yesterday
+        if (circuitBreaker.tripped) {
+          notify.sendTelegram("✅ CIRCUIT BREAKER RESET — New trading day, buys enabled.", { immediate: true });
+        }
         circuitBreaker.date = todayDate;
         circuitBreaker.morningValue = cyclePortfolioValue;
         circuitBreaker.tripped = false;
+
+        // Reset daily stats for the new day
+        const dayOfWeek = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).getDay();
+        dailyStats = {
+          date: todayDate, buys: 0, sells: 0, wins: 0, losses: 0,
+          summarySent: false,
+          weekStartValue: (dayOfWeek === 1 || dailyStats.weekStartValue === null)
+            ? cyclePortfolioValue : dailyStats.weekStartValue,
+        };
       }
       if (!circuitBreaker.morningValue) {
         circuitBreaker.morningValue = cyclePortfolioValue;
@@ -805,6 +852,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         skipNewBuys = true;
         const dropPct = (((cyclePortfolioValue - circuitBreaker.morningValue) / circuitBreaker.morningValue) * 100).toFixed(2);
         addLog(`Circuit breaker activated -- portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}), no new buys until tomorrow.`, "error");
+        notify.sendTelegram(`🚨 CIRCUIT BREAKER — Portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}). No new buys until tomorrow.`, { deduplicate: true, immediate: true });
       }
 
       // Fetch upcoming earnings (cached)
@@ -857,6 +905,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             if (unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
             tradeCount.totalPnL += unrealized_pl;
             recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "stop-loss", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            dailyStats.sells++;
+            if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+            notify.sendTelegram(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
@@ -870,6 +921,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             tradeCount.wins++;
             tradeCount.totalPnL += unrealized_pl;
             recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "take-profit", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            dailyStats.sells++;
+            dailyStats.wins++;
+            notify.sendTelegram(`🎯 TAKE-PROFIT ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Gain: +$${unrealized_pl.toFixed(2)} (+${(unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
@@ -893,6 +947,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             if (pos.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
             tradeCount.totalPnL += pos.unrealized_pl;
             recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: "earnings-sell", portfolio_value: cyclePortfolioValue, pnl: pos.unrealized_pl });
+            dailyStats.sells++;
+            if (pos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+            notify.sendTelegram(`📉 SELL ${pos.symbol} | ${pos.qty} shares @ $${pos.current_price.toFixed(2)} | Earnings tomorrow — P&L: $${pos.unrealized_pl.toFixed(2)} (${(pos.unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Earnings sell failed ${pos.symbol}: ${err.message}`, "error");
           }
@@ -948,6 +1005,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 if (posData.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
                 tradeCount.totalPnL += posData.unrealized_pl;
                 recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
+                dailyStats.sells++;
+                if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+                notify.sendTelegram(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | Blacklisted — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
               }
             } catch (err) {
               addLog(`Sell failed ${sym}: ${err.message}`, "error");
@@ -973,6 +1033,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
               if (posData.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
               tradeCount.totalPnL += posData.unrealized_pl;
               recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
+              dailyStats.sells++;
+              if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+              notify.sendTelegram(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | ${analysis.consensus} — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
             }
           } catch (err) {
             addLog(`Sell failed ${sym}: ${err.message}`, "error");
@@ -1089,6 +1152,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           idleSpyShares = 0;
           addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`, "system");
           recordTrade({ symbol: "SPY", action: "sell", shares: spyShareCount, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
+          notify.sendTelegram(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`);
           // Refresh cash after selling idle SPY
           const freshAcct = await getAccount();
           cycleCash = freshAcct.cash;
@@ -1169,7 +1233,11 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           const mlNote = opp.mlConf != null ? `, ML ${(opp.mlConf * 100).toFixed(0)}% conf` : "";
           addLog(`BUY ${opp.sym}: ${shares} shares | ${opp.consensus} (score: ${opp.score.toFixed(2)}) | alloc ${(dynPositionPct * 100).toFixed(1)}% (ATR ${(atrPct * 100).toFixed(1)}%${regime === "CAUTIOUS" ? ", cautious 75%" : ""}${mlNote}) | Order: ${order.status}`, "buy");
           tradeCount.buys++;
+          dailyStats.buys++;
           recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: opp.mlConf != null ? "ml" : "consensus", ml_confidence: opp.mlConf, portfolio_value: cyclePortfolioValue });
+          notify.sendTelegram(opp.mlConf != null
+            ? `🤖 ML BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | Confidence: ${(opp.mlConf * 100).toFixed(0)}% | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+            : `📊 BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
         } catch (err) {
           addLog(`Buy failed ${opp.sym}: ${err.message}`, "error");
         }
@@ -1200,6 +1268,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             if (trendPnl >= 0) tradeCount.wins++; else tradeCount.losses++;
             tradeCount.totalPnL += trendPnl;
             recordTrade({ symbol: sym, action: "sell", shares: pos.qty, price: curr, strategy: "trend-stop", portfolio_value: cyclePortfolioValue, pnl: trendPnl });
+            dailyStats.sells++;
+            if (trendPnl >= 0) dailyStats.wins++; else dailyStats.losses++;
+            notify.sendTelegram(`📈 TREND SELL ${sym} | ${pos.qty} shares @ $${curr.toFixed(2)} | Trail-stop hit, peak $${peak.toFixed(2)} | P&L: $${trendPnl.toFixed(2)}`);
           } catch (err) {
             addLog(`Trend-stop close failed ${sym}: ${err.message}`, "error");
           }
@@ -1229,6 +1300,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 if (breakPos.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
                 tradeCount.totalPnL += breakPos.unrealized_pl;
                 recordTrade({ symbol: sym, action: "sell", shares: breakPos.qty, price: breakPos.current_price, strategy: "trend-break", portfolio_value: cyclePortfolioValue, pnl: breakPos.unrealized_pl });
+                dailyStats.sells++;
+                if (breakPos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+                notify.sendTelegram(`📈 TREND SELL ${sym} | ${breakPos.qty} shares @ $${breakPos.current_price.toFixed(2)} | 200-SMA break | P&L: $${breakPos.unrealized_pl.toFixed(2)}`);
               }
             } catch (err) {
               addLog(`Trend-break close failed ${sym}: ${err.message}`, "error");
@@ -1272,7 +1346,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 trendBreakCounts[sym] = 0;
                 addLog(`TREND-BUY ${sym}: ${shares} sh | ${ts.daysAbove200}/40 days above 200-SMA | Order: ${order.status}`, "buy");
                 tradeCount.buys++;
+                dailyStats.buys++;
                 recordTrade({ symbol: sym, action: "buy", shares, price: currPrice, strategy: "trend", portfolio_value: cyclePortfolioValue });
+                notify.sendTelegram(`📈 TREND BUY ${sym} | ${shares} shares @ $${currPrice.toFixed(2)} | ${ts.daysAbove200}/40 days above 200-SMA`);
                 if (Object.keys(trendPositions).length >= 8) break;
               } catch (err) {
                 addLog(`Trend buy failed ${sym}: ${err.message}`, "error");
@@ -1301,6 +1377,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 idleSpyShares += spySharesToBuy;
                 addLog(`[idle-spy] Parking $${parkAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })} -> ${spySharesToBuy} SPY @ $${spyPrice.toFixed(2)} | Total idle SPY: ${idleSpyShares} shares`, "system");
                 recordTrade({ symbol: "SPY", action: "buy", shares: spySharesToBuy, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
+                notify.sendTelegram(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
               }
             }
           }
@@ -1327,17 +1404,46 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         };
       }
 
-      // Daily snapshot near market close (last 5 minutes)
+      // Daily snapshot + Telegram summary near market close (last 5 minutes)
       if (minutesUntilClose <= 5) {
         const today = new Date().toISOString().split("T")[0];
         const activePos = positionsRaw.filter(p => p.symbol !== "SPY").length;
+        const dailyPnl = portfolioValue - (circuitBreaker.morningValue || portfolioValue);
         recordDailySnapshot({
           date: today,
           portfolio_value: portfolioValue,
           cash: cash,
           positions_count: activePos,
-          daily_pnl: portfolioValue - (circuitBreaker.morningValue || portfolioValue),
+          daily_pnl: dailyPnl,
         });
+
+        // Send daily/weekly summary via Telegram (once per day)
+        if (!dailyStats.summarySent) {
+          dailyStats.summarySent = true;
+          const dailyPnlPct = circuitBreaker.morningValue ? (dailyPnl / circuitBreaker.morningValue * 100) : 0;
+          const spyIdlePos = positionsRaw.find(p => p.symbol === "SPY");
+          const spyIdleValue = spyIdlePos ? spyIdlePos.market_value : 0;
+          const etDay = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).getDay();
+          const isFriday = etDay === 5;
+
+          let summary = isFriday ? "📊 WEEKLY SUMMARY (Friday Close)" : "📊 DAILY SUMMARY";
+          summary += "\n━━━━━━━━━━━━━━━";
+          summary += `\nPortfolio: $${portfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+          if (isFriday && dailyStats.weekStartValue) {
+            const weeklyPnl = portfolioValue - dailyStats.weekStartValue;
+            const weeklyPnlPct = (weeklyPnl / dailyStats.weekStartValue * 100);
+            summary += `\nWeekly P&L: ${weeklyPnl >= 0 ? "+" : ""}$${weeklyPnl.toFixed(0)} (${weeklyPnlPct >= 0 ? "+" : ""}${weeklyPnlPct.toFixed(2)}%)`;
+          }
+          summary += `\nDaily P&L: ${dailyPnl >= 0 ? "+" : ""}$${dailyPnl.toFixed(0)} (${dailyPnlPct >= 0 ? "+" : ""}${dailyPnlPct.toFixed(2)}%)`;
+          summary += `\nPositions: ${activePos}/${RISK.MAX_OPEN_POSITIONS}`;
+          summary += `\nTrades today: ${dailyStats.buys} buys, ${dailyStats.sells} sells`;
+          summary += `\nWin/Loss: ${dailyStats.wins}/${dailyStats.losses}`;
+          summary += `\nML Status: ${mlStatus}`;
+          summary += `\nRegime: ${regime}`;
+          summary += `\nSPY Idle: ${idleSpyShares} shares ($${spyIdleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
+
+          notify.sendTelegram(summary, { immediate: true });
+        }
       }
 
       addLog(`Cycle #${cycleNumber} complete | Cash: $${cash.toFixed(0)} | Portfolio: $${portfolioValue.toFixed(0)} | Positions: ${positionsRaw.length}`, "system");

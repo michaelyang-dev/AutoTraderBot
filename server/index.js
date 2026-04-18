@@ -10,6 +10,22 @@ const express = require("express");
 const cors = require("cors");
 const https = require("https");
 const fs = require("fs");
+const { sendTelegram } = require("./notifications");
+
+// ── Global uncaught error handlers — alert via Telegram, then let PM2 restart ──
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+  sendTelegram(`🚨 UNCAUGHT ERROR — ${err.message}\n${err.stack?.split("\n").slice(0, 4).join("\n") || ""}`, { deduplicate: true, immediate: true });
+  // Give time for the Telegram message to send before PM2 restarts
+  setTimeout(() => process.exit(1), 3000);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? reason.stack?.split("\n").slice(0, 4).join("\n") : "";
+  sendTelegram(`🚨 UNHANDLED REJECTION — ${msg}\n${stack}`, { deduplicate: true, immediate: true });
+});
 const path = require("path");
 const Alpaca = require("@alpacahq/alpaca-trade-api");
 const Database = require("better-sqlite3");
