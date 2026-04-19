@@ -130,7 +130,34 @@ let UNIVERSE_SYMBOLS = loadUniverseSymbols();
 
 // Batch size for Alpaca API calls (snapshots support up to 200, bars individually)
 const SNAPSHOT_BATCH_SIZE = 100;
-const BAR_FETCH_CONCURRENCY = 20;  // parallel bar fetches at a time
+const BAR_FETCH_CONCURRENCY = 5;   // parallel bar fetches (reduced from 20 for rate limits)
+const BAR_FETCH_RETRIES = 3;       // retry failed bar fetches with exponential backoff
+const SNAPSHOT_BATCH_DELAY_MS = 500; // delay between snapshot batches
+
+// ── Alpaca symbol format mapping ──
+// S&P 500 lists use hyphens (BF-B) but Alpaca uses dots (BF.B)
+const ALPACA_SYMBOL_MAP = {
+  "BF-B": "BF.B",
+  "BRK-B": "BRK.B",
+  "BRK-A": "BRK.A",
+};
+const REVERSE_SYMBOL_MAP = Object.fromEntries(
+  Object.entries(ALPACA_SYMBOL_MAP).map(([k, v]) => [v, k])
+);
+function toAlpacaSymbol(sym) { return ALPACA_SYMBOL_MAP[sym] || sym; }
+function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
+
+// ── Global Alpaca rate limiter (max 3 req/sec = 180 req/min, under 200 limit) ──
+const RATE_LIMIT_MIN_INTERVAL_MS = 334; // ~3 req/sec
+let _lastRequestTime = 0;
+async function rateLimitWait() {
+  const now = Date.now();
+  const elapsed = now - _lastRequestTime;
+  if (elapsed < RATE_LIMIT_MIN_INTERVAL_MS) {
+    await new Promise(r => setTimeout(r, RATE_LIMIT_MIN_INTERVAL_MS - elapsed));
+  }
+  _lastRequestTime = Date.now();
+}
 
 const CONSENSUS_THRESHOLDS = { STRONG_BUY: 2, BUY: 1, SELL: -1, STRONG_SELL: -2 };
 const REGIME_RECOVERY_DAYS = 3;
@@ -662,6 +689,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   // ── Alpaca SDK wrappers ──
 
   async function getAccount() {
+    await rateLimitWait();
     const acct = await alpaca.getAccount();
     return {
       cash: parseFloat(acct.cash),
@@ -670,9 +698,10 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   }
 
   async function getPositions() {
+    await rateLimitWait();
     const raw = await alpaca.getPositions();
     return raw.map(p => ({
-      symbol: p.symbol,
+      symbol: fromAlpacaSymbol(p.symbol),
       qty: parseFloat(p.qty),
       avg_entry_price: parseFloat(p.avg_entry_price),
       current_price: parseFloat(p.current_price),
@@ -683,6 +712,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   }
 
   async function getClock() {
+    await rateLimitWait();
     const clock = await alpaca.getClock();
     return {
       is_open: clock.is_open,
@@ -694,7 +724,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
   async function placeOrder({ symbol, qty, side, type = "market", time_in_force = "day" }) {
     try {
-      return await alpaca.createOrder({ symbol, qty, side, type, time_in_force });
+      const alpacaSym = toAlpacaSymbol(symbol);
+      await rateLimitWait();
+      return await alpaca.createOrder({ symbol: alpacaSym, qty, side, type, time_in_force });
     } catch (err) {
       notify.send(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
@@ -703,7 +735,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
   async function closePosition(symbol) {
     try {
-      return await alpaca.closePosition(symbol);
+      const alpacaSym = toAlpacaSymbol(symbol);
+      await rateLimitWait();
+      return await alpaca.closePosition(alpacaSym);
     } catch (err) {
       notify.send(`🚨 ORDER REJECTED — ${symbol} close | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
@@ -711,69 +745,123 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   }
 
   async function getOrders(status = "all", limit = 50) {
+    await rateLimitWait();
     return await alpaca.getOrders({ status, limit });
   }
 
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
   async function fetchBars(symbol, limit = 250) {
+    const alpacaSym = toAlpacaSymbol(symbol);
     const calDays = Math.ceil(limit * 1.6) + 10;
     const start = new Date();
     start.setDate(start.getDate() - calDays);
     const startISO = start.toISOString().split("T")[0];
 
     const bars = [];
-    const iter = alpaca.getBarsV2(symbol, { timeframe: "1Day", start: startISO, adjustment: "split" });
+    await rateLimitWait();
+    const iter = alpaca.getBarsV2(alpacaSym, { timeframe: "1Day", start: startISO, adjustment: "split" });
     for await (const bar of iter) {
       bars.push({ c: parseFloat(bar.ClosePrice), v: parseInt(bar.Volume) });
     }
     return bars.slice(-limit);
   }
 
-  async function fetchSnapshots(symbols) {
-    // Batch into chunks of SNAPSHOT_BATCH_SIZE to avoid API limits
-    const result = {};
-    for (let i = 0; i < symbols.length; i += SNAPSHOT_BATCH_SIZE) {
-      const batch = symbols.slice(i, i + SNAPSHOT_BATCH_SIZE);
+  async function fetchBarsWithRetry(symbol, limit = 250) {
+    for (let attempt = 1; attempt <= BAR_FETCH_RETRIES; attempt++) {
       try {
+        return await fetchBars(symbol, limit);
+      } catch (err) {
+        if (attempt < BAR_FETCH_RETRIES) {
+          const backoff = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+          await sleep(backoff);
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  async function fetchSnapshots(symbols) {
+    // Batch into chunks of SNAPSHOT_BATCH_SIZE with delays between batches
+    const result = {};
+    const alpacaSymbols = symbols.map(toAlpacaSymbol);
+    for (let i = 0; i < alpacaSymbols.length; i += SNAPSHOT_BATCH_SIZE) {
+      const batch = alpacaSymbols.slice(i, i + SNAPSHOT_BATCH_SIZE);
+      const batchNum = Math.floor(i / SNAPSHOT_BATCH_SIZE) + 1;
+      try {
+        await rateLimitWait();
         const snaps = await alpaca.getSnapshots(batch);
         for (const snap of snaps) {
           if (!snap.symbol) continue;
-          result[snap.symbol] = {
+          const origSym = fromAlpacaSymbol(snap.symbol);
+          result[origSym] = {
             price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
             volume: parseInt(snap.DailyBar?.Volume || 0),
           };
         }
       } catch (err) {
-        addLog(`Snapshot batch ${Math.floor(i / SNAPSHOT_BATCH_SIZE) + 1} failed: ${err.message}`, "error");
+        addLog(`Snapshot batch ${batchNum} failed: ${err.message} — retrying after 2s`, "error");
+        await sleep(2000);
+        try {
+          await rateLimitWait();
+          const snaps = await alpaca.getSnapshots(batch);
+          for (const snap of snaps) {
+            if (!snap.symbol) continue;
+            const origSym = fromAlpacaSymbol(snap.symbol);
+            result[origSym] = {
+              price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
+              volume: parseInt(snap.DailyBar?.Volume || 0),
+            };
+          }
+          addLog(`Snapshot batch ${batchNum} retry succeeded`, "system");
+        } catch (retryErr) {
+          addLog(`Snapshot batch ${batchNum} retry failed, skipping ${batch.length} symbols`, "error");
+        }
+      }
+      // Delay between batches to stay under rate limit
+      if (i + SNAPSHOT_BATCH_SIZE < alpacaSymbols.length) {
+        await sleep(SNAPSHOT_BATCH_DELAY_MS);
       }
     }
     return result;
   }
 
   async function fetchBarsParallel(symbols, limit = 250) {
-    // Fetch bars for many symbols with controlled concurrency
+    // Fetch bars for many symbols with controlled concurrency + retries
     const results = {};
     let loaded = 0;
     let failed = 0;
+    const failedSymbols = [];
 
     for (let i = 0; i < symbols.length; i += BAR_FETCH_CONCURRENCY) {
       const batch = symbols.slice(i, i + BAR_FETCH_CONCURRENCY);
       const settled = await Promise.allSettled(
         batch.map(async (sym) => {
-          const bars = await fetchBars(sym, limit);
+          const bars = await fetchBarsWithRetry(sym, limit);
           return { sym, closes: bars.map(b => b.c), volumes: bars.map(b => b.v) };
         })
       );
-      for (const r of settled) {
+      for (let j = 0; j < settled.length; j++) {
+        const r = settled[j];
         if (r.status === "fulfilled") {
           results[r.value.sym] = r.value;
           loaded++;
         } else {
           failed++;
+          failedSymbols.push(batch[j]);
         }
+      }
+      // Small delay between concurrency batches to avoid rate limits
+      if (i + BAR_FETCH_CONCURRENCY < symbols.length) {
+        await sleep(200);
       }
     }
 
     addLog(`Bars loaded: ${loaded}/${symbols.length} symbols (${failed} failed)`, "system");
+    if (failedSymbols.length > 0) {
+      addLog(`Failed symbols: ${failedSymbols.slice(0, 20).join(", ")}${failedSymbols.length > 20 ? ` (+${failedSymbols.length - 20} more)` : ""}`, "error");
+    }
     return results;
   }
 
@@ -961,20 +1049,29 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         addLog(`Warning: ${lowBarCount} symbols have < 35 bars`, "system");
       }
 
-      // Always fetch SPY with 220 bars for regime filter
-      if (!symbols.includes("SPY")) {
+      // Always fetch SPY separately with retries — regime depends on it
+      addLog("Fetching SPY bars (dedicated, 3 retries)...", "system");
+      let spyLoaded = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const spyBars = await fetchBars("SPY", 220);
           priceHist.SPY = spyBars.map(b => b.c);
           addLog(`SPY bars loaded: ${priceHist.SPY.length} bars for regime filter`, "system");
+          spyLoaded = true;
+          break;
         } catch (err) {
-          addLog(`Failed to fetch SPY bars for regime filter: ${err.message}`, "error");
+          addLog(`SPY bars attempt ${attempt}/3 failed: ${err.message}`, "error");
+          if (attempt < 3) await sleep(2000);
         }
+      }
+      if (!spyLoaded) {
+        addLog("CRITICAL: SPY bars failed all 3 attempts — defaulting to BULLISH regime", "error");
       }
 
       // 6. Initial regime calculation
       const regimeResult = computeRegime(priceHist.SPY);
       regime = regimeResult.regime;
+      if (!spyLoaded) regime = "BULLISH"; // safe fallback if SPY data missing
       prevRegime = regime;
       addLog(`Initial regime: ${regime} (SPY SMA50: ${regimeResult.sma50?.toFixed(2) || "N/A"}, SMA200: ${regimeResult.sma200?.toFixed(2) || "N/A"})`, "system");
 
