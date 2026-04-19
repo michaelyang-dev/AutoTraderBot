@@ -1,8 +1,14 @@
 """
-ML Signal Server (v2 — with Fundamental Features)
-===================================================
-FastAPI service that loads the trained calibrated LightGBM model (80 features)
+ML Signal Server (v4 — Cross-Sectional Ranking)
+=================================================
+FastAPI service that loads the V4 calibrated LightGBM model (84 features)
 and serves trading signals to the JS trading bot.
+
+V4 changes from v2:
+  - Model trained on cross-sectional rank target (top 20% of S&P 500)
+  - Signal selection uses top-N ranking (top 5) instead of probability threshold
+  - 4 new cross-sectional rank features: vol_rank_20d, momentum_rank_60d,
+    rsi_rank, dist_sma50_rank
 
 Features computed at runtime:
   - 18 per-symbol technical features (returns, vol, RSI, MACD, BB, SMA, OBV)
@@ -11,7 +17,7 @@ Features computed at runtime:
   - 13 cross-asset features (SPY, TLT, VIXY returns + calendar)
   - 6 FRED macro features (yield curve, HY spread, DXY)
   - 4 cross-asset ratio features (HYG/LQD, CPER/GLD)
-  - 5 cross-sectional rank features (return/vol ranks across universe)
+  - 9 cross-sectional rank features (return/vol/momentum/RSI/SMA ranks)
   - 2 fundamental cross-sectional (PE/PS vs universe median)
   - 2 always-NaN (eps_revision_30d, revenue_revision_30d)
 
@@ -72,28 +78,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("signal_server")
 
-# ── Universe ──────────────────────────────────────────────────────────────────
-STOCK_SYMBOLS = [
-    "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
-    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
-    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
-]
+# ── Universe (loaded from sp500_universe module) ─────────────────────────────
+from sp500_universe import get_stock_symbols, get_full_universe, get_cross_asset, get_all_symbols
 
-UNIVERSE = [
-    "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
-    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
-    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
-    "XLE","XLF","XLV","XLI","XLK","XLY","XLP","XLU","XLRE","XLB","XLC",
-    "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
-    "GLD","SLV","USO","DBC",
-    "TLT","HYG","LQD","IEF","SHY",
-    "UUP","CPER",
-    "VIXY",
-]
-CROSS_ASSET = ["SPY", "VIXY", "TLT"]
-ALL_SYMBOLS = sorted(set(UNIVERSE + CROSS_ASSET))
+STOCK_SYMBOLS = get_stock_symbols()
+UNIVERSE = get_full_universe()
+CROSS_ASSET = get_cross_asset()
+ALL_SYMBOLS = get_all_symbols()
 
-# Feature columns in exact training order (80 features)
+# Feature columns in exact training order (84 features for V4)
 FEATURE_COLS = [
     "ret_5d","ret_10d","ret_20d","ret_60d","ret_120d",
     "vol_10d","vol_20d","vol_60d",
@@ -129,6 +122,8 @@ FEATURE_COLS = [
     "vol_rank_3m","vol_126d","vol_rank_6m",
     # Fundamental cross-sectional
     "pe_vs_universe_median","ps_vs_universe_median",
+    # V4 cross-sectional rank features
+    "vol_rank_20d","momentum_rank_60d","rsi_rank","dist_sma50_rank",
 ]
 
 FUNDAMENTAL_FEATURE_COLS = [
@@ -143,7 +138,8 @@ FUNDAMENTAL_FEATURE_COLS = [
 # Warmup: 252d for 52w high/low + SMA200 + buffer → 550 calendar days
 WARMUP_DAYS     = 550
 REFRESH_MINUTES = 15
-PROB_THRESHOLD  = 0.55
+PROB_THRESHOLD  = 0.55   # kept for backwards compat, but V4 uses top-N ranking
+TOP_N_PICKS     = 5      # V4: BUY signal for top 5 stocks by probability
 ET              = ZoneInfo("America/New_York")
 
 
@@ -227,7 +223,7 @@ def _load_all_earnings() -> dict:
 
 
 def _load_fundamental_parquets() -> dict:
-    """Load fundamentals_*.parquet files into a dict of DataFrames."""
+    """Load fundamentals_*.parquet files into a dict of DataFrames (float32 for memory)."""
     files = {
         "income": DATA_DIR / "fundamentals_income.parquet",
         "ratios": DATA_DIR / "fundamentals_ratios.parquet",
@@ -242,6 +238,9 @@ def _load_fundamental_parquets() -> dict:
                 df["date"] = pd.to_datetime(df["date"])
             if "filing_date" in df.columns:
                 df["filing_date"] = pd.to_datetime(df["filing_date"])
+            # Downcast numeric columns to float32 to save memory
+            float_cols = df.select_dtypes(include=["float64"]).columns
+            df[float_cols] = df[float_cols].astype(np.float32)
             data[key] = df
         else:
             log.warning("Missing %s — fundamental features will be NaN", path.name)
@@ -250,11 +249,13 @@ def _load_fundamental_parquets() -> dict:
 
 
 def _load_fred_macro() -> pd.DataFrame:
-    """Load FRED macro data from parquet."""
+    """Load FRED macro data from parquet (float32 for memory)."""
     macro_file = DATA_DIR / "macro_fred.parquet"
     if macro_file.exists():
         macro = pd.read_parquet(macro_file)
         macro.index = pd.to_datetime(macro.index).tz_localize(None)
+        float_cols = macro.select_dtypes(include=["float64"]).columns
+        macro[float_cols] = macro[float_cols].astype(np.float32)
         return macro
     log.warning("macro_fred.parquet not found — macro features will be NaN")
     return pd.DataFrame()
@@ -513,30 +514,46 @@ def _compute_fundamental_features_for_symbol(symbol: str, today: pd.Timestamp) -
 
 
 def _fetch_bars_batch() -> dict[str, pd.DataFrame]:
-    """Batch-download WARMUP_DAYS of history for all symbols."""
+    """Batch-download WARMUP_DAYS of history for all symbols.
+    Splits into chunks of 100 to avoid yfinance/Yahoo timeouts with 500+ symbols."""
     start = (datetime.today() - timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d")
     end   = datetime.today().strftime("%Y-%m-%d")
-
-    batch = yf.download(
-        ALL_SYMBOLS, start=start, end=end,
-        auto_adjust=True, progress=False, threads=True,
-    )
+    CHUNK_SIZE = 100
 
     raw = {}
-    for sym in ALL_SYMBOLS:
+    for i in range(0, len(ALL_SYMBOLS), CHUNK_SIZE):
+        chunk = ALL_SYMBOLS[i:i + CHUNK_SIZE]
+        log.info("  Downloading bars chunk %d/%d (%d symbols) ...",
+                 i // CHUNK_SIZE + 1,
+                 (len(ALL_SYMBOLS) + CHUNK_SIZE - 1) // CHUNK_SIZE,
+                 len(chunk))
         try:
-            if isinstance(batch.columns, pd.MultiIndex):
-                df = batch.xs(sym, axis=1, level=1).copy()
-            else:
-                df = batch.copy()
-            df.columns = df.columns.str.lower()
-            df = df[["open", "high", "low", "close", "volume"]].dropna(how="all")
-            df.index = pd.to_datetime(df.index).tz_localize(None)
-            df.index.name = "date"
-            raw[sym] = df.sort_index()
-        except Exception:
-            raw[sym] = pd.DataFrame()
+            batch = yf.download(
+                chunk, start=start, end=end,
+                auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as exc:
+            log.error("  yfinance chunk %d failed: %s", i // CHUNK_SIZE + 1, exc)
+            continue
 
+        for sym in chunk:
+            try:
+                if isinstance(batch.columns, pd.MultiIndex):
+                    df = batch.xs(sym, axis=1, level=1).copy()
+                else:
+                    df = batch.copy()
+                df.columns = df.columns.str.lower()
+                df = df[["open", "high", "low", "close", "volume"]].dropna(how="all")
+                df.index = pd.to_datetime(df.index).tz_localize(None)
+                df.index.name = "date"
+                # Use float32 to save memory with 500+ symbols
+                for c in ["open", "high", "low", "close"]:
+                    df[c] = df[c].astype(np.float32)
+                raw[sym] = df.sort_index()
+            except Exception:
+                raw[sym] = pd.DataFrame()
+
+    log.info("  Downloaded bars for %d/%d symbols", len([s for s in raw if len(raw[s]) > 0]), len(ALL_SYMBOLS))
     return raw
 
 
@@ -613,6 +630,9 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     sym_ret_252d = {}
     sym_vol_60d = {}
     sym_vol_126d = {}
+    sym_vol_20d = {}   # V4 new rank features
+    sym_rsi_14 = {}
+    sym_dist_sma50 = {}
     sym_pe = {}
     sym_ps = {}
 
@@ -649,13 +669,18 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         sym_features[sym] = {c: row.get(c, np.nan) for c in FEATURE_COLS
                              if c not in ("return_rank_3m","return_rank_6m","return_rank_12m",
                                          "vol_rank_3m","vol_rank_6m",
-                                         "pe_vs_universe_median","ps_vs_universe_median")}
+                                         "pe_vs_universe_median","ps_vs_universe_median",
+                                         "vol_rank_20d","momentum_rank_60d",
+                                         "rsi_rank","dist_sma50_rank")}
         # Store values for cross-sectional ranking
         sym_ret_60d[sym] = row.get("ret_60d", np.nan)
         sym_ret_126d[sym] = row.get("ret_126d", np.nan)
         sym_ret_252d[sym] = row.get("ret_252d", np.nan)
         sym_vol_60d[sym] = row.get("vol_60d", np.nan)
         sym_vol_126d[sym] = row.get("vol_126d", np.nan)
+        sym_vol_20d[sym] = row.get("vol_20d", np.nan)
+        sym_rsi_14[sym] = row.get("rsi_14", np.nan)
+        sym_dist_sma50[sym] = row.get("dist_sma50", np.nan)
         sym_pe[sym] = fund_feats.get("pe_ratio", np.nan)
         sym_ps[sym] = fund_feats.get("ps_ratio", np.nan)
 
@@ -681,6 +706,12 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     pe_median = pe_vals.median()
     ps_median = ps_vals.median()
 
+    # V4 new cross-sectional rank features
+    vrank_20d = _rank_pct(sym_vol_20d)
+    mom_rank_60d = _rank_pct(sym_ret_60d)  # same source as return_rank_3m but separate feature
+    rsi_rank = _rank_pct(sym_rsi_14)
+    dist_sma50_rank = _rank_pct(sym_dist_sma50)
+
     for sym in symbols:
         sym_features[sym]["return_rank_3m"] = rank_3m.get(sym, np.nan)
         sym_features[sym]["return_rank_6m"] = rank_6m.get(sym, np.nan)
@@ -696,6 +727,12 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         sym_features[sym]["ps_vs_universe_median"] = (
             np.clip(ps / ps_median - 1.0, -1, 10) if pd.notna(ps) and pd.notna(ps_median) and abs(ps_median) > 0 else np.nan
         )
+
+        # V4 rank features
+        sym_features[sym]["vol_rank_20d"] = vrank_20d.get(sym, np.nan)
+        sym_features[sym]["momentum_rank_60d"] = mom_rank_60d.get(sym, np.nan)
+        sym_features[sym]["rsi_rank"] = rsi_rank.get(sym, np.nan)
+        sym_features[sym]["dist_sma50_rank"] = dist_sma50_rank.get(sym, np.nan)
 
     # ── Build feature matrix and run model ─────────────────────────────────
     rows = []
@@ -713,16 +750,24 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     else:
         probs = state.model.predict(X)
 
+    # Build signals with rank and top-N classification
     signals = []
     for sym, prob in zip(sym_order, probs):
         signals.append({
             "symbol":      sym,
             "probability": round(float(prob), 4),
-            "signal":      "BUY" if prob >= PROB_THRESHOLD else "HOLD",
             "confidence":  round(float(prob), 4),
         })
 
+    # Sort by probability descending and assign rank
     signals.sort(key=lambda x: x["probability"], reverse=True)
+    for i, sig in enumerate(signals):
+        rank = i + 1
+        sig["rank"] = rank
+        sig["is_top_5"] = rank <= TOP_N_PICKS
+        # V4: BUY if in top 5 by probability (cross-sectional ranking)
+        sig["signal"] = "BUY" if sig["is_top_5"] else "HOLD"
+
     return signals
 
 
@@ -840,8 +885,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "ML Trading Signal Server",
-    description = "LightGBM signals for the auto-trader bot (v2 with fundamentals)",
-    version     = "2.0.0",
+    description = "LightGBM signals for the auto-trader bot (v4 cross-sectional ranking)",
+    version     = "4.0.0",
     lifespan    = lifespan,
 )
 
@@ -860,7 +905,7 @@ def health():
     return {
         "status":       "ok",
         "model_loaded": state.model is not None,
-        "model_version": "v2_fundamentals",
+        "model_version": "v4_cross_sectional_ranking",
         "feature_count": len(FEATURE_COLS),
         "last_update":  state.last_update.isoformat() if state.last_update else None,
         "is_stale":     state.is_stale,
@@ -879,6 +924,7 @@ def get_signals():
         "is_stale":    state.is_stale,
         "count":       len(state.cache),
         "buy_count":   sum(1 for s in state.cache if s["signal"] == "BUY"),
+        "top_5_count": sum(1 for s in state.cache if s.get("is_top_5")),
     }
 
 

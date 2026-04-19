@@ -6,6 +6,8 @@
 // ══════════════════════════════════════════════════════════════════════
 
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const notify = require("./notifications");
 
 // ══════════════════════════════════════════
@@ -90,46 +92,45 @@ const NEVER_BUY = new Set([
   "YANG","YINN",
 ]);
 
-const UNIVERSE = [
-  // Individual stocks (32)
-  { sym: "AAPL", base: 189, sector: "Tech" }, { sym: "GOOGL", base: 141, sector: "Tech" },
-  { sym: "MSFT", base: 378, sector: "Tech" }, { sym: "AMZN", base: 178, sector: "Consumer" },
-  { sym: "TSLA", base: 248, sector: "Auto" }, { sym: "NVDA", base: 880, sector: "Semis" },
-  { sym: "META", base: 505, sector: "Tech" }, { sym: "NFLX", base: 628, sector: "Media" },
-  { sym: "AMD", base: 164, sector: "Semis" }, { sym: "JPM", base: 196, sector: "Finance" },
-  { sym: "V", base: 278, sector: "Finance" }, { sym: "UNH", base: 527, sector: "Health" },
-  { sym: "CRM", base: 272, sector: "Tech" }, { sym: "ORCL", base: 127, sector: "Tech" },
-  { sym: "ADBE", base: 560, sector: "Tech" }, { sym: "CSCO", base: 49, sector: "Tech" },
-  { sym: "QCOM", base: 155, sector: "Semis" }, { sym: "COST", base: 680, sector: "Staples" },
-  { sym: "WMT", base: 165, sector: "Staples" }, { sym: "HD", base: 345, sector: "Consumer" },
-  { sym: "LOW", base: 220, sector: "Consumer" }, { sym: "LLY", base: 600, sector: "Health" },
-  { sym: "JNJ", base: 156, sector: "Health" }, { sym: "ABBV", base: 155, sector: "Health" },
-  { sym: "BAC", base: 34, sector: "Finance" }, { sym: "GS", base: 385, sector: "Finance" },
-  { sym: "MS", base: 87, sector: "Finance" }, { sym: "CVX", base: 150, sector: "Energy" },
-  { sym: "XOM", base: 104, sector: "Energy" }, { sym: "CAT", base: 290, sector: "Industrial" },
-  { sym: "DE", base: 390, sector: "Industrial" }, { sym: "BA", base: 210, sector: "Industrial" },
-  // Sector ETFs (11)
-  { sym: "XLE", base: 93, sector: "Energy" }, { sym: "XLF", base: 48, sector: "Finance" },
-  { sym: "XLV", base: 145, sector: "Health" }, { sym: "XLI", base: 130, sector: "Industrial" },
-  { sym: "XLK", base: 218, sector: "Tech" }, { sym: "XLY", base: 195, sector: "Consumer" },
-  { sym: "XLP", base: 79, sector: "Staples" }, { sym: "XLU", base: 72, sector: "Utilities" },
-  { sym: "XLRE", base: 39, sector: "REIT" }, { sym: "XLB", base: 85, sector: "Materials" },
-  { sym: "XLC", base: 92, sector: "Media" },
-  // International ETFs (9)
-  { sym: "EWZ", base: 29, sector: "International" }, { sym: "EWJ", base: 71, sector: "International" },
-  { sym: "FXI", base: 29, sector: "International" }, { sym: "INDA", base: 50, sector: "International" },
-  { sym: "EFA", base: 79, sector: "International" }, { sym: "EEM", base: 43, sector: "International" },
-  { sym: "VGK", base: 62, sector: "International" }, { sym: "VWO", base: 42, sector: "International" },
-  { sym: "IEFA", base: 72, sector: "International" },
-  // Commodities (4)
-  { sym: "GLD", base: 285, sector: "Commodity" }, { sym: "SLV", base: 31, sector: "Commodity" },
-  { sym: "USO", base: 70, sector: "Commodity" }, { sym: "DBC", base: 22, sector: "Commodity" },
-  // Bonds (3)
-  { sym: "TLT", base: 85, sector: "Bond" }, { sym: "HYG", base: 77, sector: "Bond" },
-  { sym: "LQD", base: 104, sector: "Bond" },
-  // Volatility (1)
-  { sym: "VIXY", base: 14, sector: "Volatility" },
+// ── Dynamic universe loading (S&P 500 + ETFs, ~510 symbols) ──
+// Loaded from ml_service/sp500_universe.py's cached JSON, with fallback
+const ETF_SYMBOLS = [
+  "SPY",
+  "XLK","XLF","XLV","XLE","XLI","XLP","XLY","XLB","XLU","XLRE","XLC",
+  "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
+  "GLD","SLV","USO","DBC","CPER",
+  "TLT","IEF","SHY","HYG","LQD",
+  "VIXY","UUP",
 ];
+
+function loadUniverseSymbols() {
+  // Try loading S&P 500 list from the Python-generated cache
+  const cacheFile = path.join(__dirname, "..", "ml_service", "data", "sp500_constituents.json");
+  let sp500 = [];
+  try {
+    const raw = fs.readFileSync(cacheFile, "utf8");
+    sp500 = JSON.parse(raw);
+    if (!Array.isArray(sp500) || sp500.length < 400) sp500 = [];
+  } catch (e) { /* fall through to fallback */ }
+
+  if (sp500.length === 0) {
+    // Minimal fallback — original 32 stocks
+    sp500 = [
+      "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
+      "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
+      "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
+    ];
+  }
+
+  return [...new Set([...sp500, ...ETF_SYMBOLS])].sort();
+}
+
+// UNIVERSE_SYMBOLS: flat array of ticker strings (~510)
+let UNIVERSE_SYMBOLS = loadUniverseSymbols();
+
+// Batch size for Alpaca API calls (snapshots support up to 200, bars individually)
+const SNAPSHOT_BATCH_SIZE = 100;
+const BAR_FETCH_CONCURRENCY = 20;  // parallel bar fetches at a time
 
 const CONSENSUS_THRESHOLDS = { STRONG_BUY: 2, BUY: 1, SELL: -1, STRONG_SELL: -2 };
 const REGIME_RECOVERY_DAYS = 3;
@@ -139,6 +140,12 @@ const SPY_IDLE_INVEST_PCT = 0.85;
 const CIRCUIT_BREAKER_PCT = 0.02;
 const PRICE_POLL_MS = 15000;
 const TRADE_CYCLE_MS = 60000;
+
+// ── Volatility Targeting ──
+const VOL_TARGET = 0.15;    // 15% annualized target
+const MAX_LEVERAGE = 1.5;
+const MIN_LEVERAGE = 0.3;
+const VOL_LOOKBACK = 20;    // trading days for realized vol
 
 const SECTOR_MAP = {
   AAPL: "Tech", MSFT: "Tech", GOOGL: "Tech", GOOG: "Tech", META: "Tech",
@@ -168,11 +175,43 @@ const SECTOR_MAP = {
   UPS: "Industrial", FDX: "Industrial", CSX: "Industrial",
   AMT: "REIT", PLD: "REIT", EQIX: "REIT", SPG: "REIT",
   NEE: "Utilities", SO: "Utilities", DUK: "Utilities",
+  // ETFs
+  XLE: "Energy", XLF: "Finance", XLV: "Health", XLI: "Industrial",
+  XLK: "Tech", XLY: "Consumer", XLP: "Staples", XLU: "Utilities",
+  XLRE: "REIT", XLB: "Materials", XLC: "Media",
+  EWZ: "International", EWJ: "International", FXI: "International",
+  INDA: "International", EFA: "International", EEM: "International",
+  VGK: "International", VWO: "International", IEFA: "International",
+  GLD: "Commodity", SLV: "Commodity", USO: "Commodity", DBC: "Commodity", CPER: "Commodity",
+  TLT: "Bond", IEF: "Bond", SHY: "Bond", HYG: "Bond", LQD: "Bond",
+  VIXY: "Volatility", UUP: "Commodity",
+  // Additional S&P 500 coverage
+  CSCO: "Tech", NFLX: "Media", COST: "Staples", WMT: "Staples",
+  INTU: "Tech", SNPS: "Tech", CDNS: "Tech", KLAC: "Semis", LRCX: "Semis", AMAT: "Semis",
+  ACN: "Tech", IBM: "Tech", TXN: "Semis", ADI: "Semis", MCHP: "Semis", ON: "Semis",
+  ADP: "Tech", FISV: "Tech", FIS: "Tech", GPN: "Tech", ADSK: "Tech",
+  PG: "Staples", KO: "Staples", PEP: "Staples", PM: "Staples", MO: "Staples",
+  CL: "Staples", KHC: "Staples", GIS: "Staples", SJM: "Staples", K: "Staples",
+  MDLZ: "Staples", HSY: "Staples", HRL: "Staples", CPB: "Staples", CAG: "Staples",
+  LIN: "Materials", APD: "Materials", SHW: "Materials", ECL: "Materials", PPG: "Materials",
+  DD: "Materials", NEM: "Materials", FCX: "Materials", NUE: "Materials",
+  D: "Utilities", AEP: "Utilities", EXC: "Utilities", SRE: "Utilities", ES: "Utilities",
+  WEC: "Utilities", ED: "Utilities", DTE: "Utilities", AEE: "Utilities", CMS: "Utilities",
+  BRK: "Finance", "BRK.B": "Finance", MMC: "Finance", AON: "Finance", TRV: "Finance",
+  CB: "Finance", PNC: "Finance", TFC: "Finance", MTB: "Finance", FITB: "Finance",
+  CFG: "Finance", KEY: "Finance", RF: "Finance", ZION: "Finance",
+  SPGI: "Finance", ICE: "Finance", CME: "Finance", MSCI: "Finance", MCO: "Finance",
+  UNP: "Industrial", CSX: "Industrial", NSC: "Industrial", WAB: "Industrial",
+  ITW: "Industrial", EMR: "Industrial", ROK: "Industrial", ETN: "Industrial",
+  PH: "Industrial", IR: "Industrial", DOV: "Industrial", GWW: "Industrial",
+  AAL: "Industrial", DAL: "Industrial", UAL: "Industrial", LUV: "Industrial",
+  VRTX: "Health", REGN: "Health", IDXX: "Health", IQV: "Health", ZTS: "Health",
+  SYK: "Health", BDX: "Health", BSX: "Health", EW: "Health", BAX: "Health",
+  HCA: "Health", CI: "Health", CNC: "Health", MOH: "Health",
+  AVGO: "Semis",
 };
 
 function getSector(sym) {
-  const u = UNIVERSE.find(x => x.sym === sym);
-  if (u) return u.sector;
   return SECTOR_MAP[sym] || "Other";
 }
 
@@ -378,7 +417,7 @@ function getSignals(prices) {
  * @returns {{ signals: Array, rankings: Object }} momentum opportunities and rankings
  */
 function computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap) {
-  const symbols = UNIVERSE.map(s => s.sym).filter(s => !NEVER_BUY.has(s) && s !== "SPY");
+  const symbols = UNIVERSE_SYMBOLS.filter(s => !NEVER_BUY.has(s) && s !== "SPY");
   const rankings = {};
   const returns63 = {};
 
@@ -469,7 +508,7 @@ function computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap) {
  * @returns {Array} mean reversion buy signals
  */
 function computeMeanReversionSignals(priceHist, volHist, heldSymbols, earningsMap) {
-  const symbols = UNIVERSE.map(s => s.sym).filter(s => !NEVER_BUY.has(s) && s !== "SPY");
+  const symbols = UNIVERSE_SYMBOLS.filter(s => !NEVER_BUY.has(s) && s !== "SPY");
   const signals = [];
 
   for (const sym of symbols) {
@@ -690,16 +729,52 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   }
 
   async function fetchSnapshots(symbols) {
-    const snaps = await alpaca.getSnapshots(symbols);
+    // Batch into chunks of SNAPSHOT_BATCH_SIZE to avoid API limits
     const result = {};
-    for (const snap of snaps) {
-      if (!snap.symbol) continue;
-      result[snap.symbol] = {
-        price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
-        volume: parseInt(snap.DailyBar?.Volume || 0),
-      };
+    for (let i = 0; i < symbols.length; i += SNAPSHOT_BATCH_SIZE) {
+      const batch = symbols.slice(i, i + SNAPSHOT_BATCH_SIZE);
+      try {
+        const snaps = await alpaca.getSnapshots(batch);
+        for (const snap of snaps) {
+          if (!snap.symbol) continue;
+          result[snap.symbol] = {
+            price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
+            volume: parseInt(snap.DailyBar?.Volume || 0),
+          };
+        }
+      } catch (err) {
+        addLog(`Snapshot batch ${Math.floor(i / SNAPSHOT_BATCH_SIZE) + 1} failed: ${err.message}`, "error");
+      }
     }
     return result;
+  }
+
+  async function fetchBarsParallel(symbols, limit = 250) {
+    // Fetch bars for many symbols with controlled concurrency
+    const results = {};
+    let loaded = 0;
+    let failed = 0;
+
+    for (let i = 0; i < symbols.length; i += BAR_FETCH_CONCURRENCY) {
+      const batch = symbols.slice(i, i + BAR_FETCH_CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map(async (sym) => {
+          const bars = await fetchBars(sym, limit);
+          return { sym, closes: bars.map(b => b.c), volumes: bars.map(b => b.v) };
+        })
+      );
+      for (const r of settled) {
+        if (r.status === "fulfilled") {
+          results[r.value.sym] = r.value;
+          loaded++;
+        } else {
+          failed++;
+        }
+      }
+    }
+
+    addLog(`Bars loaded: ${loaded}/${symbols.length} symbols (${failed} failed)`, "system");
+    return results;
   }
 
   // ── Trade journal ──
@@ -782,6 +857,11 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   let circuitBreaker = { date: null, morningValue: null, tripped: false };
   let cycleNumber = 0;
   let tick = 0;
+
+  // ── Volatility targeting state ──
+  let dailyReturns = [];     // store daily portfolio returns for vol calculation
+  let currentVolScale = 1.0; // current position size multiplier
+  let previousDayValue = null; // previous day's portfolio value for daily return calc
   const activityLog = [];
   const portfolioHist = [];
   let tradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
@@ -864,33 +944,22 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       addLog(`Market is ${marketOpen ? "OPEN" : "CLOSED"}. Next ${marketOpen ? "close" : "open"}: ${new Date(marketOpen ? clock.next_close : clock.next_open).toLocaleString()}`, "system");
 
       // 5. Load historical bars for all UNIVERSE symbols + SPY
-      addLog("Fetching historical bars for all universe symbols...", "system");
-      const symbols = UNIVERSE.map(s => s.sym);
+      addLog(`Fetching historical bars for ${UNIVERSE_SYMBOLS.length} universe symbols (concurrency=${BAR_FETCH_CONCURRENCY})...`, "system");
+      const symbols = UNIVERSE_SYMBOLS;
 
-      const results = await Promise.allSettled(
-        symbols.map(async (sym) => {
-          // Fetch 250 bars: need 200 for SMA200 filter + 63 for momentum lookback
-          const bars = await fetchBars(sym, 250);
-          return { sym, closes: bars.map(b => b.c), volumes: bars.map(b => b.v) };
-        })
-      );
-
-      let loadedCount = 0;
-      results.forEach((result) => {
-        if (result.status === "fulfilled") {
-          const { sym, closes, volumes } = result.value;
-          priceHist[sym] = closes;
-          volHist[sym] = volumes;
-          loadedCount++;
-          if (closes.length < 35) {
-            addLog(`Warning: ${sym} only has ${closes.length} bars (need 35 for indicators)`, "system");
-          }
-        } else {
-          addLog(`Failed to fetch bars: ${result.reason}`, "error");
+      const barResults = await fetchBarsParallel(symbols, 250);
+      let lowBarCount = 0;
+      for (const sym of symbols) {
+        const r = barResults[sym];
+        if (r) {
+          priceHist[sym] = r.closes;
+          volHist[sym] = r.volumes;
+          if (r.closes.length < 35) lowBarCount++;
         }
-      });
-
-      addLog(`Price history loaded for ${loadedCount}/${symbols.length} symbols`, "system");
+      }
+      if (lowBarCount > 0) {
+        addLog(`Warning: ${lowBarCount} symbols have < 35 bars`, "system");
+      }
 
       // Always fetch SPY with 220 bars for regime filter
       if (!symbols.includes("SPY")) {
@@ -927,7 +996,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   async function pollPrices() {
     try {
       tick++;
-      const symbols = UNIVERSE.map(s => s.sym);
+      const symbols = UNIVERSE_SYMBOLS;
       const snapshotSymbols = symbols.includes("SPY") ? symbols : [...symbols, "SPY"];
       const snapshots = await fetchSnapshots(snapshotSymbols);
 
@@ -1153,12 +1222,40 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         notify.send(`🚨 CIRCUIT BREAKER — Portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}). No new buys until tomorrow.`, { deduplicate: true, immediate: true });
       }
 
+      // ── Volatility targeting: track daily returns and update scale ──
+      if (previousDayValue !== null && previousDayValue > 0) {
+        const dailyRet = (cyclePortfolioValue - previousDayValue) / previousDayValue;
+        dailyReturns.push(dailyRet);
+        if (dailyReturns.length > 30) dailyReturns.splice(0, dailyReturns.length - 30);
+      }
+      previousDayValue = cyclePortfolioValue;
+
+      if (dailyReturns.length >= VOL_LOOKBACK) {
+        const last20 = dailyReturns.slice(-VOL_LOOKBACK);
+        const mean = last20.reduce((a, b) => a + b, 0) / last20.length;
+        const variance = last20.reduce((s, r) => s + (r - mean) ** 2, 0) / last20.length;
+        const dailyVol = Math.sqrt(variance);
+        const annualVol = dailyVol * Math.sqrt(252);
+        if (annualVol > 0) {
+          let scale = VOL_TARGET / annualVol;
+          scale = Math.max(MIN_LEVERAGE, Math.min(scale, MAX_LEVERAGE));
+          currentVolScale = scale;
+        } else {
+          currentVolScale = 1.0;
+        }
+        addLog(`[vol-targeting] Vol: ${(annualVol * 100).toFixed(2)}%, Scale: ${currentVolScale.toFixed(3)}`, "system");
+      } else {
+        currentVolScale = 1.0;
+      }
+
       // Fetch upcoming earnings (cached)
-      const allSymbols = [...new Set([...UNIVERSE.map(u => u.sym), ...currentPositions.map(p => p.symbol)])];
+      const allSymbols = [...new Set([...UNIVERSE_SYMBOLS, ...currentPositions.map(p => p.symbol)])];
       const earningsMap = await fetchEarnings(allSymbols);
       const earningsSymbols = Object.keys(earningsMap);
       if (earningsSymbols.length > 0) {
-        addLog(`Earnings next 7 days: ${earningsSymbols.map(s => `${s} (${earningsMap[s]})`).join(", ")}`, "system");
+        const earningsPreview = earningsSymbols.slice(0, 15).map(s => `${s} (${earningsMap[s]})`).join(", ");
+        const suffix = earningsSymbols.length > 15 ? ` ... +${earningsSymbols.length - 15} more` : "";
+        addLog(`Earnings next 7 days (${earningsSymbols.length}): ${earningsPreview}${suffix}`, "system");
       }
 
       // ── STEP 1: Trailing/Fixed Stop-loss & Take-profit on existing positions ──
@@ -1480,7 +1577,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       if (mlActive) {
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
-        addLog(`ML active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} above 55% threshold`, "system");
+        addLog(`ML V4 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
         addLog("ML server offline -- using consensus engine (fallback mode)", "system");
       }
@@ -1489,9 +1586,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       const activePositionCount = currentPositions.filter(p => p.symbol !== "SPY").length;
       const opportunities = [];
 
-      for (const { sym } of UNIVERSE) {
+      for (const sym of UNIVERSE_SYMBOLS) {
         const prices = priceHist[sym];
-        const isMLBuy = mlActive && mlMap[sym]?.signal === "BUY";
+        const isMLBuy = mlActive && mlMap[sym]?.is_top_5 === true;
 
         if (!prices || prices.length < 35) {
           if (isMLBuy) {
@@ -1590,25 +1687,25 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const earningsBlocked = earningsDays !== null && earningsDays >= 0 && earningsDays <= 3;
 
         if (mlActive) {
-          // ML primary decision
+          // ML V4: top-N cross-sectional ranking (BUY if is_top_5)
           const mlSig = mlMap[sym];
-          if (mlSig && mlSig.signal === "BUY") {
-            if (regime === "CAUTIOUS" && mlSig.probability < 0.65) {
-              addLog(`EVAL ${sym}: conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: CAUTIOUS regime requires >=65% confidence`, "system");
+          if (mlSig && mlSig.is_top_5) {
+            if (regime === "CAUTIOUS" && mlSig.rank > 2) {
+              addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: CAUTIOUS regime, only top 2 picks allowed`, "system");
             } else {
-              addLog(`EVAL ${sym}: conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
+              addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
               opportunities.push({
                 sym,
                 score: mlSig.probability,
                 price: prices[prices.length - 1],
-                consensus: `ML BUY (${(mlSig.probability * 100).toFixed(0)}%)`,
+                consensus: `ML V4 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
                 rsiVal: analysis.indicators.rsi,
                 mlConf: mlSig.probability,
               });
             }
           } else {
-            if (mlSig && mlSig.probability >= 0.45) {
-              addLog(`ML SKIP ${sym} -- confidence ${mlSig.probability.toFixed(2)} below threshold`, "system");
+            if (mlSig && mlSig.rank <= 10) {
+              addLog(`ML SKIP ${sym} -- rank #${mlSig.rank}, not in top 5`, "system");
             }
           }
         } else {
@@ -1778,7 +1875,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
         }
 
-        // Position sizing — strategy-specific
+        // Position sizing — strategy-specific, with vol targeting
         let dynPositionPct;
         if (opp.strategy === "momentum" || opp.strategy === "mean_reversion") {
           // Momentum/MR: fixed 12% or 8% based on ATR (already computed in signal)
@@ -1798,7 +1895,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           );
         }
 
-        const maxAlloc = cyclePortfolioValue * dynPositionPct;
+        // Apply volatility targeting scale to ALL strategies
+        const maxAlloc = cyclePortfolioValue * dynPositionPct * currentVolScale;
         const allocCash = Math.min(maxAlloc, cycleCash * RISK.MAX_CASH_DEPLOY_PCT);
         if (allocCash < opp.price) {
           addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
@@ -1942,7 +2040,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           const trendPortPct = cyclePortfolioValue > 0 ? trendPosValue / cyclePortfolioValue : 0;
 
           if (trendPortPct < 0.30) {
-            for (const { sym } of UNIVERSE) {
+            for (const sym of UNIVERSE_SYMBOLS) {
               if (NEVER_BUY.has(sym)) continue;
               if (trendPositions[sym] || heldSymbols.has(sym)) continue;
               const prices = priceHist[sym];
@@ -2194,6 +2292,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       mlSignals,
       mlStatus,
       idleSpyShares,
+      volTargeting: { scale: currentVolScale, dailyReturnsCount: dailyReturns.length },
       circuitBreaker: { ...circuitBreaker },
       // Strategy breakdown
       positionStrategy: { ...positionStrategy },

@@ -42,11 +42,8 @@ OUTPUT_FILE = DATA_DIR / "fundamentals.parquet"
 CACHE_TTL = 3  # days before re-fetching
 
 # Individual stocks with fundamental data (ETFs excluded)
-STOCK_SYMBOLS = [
-    "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
-    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
-    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
-]
+from sp500_universe import get_stock_symbols
+STOCK_SYMBOLS = get_stock_symbols()
 
 # SSL context (Mac Python sometimes lacks certs)
 _SSL_CTX = ssl.create_default_context()
@@ -289,12 +286,15 @@ def main():
     all_earnings = []
     all_insiders = []
 
+    cached_count = 0
+    api_count = 0
+    failed_symbols = []
+
     for i, sym in enumerate(STOCK_SYMBOLS, 1):
         cache_file = _cache_path(sym, "income-statement")
         source = "cache" if (cache_file.exists() and
                              (datetime.today() - datetime.fromtimestamp(
                                  cache_file.stat().st_mtime)).days < CACHE_TTL) else "API"
-        print(f"  [{i:2d}/{len(STOCK_SYMBOLS)}] {sym:<6} ({source}) ...", end=" ", flush=True)
 
         raw = fetch_symbol_data(sym)
 
@@ -305,30 +305,28 @@ def main():
         ear = build_earnings_df(raw["earnings"], sym)
         ins = build_insiders_df(raw["insiders"], sym)
 
-        parts = []
-        if len(inc) > 0:
-            all_income.append(inc)
-            parts.append(f"{len(inc)} inc")
-        if len(rat) > 0:
-            all_ratios.append(rat)
-            parts.append(f"{len(rat)} rat")
-        if len(met) > 0:
-            all_metrics.append(met)
-            parts.append(f"{len(met)} met")
-        if len(est) > 0:
-            all_estimates.append(est)
-            parts.append(f"{len(est)} est")
-        if len(ear) > 0:
-            all_earnings.append(ear)
-            parts.append(f"{len(ear)} ear")
-        if len(ins) > 0:
-            all_insiders.append(ins)
-            parts.append(f"{len(ins)} ins")
+        if len(inc) > 0: all_income.append(inc)
+        if len(rat) > 0: all_ratios.append(rat)
+        if len(met) > 0: all_metrics.append(met)
+        if len(est) > 0: all_estimates.append(est)
+        if len(ear) > 0: all_earnings.append(ear)
+        if len(ins) > 0: all_insiders.append(ins)
 
-        print(" | ".join(parts) if parts else "no data")
+        if len(inc) == 0 and len(rat) == 0:
+            failed_symbols.append(sym)
 
-        if source == "API":
+        if source == "cache":
+            cached_count += 1
+        else:
+            api_count += 1
             time.sleep(0.5)  # rate limit buffer
+
+        # Progress every 50 symbols
+        if i % 50 == 0 or i == len(STOCK_SYMBOLS):
+            print(f"  [{i}/{len(STOCK_SYMBOLS)}] processed ({cached_count} cached, {api_count} API, {len(failed_symbols)} no data)")
+
+    if failed_symbols and len(failed_symbols) <= 20:
+        print(f"  Symbols with no data: {', '.join(failed_symbols)}")
 
     # Combine all data
     print(f"\n{'─'*70}")
@@ -382,22 +380,13 @@ def main():
             print(f"    EPS diluted: ${latest['eps_diluted']:.2f}")
             print(f"    Filing date: {latest['filing_date'].date() if pd.notna(latest['filing_date']) else 'N/A'}")
 
-        # Coverage per symbol
+        # Coverage summary
+        syms_with_data = inc["symbol"].nunique()
+        avg_quarters = inc.groupby("symbol").size().mean()
         print(f"\n  Income statement coverage:")
-        print(f"  {'Symbol':<8} {'Quarters':>8} {'Earliest':>12} {'Latest':>12} {'FilingDate':>12}")
-        print(f"  {'─'*8} {'─'*8} {'─'*12} {'─'*12} {'─'*12}")
-        for sym in STOCK_SYMBOLS:
-            sym_data = inc[inc["symbol"] == sym]
-            if len(sym_data) == 0:
-                print(f"  {sym:<8} {'—':>8}")
-                continue
-            earliest = sym_data["date"].min()
-            latest = sym_data["date"].max()
-            fd = sym_data["filing_date"].dropna()
-            fd_latest = fd.max() if len(fd) > 0 else pd.NaT
-            fd_str = str(fd_latest.date()) if pd.notna(fd_latest) else "N/A"
-            print(f"  {sym:<8} {len(sym_data):>8} {str(earliest.date()):>12} {str(latest.date()):>12} "
-                  f"{fd_str:>12}")
+        print(f"    Symbols with data: {syms_with_data}/{len(STOCK_SYMBOLS)}")
+        print(f"    Avg quarters per symbol: {avg_quarters:.0f}")
+        print(f"    Date range: {inc['date'].min().date()} → {inc['date'].max().date()}")
 
     if "ratios" in combined:
         rat = combined["ratios"]

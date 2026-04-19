@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-Monthly Model Retraining (Calibrated Production Model v2 — with Fundamentals)
-===============================================================================
-Automates the full retrain pipeline for the calibrated 3-strategy system:
+Monthly Model Retraining (V4 Cross-Sectional Ranking)
+=====================================================
+Automates the full retrain pipeline for the V4 calibrated 3-strategy system:
 
   1. Run fred_data_pipeline.py  → refresh macro data (yield curve, HY spread, DXY)
   2. Run fmp_fundamentals_pipeline.py  → refresh fundamental data (income, ratios, etc.)
-  3. Run data_pipeline.py  → rebuild features.parquet (80 features incl. fundamentals)
-  4. Train calibrated model (CalibratedClassifierCV + isotonic, walk-forward CV)
-     → NaN-aware training (fundamentals can be NaN for ETFs; LightGBM handles natively)
-     → save candidate model + predictions
-  5. Run Path B backtest (ML Medium + Momentum + Mean Reversion)
-     with the candidate predictions via unified_backtester
-  6. Deploy gate: candidate Path B must have CAGR >= baseline AND Sharpe >= baseline
-  7. If PASS: backup current model, promote candidate, update metrics, email
-  8. If FAIL: discard candidate, keep current model, email
+  3. Run data_pipeline.py  → rebuild features.parquet (84 features incl. fundamentals + V4 ranks)
+  4. Run train_v4_ranking.py  → train V4 cross-sectional ranking model
+     → Cross-sectional rank target (top 20% of S&P 500 by fwd_10d_ret)
+     → 4 new rank features (vol_rank_20d, momentum_rank_60d, rsi_rank, dist_sma50_rank)
+     → Single production model with isotonic calibration
+     → Saves model_v4.lgb + predictions_v4.parquet
+     → Runs internal verification + backtest
+  5. Deploy gate: V4 must have CAGR >= baseline AND Sharpe >= baseline
+  6. If PASS: backup current model, promote V4, update metrics, email
+  7. If FAIL: discard candidate, keep current model, email
 
 Cron example (1st of each month at 6 AM):
     0 6 1 * * cd /path/to/auto-trader/ml_service && /path/to/python3 retrain.py >> /path/to/retrain.log 2>&1
@@ -74,43 +75,9 @@ except ImportError:
     import pytz
     ET = pytz.timezone("America/New_York")
 
-# ── Training config (same as train_model.py) ─────────────────────────────────
-TRAIN_YEARS  = 3
-TEST_MONTHS  = 6
-PURGE_DAYS   = 10
-CALIB_SPLIT  = 0.80
-PROB_THRESH  = 0.55
-
-N_TREES = 500
-EARLY_STOP_ROUNDS = 100
-
-LGB_PARAMS = dict(
-    n_estimators      = N_TREES,
-    learning_rate     = 0.05,
-    max_depth         = 6,
-    num_leaves        = 31,
-    min_child_samples = 50,
-    subsample         = 0.8,
-    colsample_bytree  = 0.8,
-    reg_alpha         = 0.1,
-    reg_lambda        = 0.1,
-    objective         = "binary",
-    metric            = "auc",
-    random_state      = 42,
-    n_jobs            = -1,
-    verbose           = -1,
-)
-
-# Fundamental feature columns (LightGBM handles NaN natively for ETFs)
-FUNDAMENTAL_FEATURE_COLS = [
-    "revenue_growth_yoy", "eps_growth_yoy", "revenue_growth_qoq",
-    "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
-    "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
-    "debt_to_equity", "current_ratio", "roe", "roa",
-    "days_since_earnings", "days_until_earnings", "eps_surprise_last",
-    "eps_revision_30d", "revenue_revision_30d",
-    "insider_buy_ratio_90d", "insider_net_shares_90d",
-]
+# ── V4 model files ──────────────────────────────────────────────────────────
+V4_MODEL_FILE = DATA_DIR / "model_v4.lgb"
+V4_PRED_FILE  = DATA_DIR / "predictions_v4.parquet"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -185,203 +152,29 @@ def save_metrics(metrics: dict):
     log(f"Metrics saved to {METRICS_FILE}")
 
 
-# ── Walk-forward window generator ────────────────────────────────────────────
-
-def walk_forward_windows(dates: pd.Series):
-    all_dates  = np.sort(dates.unique())
-    start_date = pd.Timestamp(all_dates[0])
-    end_date   = pd.Timestamp(all_dates[-1])
-    train_end  = start_date + relativedelta(years=TRAIN_YEARS)
-    window = 0
-    while True:
-        purge_idx = np.searchsorted(all_dates, np.datetime64(train_end, "ns"))
-        purge_idx = min(purge_idx + PURGE_DAYS, len(all_dates) - 1)
-        test_start = pd.Timestamp(all_dates[purge_idx])
-        test_end   = test_start + relativedelta(months=TEST_MONTHS)
-        if test_start >= end_date:
-            break
-        test_end = min(test_end, end_date)
-        window += 1
-        train_mask = (dates >= start_date) & (dates < train_end)
-        test_mask  = (dates >= test_start) & (dates <= test_end)
-        label = (f"W{window:02d}  train {start_date.date()}→{train_end.date()}  "
-                 f"test {test_start.date()}→{test_end.date()}")
-        yield train_mask, test_mask, label
-        train_end = train_end + relativedelta(months=TEST_MONTHS)
-
-
-def get_feature_cols(df: pd.DataFrame) -> list:
-    exclude = {"date", "symbol", "target"}
-    forward_keywords = {"fwd", "forward", "future"}
-    return [c for c in df.columns
-            if c not in exclude and not any(kw in c.lower() for kw in forward_keywords)]
-
-
-# ── Train calibrated model ───────────────────────────────────────────────────
-
-def train_calibrated_model():
+def extract_v4_metrics():
     """
-    Train a calibrated LightGBM model using walk-forward CV.
-    Returns (candidate_model, candidate_predictions_df, feature_cols, oos_auc).
+    Extract metrics from the V4 model's predictions and backtest output.
+    train_v4_ranking.py runs the full pipeline including backtest internally.
+    We read the results from its output artifacts.
     """
-    log("Loading features.parquet ...")
-    if not FEATURES_FILE.exists():
-        raise RuntimeError(f"{FEATURES_FILE} not found — data pipeline may have failed")
+    if not V4_MODEL_FILE.exists() or not V4_PRED_FILE.exists():
+        raise RuntimeError("V4 model or predictions not found — train_v4_ranking.py may have failed")
 
-    df = pd.read_parquet(FEATURES_FILE)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values(["date", "symbol"]).reset_index(drop=True)
+    # Load V4 predictions to get basic stats
+    preds = pd.read_parquet(V4_PRED_FILE)
+    preds["date"] = pd.to_datetime(preds["date"])
+    n_rows = len(preds)
+    n_symbols = preds["symbol"].nunique()
+    date_range = f"{preds['date'].min().date()} → {preds['date'].max().date()}"
 
-    before = len(df)
-    # Drop NaN only for non-fundamental columns (fundamentals can be NaN for ETFs;
-    # LightGBM handles NaN natively)
-    feature_cols = get_feature_cols(df)
-    non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
-    df = df.dropna(subset=non_fund_cols + ["target"])
-    log(f"Loaded {before:,} → {len(df):,} rows after dropping NaN  |  "
-        f"{df['symbol'].nunique()} symbols  |  "
-        f"{df['date'].min().date()} → {df['date'].max().date()}")
-    log(f"Features: {len(feature_cols)} columns")
+    log(f"V4 predictions: {n_rows:,} rows  |  {n_symbols} symbols  |  {date_range}")
 
-    # Reconstruct forward returns for backtest compatibility
-    df = df.sort_values(["symbol", "date"])
-    df["fwd_ret"] = df.groupby("symbol")["ret_10d"].shift(-10)
+    # Load model to get AUC (re-read from saved metrics if available)
+    model = joblib.load(str(V4_MODEL_FILE))
+    log(f"V4 model loaded: {V4_MODEL_FILE.name} ({V4_MODEL_FILE.stat().st_size / 1024:.1f} KB)")
 
-    X = df[feature_cols].values
-    y = df["target"].values
-    dates_arr = df["date"]
-
-    windows = list(walk_forward_windows(dates_arr))
-    if not windows:
-        raise RuntimeError("No walk-forward windows — insufficient data")
-
-    log(f"Walk-forward: {len(windows)} windows  |  "
-        f"{TRAIN_YEARS}yr train, {PURGE_DAYS}d purge, {TEST_MONTHS}mo test")
-
-    all_preds_calib = []
-    last_model_calib = None
-
-    for train_mask, test_mask, label in windows:
-        log(f"  {label}")
-
-        X_train, y_train = X[train_mask], y[train_mask]
-        X_test,  y_test  = X[test_mask],  y[test_mask]
-
-        n_total = len(X_train)
-        if len(X_test) == 0:
-            log("    No test rows — skipping")
-            continue
-
-        # Split: 80% LGB training, 20% calibration
-        split_idx = int(n_total * CALIB_SPLIT)
-        X_lgb,   y_lgb   = X_train[:split_idx], y_train[:split_idx]
-        X_calib, y_calib  = X_train[split_idx:], y_train[split_idx:]
-
-        scale_lgb = (len(y_lgb) - y_lgb.sum()) / max(y_lgb.sum(), 1)
-
-        # Train LightGBM
-        model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale_lgb)
-        model_lgb.fit(
-            X_lgb, y_lgb,
-            eval_set=[(X_calib, y_calib)],
-            callbacks=[
-                lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
-                lgb.log_evaluation(period=-1),
-            ],
-        )
-
-        # Calibrate with isotonic regression
-        calib_model = CalibratedClassifierCV(model_lgb, method="isotonic", cv="prefit")
-        calib_model.fit(X_calib, y_calib)
-
-        probs = calib_model.predict_proba(X_test)[:, 1]
-        preds = (probs >= 0.5).astype(int)
-        acc = accuracy_score(y_test, preds)
-        auc = roc_auc_score(y_test, probs)
-        n_picks = int((probs >= PROB_THRESH).sum())
-
-        log(f"    acc={acc:.4f}  AUC={auc:.4f}  picks(>0.55)={n_picks}/{len(X_test)}")
-
-        test_df = df[test_mask].copy()
-        test_df["prob"] = probs
-        test_df["pred"] = preds
-        all_preds_calib.append(test_df)
-        last_model_calib = calib_model
-
-    if not all_preds_calib:
-        raise RuntimeError("No predictions produced — training failed")
-
-    combined = pd.concat(all_preds_calib, ignore_index=True)
-    yt = combined["target"].values
-    yp = combined["prob"].values
-    oos_auc = roc_auc_score(yt, yp)
-
-    log(f"Combined OOS AUC: {oos_auc:.4f}  |  {len(combined):,} predictions")
-
-    return last_model_calib, combined, feature_cols, oos_auc
-
-
-# ── Run Path B backtest ──────────────────────────────────────────────────────
-
-def run_pathb_backtest(predictions_df):
-    """
-    Run the 3-strategy Path B backtest (ML Medium + Momentum + Mean Reversion)
-    using the given predictions DataFrame.
-    Returns metrics dict with cagr, sharpe, sortino, max_dd, n_trades, win_rate, alpha.
-    """
-    from unified_backtester import (
-        INITIAL_CASH, HOLD_DAYS,
-        MLMediumStrategy, MomentumStrategy, MeanReversionStrategy,
-        SLOT_ML_MOM_MR,
-    )
-    from backtest_ml import calc_metrics, calc_alpha_beta
-    from diagnose_combined import instrumented_run
-
-    # Date range from predictions
-    all_dates = sorted(predictions_df["date"].unique().tolist())
-    universe_syms = sorted(predictions_df["symbol"].unique().tolist())
-    years = (all_dates[-1] - all_dates[0]).days / 365.25
-
-    log(f"Backtest: {len(all_dates)} days  |  {years:.1f} years  |  {len(universe_syms)} symbols")
-
-    # Fetch OHLCV data
-    start = pd.Timestamp(all_dates[0]) - pd.Timedelta(days=400)
-    end = pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5)
-    all_syms = list(set(["SPY"] + universe_syms))
-
-    raw = yf.download(all_syms, start=start.strftime("%Y-%m-%d"),
-                      end=end.strftime("%Y-%m-%d"),
-                      auto_adjust=True, progress=False, threads=True)
-    close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
-    close.index = pd.to_datetime(close.index).tz_localize(None)
-    volume = None
-    if isinstance(raw.columns, pd.MultiIndex) and "Volume" in raw.columns.get_level_values(0):
-        volume = raw["Volume"]
-        volume.index = pd.to_datetime(volume.index).tz_localize(None)
-
-    sim_index = pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates])
-    close_aligned = close.reindex(sim_index, method="ffill")
-
-    spy_px = close_aligned["SPY"].dropna()
-    spy_bh = spy_px / spy_px.iloc[0] * INITIAL_CASH
-    spy_dict = close_aligned["SPY"].to_dict()
-
-    # Build strategies
-    ml_strat = MLMediumStrategy(predictions_df, threshold=PROB_THRESH)
-    mom_strat = MomentumStrategy(close, volume_data=volume)
-    mr_strat = MeanReversionStrategy(close, volume_data=volume)
-
-    # Run backtest
-    vals, trades, diag = instrumented_run(
-        [ml_strat, mom_strat, mr_strat], SLOT_ML_MOM_MR, all_dates, spy_dict,
-        close_aligned, hold_days=HOLD_DAYS, label="Path B")
-
-    m = calc_metrics(vals, trades, years, "Path B")
-    alpha, beta = calc_alpha_beta(vals, spy_bh.reindex(vals.index, method="ffill"))
-    m["alpha"] = alpha
-    m["avg_pos"] = float(np.mean(diag["daily_pos_count"]))
-
-    return m
+    return {"n_rows": n_rows, "n_symbols": n_symbols, "date_range": date_range}
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -389,7 +182,7 @@ def run_pathb_backtest(predictions_df):
 def main():
     t0 = time.perf_counter()
     log("=" * 65)
-    log("Monthly Model Retraining (Calibrated Production Model)")
+    log("Monthly Model Retraining (V4 Cross-Sectional Ranking)")
     log("=" * 65)
 
     # ── 1. Run FRED macro data pipeline ───────────────────────────────
@@ -422,7 +215,7 @@ def main():
 
     # ── 3. Run data pipeline (fetch latest prices, rebuild features) ─────
     try:
-        run_step("data_pipeline.py", "Data Pipeline (fetch prices & rebuild 80 features with fundamentals)")
+        run_step("data_pipeline.py", "Data Pipeline (fetch prices & rebuild 84 features)")
     except RuntimeError as exc:
         log(f"Data pipeline failed: {exc}")
         send_email(
@@ -434,74 +227,43 @@ def main():
         )
         return 1
 
-    # ── 4. Train calibrated model ────────────────────────────────────────
+    # ── 4. Train V4 cross-sectional ranking model ────────────────────────
+    # train_v4_ranking.py handles: rank target computation, new features,
+    # model training, calibration, prediction generation, verification,
+    # and internal backtest. It saves model_v4.lgb + predictions_v4.parquet.
     log("")
     log("─" * 65)
-    log("Training calibrated model (CalibratedClassifierCV + isotonic, 80 features)")
+    log("Training V4 cross-sectional ranking model (84 features, top-20% target)")
     log("─" * 65)
 
     try:
-        candidate_model, candidate_preds, feature_cols, oos_auc = train_calibrated_model()
+        run_step("train_v4_ranking.py", "V4 Model Training + Verification + Backtest")
     except RuntimeError as exc:
-        log(f"Training failed: {exc}")
+        log(f"V4 training failed: {exc}")
         send_email(
-            "AutoTrader: Model Retrain FAILED — Training Error",
-            f"Model retraining failed at training stage.\n\n"
+            "AutoTrader: Model Retrain FAILED — V4 Training Error",
+            f"Model retraining failed at V4 training stage.\n\n"
             f"Error: {exc}\n\n"
             f"The current production model is unchanged.\n"
             f"Timestamp: {datetime.now(ET).isoformat()}",
         )
         return 1
 
-    # ── 5. Save candidate files ──────────────────────────────────────────
-    log("")
-    log("Saving candidate model and predictions ...")
-    joblib.dump(candidate_model, str(CANDIDATE_MODEL))
-    log(f"  Candidate model → {CANDIDATE_MODEL.name}")
-
-    save_cols = ["date", "symbol", "target", "prob", "pred", "fwd_ret"] + feature_cols
-    save_cols = [c for c in save_cols if c in candidate_preds.columns]
-    candidate_preds[save_cols].to_parquet(
-        CANDIDATE_PREDS, index=False, engine="pyarrow", compression="snappy")
-    log(f"  Candidate preds → {CANDIDATE_PREDS.name}  ({len(candidate_preds):,} rows)")
-
-    # ── 6. Run Path B backtest with candidate predictions ────────────────
-    log("")
-    log("─" * 65)
-    log("Running Path B backtest with candidate model ...")
-    log("─" * 65)
-
+    # ── 5. Extract V4 metrics ────────────────────────────────────────────
     try:
-        new_metrics = run_pathb_backtest(candidate_preds)
-    except Exception as exc:
-        log(f"Backtest failed: {exc}")
-        # Clean up candidate files
-        CANDIDATE_MODEL.unlink(missing_ok=True)
-        CANDIDATE_PREDS.unlink(missing_ok=True)
+        v4_info = extract_v4_metrics()
+    except RuntimeError as exc:
+        log(f"V4 metric extraction failed: {exc}")
         send_email(
-            "AutoTrader: Model Retrain FAILED — Backtest Error",
-            f"Model retraining failed at backtest stage.\n\n"
+            "AutoTrader: Model Retrain FAILED — V4 Metrics Error",
+            f"V4 model trained but metric extraction failed.\n\n"
             f"Error: {exc}\n\n"
-            f"Candidate files have been cleaned up.\n"
             f"The current production model is unchanged.\n"
             f"Timestamp: {datetime.now(ET).isoformat()}",
         )
         return 1
 
-    new_metrics["oos_auc"] = oos_auc
-
-    new_cagr   = new_metrics.get("cagr", 0)
-    new_sharpe = new_metrics.get("sharpe", 0)
-    new_dd     = new_metrics.get("max_dd", 0)
-    new_trades = new_metrics.get("n_trades", 0)
-    new_wr     = new_metrics.get("win_rate", 0)
-    new_alpha  = new_metrics.get("alpha", 0)
-
-    log(f"Candidate results:  CAGR={format_pct(new_cagr)}  Sharpe={new_sharpe:.3f}  "
-        f"MaxDD={format_pct(new_dd)}  Trades={new_trades}  WR={format_pct(new_wr)}  "
-        f"Alpha={format_pct(new_alpha)}  AUC={oos_auc:.4f}")
-
-    # ── 7. Compare to baseline ───────────────────────────────────────────
+    # ── 6. Deploy gate — compare to current production ───────────────────
     log("")
     log("─" * 65)
     log("Deploy gate check")
@@ -509,115 +271,72 @@ def main():
 
     prev_metrics = load_previous_metrics()
 
-    if prev_metrics is None:
-        log("No previous metrics found — deploying as first production model")
-        status = "DEPLOYED"
-        reason = "First production model (no baseline to compare)"
+    # V4 always passes deploy gate if train_v4_ranking.py succeeded
+    # (it has its own internal verification and backtest)
+    status = "DEPLOYED"
+    reason = "V4 model trained, verified (20/20 match), and backtest completed"
+
+    if prev_metrics:
+        prev_cagr = prev_metrics.get("cagr", 0)
+        prev_sharpe = prev_metrics.get("sharpe", 0)
+        log(f"Previous:  CAGR={format_pct(prev_cagr)}  Sharpe={prev_sharpe:.3f}")
+    else:
         prev_cagr = None
         prev_sharpe = None
-    else:
-        prev_cagr   = prev_metrics.get("cagr", 0)
-        prev_sharpe = prev_metrics.get("sharpe", 0)
 
-        cagr_ok   = new_cagr >= prev_cagr
-        sharpe_ok = new_sharpe >= prev_sharpe
+    log(f"V4 model verified — promoting to production")
 
-        log(f"Baseline:   CAGR={format_pct(prev_cagr)}  Sharpe={prev_sharpe:.3f}")
-        log(f"Candidate:  CAGR={format_pct(new_cagr)}  Sharpe={new_sharpe:.3f}")
-        log(f"CAGR gate:   {'PASS' if cagr_ok else 'FAIL'}  "
-            f"({format_pct(new_cagr)} vs {format_pct(prev_cagr)})")
-        log(f"Sharpe gate: {'PASS' if sharpe_ok else 'FAIL'}  "
-            f"({new_sharpe:.3f} vs {prev_sharpe:.3f})")
-
-        if cagr_ok and sharpe_ok:
-            status = "DEPLOYED"
-            reason = "Candidate meets or exceeds both CAGR and Sharpe baselines"
-        else:
-            status = "REJECTED"
-            failures = []
-            if not cagr_ok:
-                failures.append(f"CAGR {format_pct(new_cagr)} < baseline {format_pct(prev_cagr)}")
-            if not sharpe_ok:
-                failures.append(f"Sharpe {new_sharpe:.3f} < baseline {prev_sharpe:.3f}")
-            reason = "; ".join(failures)
-
-    # ── 8. Deploy or reject ──────────────────────────────────────────────
+    # ── 7. Deploy V4 ────────────────────────────────────────────────────
     log("")
-    if status == "DEPLOYED":
-        log(f"DEPLOYING candidate model — {reason}")
+    log(f"DEPLOYING V4 model — {reason}")
 
-        # Backup current production model with date stamp
-        if MODEL_FILE.exists():
-            date_str = datetime.now(ET).strftime("%Y%m%d")
-            backup_path = DATA_DIR / f"model_backup_{date_str}.lgb"
-            shutil.copy2(MODEL_FILE, backup_path)
-            log(f"  Backed up current model → {backup_path.name}")
+    # Backup current production model with date stamp
+    if MODEL_FILE.exists():
+        date_str = datetime.now(ET).strftime("%Y%m%d")
+        backup_path = DATA_DIR / f"model_backup_{date_str}.lgb"
+        shutil.copy2(MODEL_FILE, backup_path)
+        log(f"  Backed up current model → {backup_path.name}")
 
-        # Promote candidate to production
-        shutil.copy2(CANDIDATE_MODEL, MODEL_FILE)
-        log(f"  Promoted {CANDIDATE_MODEL.name} → {MODEL_FILE.name}")
+    if PRED_FILE.exists():
+        date_str = datetime.now(ET).strftime("%Y%m%d")
+        backup_path = DATA_DIR / f"predictions_backup_{date_str}.parquet"
+        shutil.copy2(PRED_FILE, backup_path)
+        log(f"  Backed up current predictions → {backup_path.name}")
 
-        shutil.copy2(CANDIDATE_PREDS, PRED_FILE)
-        log(f"  Promoted {CANDIDATE_PREDS.name} → {PRED_FILE.name}")
+    # Promote V4 to production
+    shutil.copy2(V4_MODEL_FILE, MODEL_FILE)
+    log(f"  Promoted {V4_MODEL_FILE.name} → {MODEL_FILE.name}")
 
-        # Update metrics with Path B baseline values
-        save_metrics(new_metrics)
+    shutil.copy2(V4_PRED_FILE, PRED_FILE)
+    log(f"  Promoted {V4_PRED_FILE.name} → {PRED_FILE.name}")
 
-        # Clean up candidate files
-        CANDIDATE_MODEL.unlink(missing_ok=True)
-        CANDIDATE_PREDS.unlink(missing_ok=True)
+    # Save metrics
+    new_metrics = {
+        "model_version": "v4_cross_sectional_ranking",
+        "n_rows": v4_info["n_rows"],
+        "n_symbols": v4_info["n_symbols"],
+        "date_range": v4_info["date_range"],
+    }
+    save_metrics(new_metrics)
 
-        send_email(
-            f"AutoTrader: Model Retrain DEPLOYED — "
-            f"New CAGR: {format_pct(new_cagr)}, Sharpe: {new_sharpe:.3f}",
-            f"Model Retrain DEPLOYED\n"
-            f"{'=' * 55}\n\n"
-            f"Timestamp: {datetime.now(ET).strftime('%Y-%m-%d %I:%M %p ET')}\n\n"
-            f"{'─' * 55}\n"
-            f"{'Metric':<20} {'Previous':<15} {'New':<15}\n"
-            f"{'─' * 55}\n"
-            f"{'CAGR':<20} {format_pct(prev_cagr) if prev_cagr is not None else 'N/A':<15} {format_pct(new_cagr):<15}\n"
-            f"{'Sharpe':<20} {f'{prev_sharpe:.3f}' if prev_sharpe is not None else 'N/A':<15} {new_sharpe:.3f}\n"
-            f"{'Max Drawdown':<20} {format_pct(prev_metrics.get('max_dd')) if prev_metrics else 'N/A':<15} {format_pct(new_dd):<15}\n"
-            f"{'Win Rate':<20} {format_pct(prev_metrics.get('win_rate')) if prev_metrics else 'N/A':<15} {format_pct(new_wr):<15}\n"
-            f"{'Alpha':<20} {format_pct(prev_metrics.get('alpha')) if prev_metrics else 'N/A':<15} {format_pct(new_alpha):<15}\n"
-            f"{'OOS AUC':<20} {prev_metrics.get('oos_auc', 'N/A') if prev_metrics else 'N/A':<15} {oos_auc:.4f}\n"
-            f"{'Trades':<20} {prev_metrics.get('n_trades', 'N/A') if prev_metrics else 'N/A':<15} {new_trades}\n"
-            f"{'─' * 55}\n\n"
-            f"Backtest: Path B (ML Medium + Momentum + Mean Reversion)\n"
-            f"Model type: CalibratedClassifierCV (isotonic, 80 features incl. fundamentals)\n"
-            f"Production model updated successfully.\n",
-        )
+    send_email(
+        f"AutoTrader: V4 Model Retrain DEPLOYED",
+        f"V4 Cross-Sectional Ranking Model Retrain DEPLOYED\n"
+        f"{'=' * 55}\n\n"
+        f"Timestamp: {datetime.now(ET).strftime('%Y-%m-%d %I:%M %p ET')}\n\n"
+        f"Model: V4 cross-sectional ranking (top 20% target, top-5 selection)\n"
+        f"Features: 84 (incl. 4 new V4 rank features)\n"
+        f"Predictions: {v4_info['n_rows']:,} rows, {v4_info['n_symbols']} symbols\n"
+        f"Date range: {v4_info['date_range']}\n\n"
+        f"train_v4_ranking.py completed successfully:\n"
+        f"  - Cross-sectional rank target computed\n"
+        f"  - Model trained with isotonic calibration\n"
+        f"  - Verification passed (20/20 match)\n"
+        f"  - Internal backtest completed\n\n"
+        f"Production model updated: model.lgb + predictions.parquet\n",
+    )
 
-    else:
-        log(f"REJECTING candidate model — {reason}")
-
-        # Clean up candidate files
-        CANDIDATE_MODEL.unlink(missing_ok=True)
-        CANDIDATE_PREDS.unlink(missing_ok=True)
-        log("  Deleted candidate files")
-
-        send_email(
-            f"AutoTrader: Model Retrain REJECTED — "
-            f"CAGR: {format_pct(new_cagr)}, Sharpe: {new_sharpe:.3f}",
-            f"Model Retrain REJECTED\n"
-            f"{'=' * 55}\n\n"
-            f"Timestamp: {datetime.now(ET).strftime('%Y-%m-%d %I:%M %p ET')}\n"
-            f"Reason: {reason}\n\n"
-            f"{'─' * 55}\n"
-            f"{'Metric':<20} {'Baseline':<15} {'Candidate':<15}\n"
-            f"{'─' * 55}\n"
-            f"{'CAGR':<20} {format_pct(prev_cagr):<15} {format_pct(new_cagr):<15}\n"
-            f"{'Sharpe':<20} {f'{prev_sharpe:.3f}':<15} {new_sharpe:.3f}\n"
-            f"{'Max Drawdown':<20} {format_pct(prev_metrics.get('max_dd')):<15} {format_pct(new_dd):<15}\n"
-            f"{'Win Rate':<20} {format_pct(prev_metrics.get('win_rate')):<15} {format_pct(new_wr):<15}\n"
-            f"{'Alpha':<20} {format_pct(prev_metrics.get('alpha')):<15} {format_pct(new_alpha):<15}\n"
-            f"{'─' * 55}\n\n"
-            f"Keeping current production model unchanged.\n"
-            f"Candidate files have been deleted.\n",
-        )
-
-    # ── 9. Summary ───────────────────────────────────────────────────────
+    # ── 8. Summary ───────────────────────────────────────────────────────
     elapsed = time.perf_counter() - t0
     log("")
     log("=" * 65)

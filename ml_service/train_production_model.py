@@ -91,7 +91,7 @@ def log(msg: str):
 
 
 def get_feature_cols(df: pd.DataFrame) -> list:
-    exclude = {"date", "symbol", "target"}
+    exclude = {"date", "symbol", "target", "in_sp500"}
     forward_keywords = {"fwd", "forward", "future"}
     return [c for c in df.columns
             if c not in exclude and not any(kw in c.lower() for kw in forward_keywords)]
@@ -115,31 +115,51 @@ def train_production_model():
     before = len(df)
     df = df.dropna(subset=non_fund_cols + ["target"])
     log(f"Loaded {before:,} → {len(df):,} rows after dropping NaN")
+
+    # ── Survivorship bias filter ─────────────────────────────────────────
+    # Only train on stocks that were in the S&P 500 on each date.
+    # ETFs are always included. Predictions are generated for ALL rows.
+    if "in_sp500" in df.columns:
+        n_before_filter = len(df)
+        train_df = df[df["in_sp500"] == True].copy()
+        log(f"  Survivorship filter: {n_before_filter:,} → {len(train_df):,} rows "
+            f"(removed {n_before_filter - len(train_df):,} non-S&P500 rows from training)")
+    else:
+        log(f"  WARNING: in_sp500 column not found — training on all rows (no survivorship filter)")
+        train_df = df.copy()
     log(f"  {df['symbol'].nunique()} symbols  |  "
         f"{df['date'].min().date()} → {df['date'].max().date()}")
     log(f"  Features: {len(feature_cols)} columns")
 
-    # Forward returns for backtest
+    # Forward returns for backtest (on full df)
     df = df.sort_values(["symbol", "date"])
     df["fwd_ret"] = df.groupby("symbol")["ret_10d"].shift(-10)
 
-    X = df[feature_cols].values
-    y = df["target"].values
+    # Use survivorship-filtered train_df for training/calibration
+    train_df = train_df.sort_values(["symbol", "date"])
+    train_df["fwd_ret"] = train_df.groupby("symbol")["ret_10d"].shift(-10)
+
+    X_all = df[feature_cols].values
+    y_all = df["target"].values
+
+    X_filtered = train_df[feature_cols].values
+    y_filtered = train_df["target"].values
 
     # Date-based split: first 80% of unique dates → train, last 20% → calibration
-    all_dates = np.sort(df["date"].unique())
+    # Split based on filtered data dates
+    all_dates = np.sort(train_df["date"].unique())
     split_idx = int(len(all_dates) * (1 - CALIB_FRAC))
     calib_start = pd.Timestamp(all_dates[split_idx])
 
-    train_mask = df["date"] < calib_start
-    calib_mask = df["date"] >= calib_start
+    train_mask = train_df["date"] < calib_start
+    calib_mask = train_df["date"] >= calib_start
 
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_calib, y_calib = X[calib_mask], y[calib_mask]
+    X_train, y_train = X_filtered[train_mask], y_filtered[train_mask]
+    X_calib, y_calib = X_filtered[calib_mask], y_filtered[calib_mask]
 
-    log(f"\n  Split by date:")
-    log(f"    Train: {train_mask.sum():,} rows  ({df[train_mask]['date'].min().date()} → {df[train_mask]['date'].max().date()})")
-    log(f"    Calib: {calib_mask.sum():,} rows  ({df[calib_mask]['date'].min().date()} → {df[calib_mask]['date'].max().date()})")
+    log(f"\n  Split by date (survivorship-filtered):")
+    log(f"    Train: {train_mask.sum():,} rows  ({train_df[train_mask]['date'].min().date()} → {train_df[train_mask]['date'].max().date()})")
+    log(f"    Calib: {calib_mask.sum():,} rows  ({train_df[calib_mask]['date'].min().date()} → {train_df[calib_mask]['date'].max().date()})")
 
     # Class balance
     scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
@@ -170,9 +190,9 @@ def train_production_model():
     calib_auc = roc_auc_score(y_calib, calib_probs)
     log(f"  Calibration AUC: {calib_auc:.4f}")
 
-    # Generate predictions for ALL rows using this single model
+    # Generate predictions for ALL rows (including non-S&P500) using this single model
     log(f"\n  Generating predictions for ALL {len(df):,} rows ...")
-    all_probs = calib_model.predict_proba(X)[:, 1]
+    all_probs = calib_model.predict_proba(X_all)[:, 1]
     all_preds = (all_probs >= 0.5).astype(int)
 
     df["prob"] = all_probs

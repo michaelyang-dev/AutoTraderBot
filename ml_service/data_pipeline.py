@@ -21,38 +21,14 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
-# Individual stocks that have quarterly earnings (ETFs get zeros)
-STOCK_SYMBOLS = [
-    "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
-    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
-    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
-]
+# ── Universe (loaded from sp500_universe module) ─────────────────────────────
+from sp500_universe import get_stock_symbols, get_etf_symbols, get_full_universe, get_cross_asset, get_all_symbols
+from sp500_history import get_sp500_on_date, load_sp500_changes
 
-# ── Universe ──────────────────────────────────────────────────────────────────
-UNIVERSE = [
-    # Individual stocks (32)
-    "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
-    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
-    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
-    # Sector ETFs (11)
-    "XLE","XLF","XLV","XLI","XLK","XLY","XLP","XLU","XLRE","XLB","XLC",
-    # International ETFs (9)
-    "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
-    # Commodities (4)
-    "GLD","SLV","USO","DBC",
-    # Bonds (5)
-    "TLT","HYG","LQD","IEF","SHY",
-    # Dollar / Copper (2) — feature calculation only, not traded
-    "UUP","CPER",
-    # Volatility (1)
-    "VIXY",
-]
-
-
-# Cross-asset reference symbols (may overlap with UNIVERSE)
-CROSS_ASSET = ["SPY", "VIXY", "TLT"]
-
-ALL_SYMBOLS = sorted(set(UNIVERSE + CROSS_ASSET))
+STOCK_SYMBOLS = get_stock_symbols()
+UNIVERSE = get_full_universe()
+CROSS_ASSET = get_cross_asset()
+ALL_SYMBOLS = get_all_symbols()
 
 # ── Date range: 15 years + 220-day warmup for long SMAs ──────────────────────
 END_DATE   = datetime.today().strftime("%Y-%m-%d")
@@ -594,50 +570,60 @@ def main():
     print(f"Symbols    : {len(ALL_SYMBOLS)} total ({len(UNIVERSE)} universe + cross-asset)")
     print("=" * 60)
 
-    # 1. Fetch all raw bars — batch download first for speed, then fall back
-    #    to per-symbol for any that are missing from the batch.
-    print("Batch-downloading all symbols via yfinance ...")
-    batch = yf.download(
-        ALL_SYMBOLS,
-        start=START_DATE,
-        end=END_DATE,
-        auto_adjust=True,
-        progress=True,
-        threads=True,
-    )
+    # 1. Fetch all raw bars — batch download in chunks for 500+ symbols
+    CHUNK_SIZE = 100
+    n_chunks = (len(ALL_SYMBOLS) + CHUNK_SIZE - 1) // CHUNK_SIZE
+    print(f"Batch-downloading {len(ALL_SYMBOLS)} symbols in {n_chunks} chunks ...")
 
     raw: dict[str, pd.DataFrame] = {}
-    for sym in ALL_SYMBOLS:
+    for ci in range(0, len(ALL_SYMBOLS), CHUNK_SIZE):
+        chunk = ALL_SYMBOLS[ci:ci + CHUNK_SIZE]
+        chunk_num = ci // CHUNK_SIZE + 1
+        print(f"  Chunk {chunk_num}/{n_chunks} ({len(chunk)} symbols) ...", flush=True)
         try:
-            if isinstance(batch.columns, pd.MultiIndex):
-                sym_df = batch.xs(sym, axis=1, level=1).copy()
-            else:
-                # Single-symbol download returns flat columns
-                sym_df = batch.copy()
+            batch = yf.download(
+                chunk, start=START_DATE, end=END_DATE,
+                auto_adjust=True, progress=False, threads=True,
+            )
+        except Exception as exc:
+            print(f"    Chunk {chunk_num} FAILED: {exc}")
+            for sym in chunk:
+                raw[sym] = pd.DataFrame()
+            continue
 
-            sym_df.columns = sym_df.columns.str.lower()
-            sym_df = sym_df[["open", "high", "low", "close", "volume"]].dropna(how="all")
-            sym_df.index = pd.to_datetime(sym_df.index).tz_localize(None)
-            sym_df.index.name = "date"
-            raw[sym] = sym_df.sort_index()
-        except (KeyError, Exception):
-            raw[sym] = pd.DataFrame()
+        for sym in chunk:
+            try:
+                if isinstance(batch.columns, pd.MultiIndex):
+                    sym_df = batch.xs(sym, axis=1, level=1).copy()
+                else:
+                    sym_df = batch.copy()
+                sym_df.columns = sym_df.columns.str.lower()
+                sym_df = sym_df[["open", "high", "low", "close", "volume"]].dropna(how="all")
+                sym_df.index = pd.to_datetime(sym_df.index).tz_localize(None)
+                sym_df.index.name = "date"
+                raw[sym] = sym_df.sort_index()
+            except (KeyError, Exception):
+                raw[sym] = pd.DataFrame()
 
     # Fall back: re-fetch individually any symbol that came back empty
-    missing = [s for s in ALL_SYMBOLS if raw[s].empty]
+    missing = [s for s in ALL_SYMBOLS if s not in raw or raw[s].empty]
     if missing:
         print(f"\nFetching {len(missing)} missing symbol(s) individually ...")
         for i, sym in enumerate(missing, 1):
-            print(f"  [{i}/{len(missing)}] {sym} ...", end=" ", flush=True)
+            if i <= 10 or i == len(missing):
+                print(f"  [{i}/{len(missing)}] {sym} ...", end=" ", flush=True)
             raw[sym] = fetch_bars(sym)
-            print(f"{len(raw[sym])} bars")
-            time.sleep(0.5)
+            if i <= 10 or i == len(missing):
+                print(f"{len(raw[sym])} bars")
+            time.sleep(0.3)
+        if len(missing) > 10:
+            print(f"  ... and {len(missing) - 10} more")
 
-    # Summary
-    print()
-    for sym in ALL_SYMBOLS:
-        n = len(raw[sym])
-        print(f"  {sym:<8} {n:,} bars" + ("  ⚠ empty" if n == 0 else ""))
+    # Summary (counts, not per-symbol)
+    loaded = sum(1 for s in ALL_SYMBOLS if s in raw and len(raw[s]) > 0)
+    empty = len(ALL_SYMBOLS) - loaded
+    print(f"\n  Bars loaded: {loaded}/{len(ALL_SYMBOLS)} symbols"
+          + (f" ({empty} empty)" if empty > 0 else ""))
 
     # 2. Build cross-asset feature frame aligned to a common date index
     #    Use SPY as the reference calendar
@@ -651,20 +637,26 @@ def main():
     td_map = {ts: i for i, ts in enumerate(date_index)}
 
     # 2b. Fetch earnings surprise history (stock symbols only; ETFs get zeros)
-    print("\nFetching earnings surprise data from FMP API ...")
+    print(f"\nFetching earnings surprise data from FMP API ({len(STOCK_SYMBOLS)} stocks) ...")
     earnings_data: dict = {}
     if FMP_API_KEY:
+        cached_count = 0
+        api_count = 0
         for idx_s, sym in enumerate(STOCK_SYMBOLS, 1):
             cache_file = EARNINGS_CACHE_DIR / f"{sym}.json"
             source = "cache" if (cache_file.exists() and
                                   (datetime.today() - datetime.fromtimestamp(
                                       cache_file.stat().st_mtime)).days < EARNINGS_CACHE_TTL) else "API"
-            print(f"  [{idx_s}/{len(STOCK_SYMBOLS)}] {sym:<6} ({source}) ...", end=" ", flush=True)
             df_earn = fetch_earnings_surprises(sym)
             earnings_data[sym] = df_earn
-            print(f"{len(df_earn)} reports" if not df_earn.empty else "no data")
-            if source == "API":
+            if source == "cache":
+                cached_count += 1
+            else:
+                api_count += 1
                 time.sleep(0.3)   # gentle rate-limit when hitting FMP
+            # Progress every 50 symbols
+            if idx_s % 50 == 0 or idx_s == len(STOCK_SYMBOLS):
+                print(f"  [{idx_s}/{len(STOCK_SYMBOLS)}] processed ({cached_count} cached, {api_count} API)")
     else:
         print("  FMP_API_KEY not set — earnings features will be zero for all symbols")
 
@@ -793,10 +785,11 @@ def main():
     print("\nComputing features ...")
     all_frames = []
 
+    skipped = 0
     for i, sym in enumerate(UNIVERSE, 1):
         df = raw.get(sym, pd.DataFrame())
         if df.empty:
-            print(f"  [{i:2d}/{len(UNIVERSE)}] {sym}: skipped (no data)")
+            skipped += 1
             continue
 
         # Align to common date index
@@ -832,11 +825,11 @@ def main():
                          if c not in ("symbol", "target") and c not in FUNDAMENTAL_FEATURE_COLS]
         feat = feat.dropna(subset=non_fund_cols)
 
-        n_rows = len(feat)
-        pos_pct = feat["target"].mean() * 100
-        print(f"  [{i:2d}/{len(UNIVERSE)}] {sym}: {n_rows} rows  |  target+ {pos_pct:.1f}%")
-
         all_frames.append(feat.reset_index())
+
+        # Progress every 50 symbols
+        if i % 50 == 0 or i == len(UNIVERSE):
+            print(f"  [{i}/{len(UNIVERSE)}] processed ({len(all_frames)} with data, {skipped} skipped)")
 
     if not all_frames:
         sys.exit("ERROR: no feature data produced — check yfinance and symbol list.")
@@ -846,6 +839,30 @@ def main():
     master = pd.concat(all_frames, ignore_index=True)
     master["date"] = pd.to_datetime(master["date"])
     master = master.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+    # ── Point-in-time S&P 500 membership ──────────────────────────────────
+    print("Computing point-in-time S&P 500 membership (survivorship bias) ...")
+    load_sp500_changes()  # ensure cache is loaded
+    etf_set = set(get_etf_symbols())
+    unique_dates = sorted(master["date"].unique())
+    # Build a dict: date -> set of S&P 500 members on that date
+    sp500_by_date = {}
+    for di, d in enumerate(unique_dates):
+        sp500_by_date[d] = get_sp500_on_date(pd.Timestamp(d))
+        if (di + 1) % 500 == 0 or (di + 1) == len(unique_dates):
+            print(f"    [{di+1}/{len(unique_dates)}] dates processed")
+    # Efficient lookup: group by date, mark membership for each group
+    master["in_sp500"] = False
+    # ETFs are always in
+    master.loc[master["symbol"].isin(etf_set), "in_sp500"] = True
+    # For each date, mark stocks that were in S&P 500
+    non_etf_mask = ~master["symbol"].isin(etf_set)
+    for d, members in sp500_by_date.items():
+        date_mask = (master["date"] == d) & non_etf_mask
+        master.loc[date_mask, "in_sp500"] = master.loc[date_mask, "symbol"].isin(members)
+    n_in = master["in_sp500"].sum()
+    n_out = len(master) - n_in
+    print(f"  in_sp500=True: {n_in:,} rows  |  in_sp500=False: {n_out:,} rows")
 
     # ── Cross-sectional rank features ────────────────────────────────────
     # Compute percentile ranks across all stocks on each date
