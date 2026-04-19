@@ -52,8 +52,12 @@ PURGE_DAYS   = 10       # trading days dropped between train end and test start
 PROB_THRESH  = 0.55     # threshold for "model pick" (matches live signal server)
 CALIB_SPLIT  = 0.80     # first 80% of each train window trains LGB, last 20% calibrates
 
+N_TREES = 500   # max boosting rounds (early stopping decides actual count)
+EARLY_STOP_PATIENCE = 50  # early stopping patience for walk-forward windows
+FINAL_MODEL_TREES = 100   # fixed trees for the final production model (no early stopping)
+
 LGB_PARAMS = dict(
-    n_estimators      = 500,
+    n_estimators      = N_TREES,
     learning_rate     = 0.05,
     max_depth         = 6,
     num_leaves        = 31,
@@ -68,6 +72,9 @@ LGB_PARAMS = dict(
     n_jobs            = -1,
     verbose           = -1,
 )
+
+# Early stopping patience for calibrated model (needs eval_set-driven stopping)
+EARLY_STOP_ROUNDS = 100
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -281,18 +288,19 @@ def main():
         X_calib, y_calib  = X_train[split_idx:], y_train[split_idx:]
         log.info(f"  LGB train  : {len(X_lgb):,}  |  Calib hold-out: {len(X_calib):,}")
 
-        # Class-weight balancing (based on LGB training portion)
-        n_pos_lgb = y_lgb.sum()
-        n_neg_lgb = len(y_lgb) - n_pos_lgb
-        scale = n_neg_lgb / max(n_pos_lgb, 1)
+        # Class-weight balancing (from full training window)
+        scale = n_neg / max(n_pos, 1)
 
-        # ── Train baseline LightGBM on full training window ──────────────────
+        # ── Train baseline LightGBM with early stopping ──────────────────────
+        # Early stopping patience=50 produces best OOS predictions.
+        # The final production model is retrained separately after the loop
+        # with fixed FINAL_MODEL_TREES to ensure a usable prediction range.
         model = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
         model.fit(
             X_train, y_train,
             eval_set=[(X_test, y_test)],
             callbacks=[
-                lgb.early_stopping(50, verbose=False),
+                lgb.early_stopping(EARLY_STOP_PATIENCE, verbose=False),
                 lgb.log_evaluation(period=-1),
             ],
         )
@@ -301,8 +309,11 @@ def main():
         preds = (probs >= 0.5).astype(int)
         acc  = accuracy_score(y_test, preds)
         auc  = roc_auc_score(y_test, probs)
+        n_trees = model.booster_.num_trees()
         window_acc.append(acc)
-        log.info(f"  Baseline   : acc={acc:.4f}  AUC={auc:.4f}")
+        log.info(f"  Baseline   : acc={acc:.4f}  AUC={auc:.4f}  trees={n_trees}")
+        log.info(f"  Pred range : [{probs.min():.4f}, {probs.max():.4f}]  "
+                 f"picks(>0.55)={int((probs >= 0.55).sum())}")
 
         test_df = df[test_mask].copy()
         test_df["prob"] = probs
@@ -311,12 +322,15 @@ def main():
         last_model = model
 
         # ── Train calibrated model: LGB on 80%, isotonic calibration on 20% ─
-        model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
+        # Calibrated model still uses early stopping (patience=100) since it
+        # has a dedicated calibration holdout set.
+        scale_lgb = (len(y_lgb) - y_lgb.sum()) / max(y_lgb.sum(), 1)
+        model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale_lgb)
         model_lgb.fit(
             X_lgb, y_lgb,
             eval_set=[(X_calib, y_calib)],
             callbacks=[
-                lgb.early_stopping(50, verbose=False),
+                lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
                 lgb.log_evaluation(period=-1),
             ],
         )
@@ -420,13 +434,38 @@ def main():
     log.info(f"  Overall OOS accuracy: baseline={acc_base:.4f}  "
              f"calibrated={acc_calib:.4f}")
 
+    # ── Retrain final production model on ALL data ─────────────────────────
+    log.info(f"\n{'─'*68}")
+    log.info(f"Retraining final production model on ALL data "
+             f"({FINAL_MODEL_TREES} fixed trees) ...")
+
+    n_pos_all = y.sum()
+    n_neg_all = len(y) - n_pos_all
+    scale_all = n_neg_all / max(n_pos_all, 1)
+
+    final_params = dict(LGB_PARAMS)
+    final_params["n_estimators"] = FINAL_MODEL_TREES
+    final_model = lgb.LGBMClassifier(**final_params, scale_pos_weight=scale_all)
+    final_model.fit(X, y)
+    final_trees = final_model.booster_.num_trees()
+    log.info(f"  Final model trained: {final_trees} trees")
+
+    # Verify prediction range on recent data (last 6 months)
+    recent_mask = dates_arr >= (dates_arr.max() - pd.Timedelta(days=180))
+    if recent_mask.sum() > 0:
+        recent_probs = final_model.predict_proba(X[recent_mask])[:, 1]
+        log.info(f"  Recent pred range: [{recent_probs.min():.4f}, "
+                 f"{recent_probs.max():.4f}]  "
+                 f"picks(>0.55)={int((recent_probs >= 0.55).sum())}"
+                 f"/{recent_mask.sum()}")
+
     # ── Save outputs ─────────────────────────────────────────────────────────
     log.info(f"\n{'─'*68}")
     log.info("Saving outputs ...")
 
-    # Baseline model (native LightGBM format)
-    last_model.booster_.save_model(str(MODEL_FILE))
-    log.info(f"  Baseline model  → {MODEL_FILE}")
+    # Production model (native LightGBM format) — trained on ALL data
+    final_model.booster_.save_model(str(MODEL_FILE))
+    log.info(f"  Production model → {MODEL_FILE}  ({final_trees} trees)")
 
     # Calibrated model (joblib — CalibratedClassifierCV wraps LGB)
     joblib.dump(last_model_calib, str(CALIB_MODEL_FILE))
