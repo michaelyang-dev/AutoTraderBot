@@ -392,6 +392,7 @@ class MomentumStrategy(Strategy):
 
 # MeanReversionStrategy — imported from strategies module
 from strategies.mean_reversion_strategy import MeanReversionStrategy  # noqa: E402
+from strategies.ml_slow_strategy import MLSlowStrategy  # noqa: E402
 
 
 class MLFastStrategy(Strategy):
@@ -406,16 +407,7 @@ class MLFastStrategy(Strategy):
         return 0.0
 
 
-class MLSlowStrategy(Strategy):
-    @property
-    def name(self):
-        return "ml_slow"
-    def generate_signals(self, date, universe_data):
-        return []
-    def check_exit(self, position, current_data):
-        return False, ""
-    def get_position_size(self, signal, portfolio_value):
-        return 0.0
+# MLSlowStrategy imported from strategies/ml_slow_strategy.py above
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -688,6 +680,20 @@ SLOT_ML_MOM_MR = SlotConfig(
     strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2},
     flex_slots=2,
     max_positions=10,
+)
+
+# ML Slow only: 5 primary, no flex
+SLOT_ML_SLOW_ONLY = SlotConfig(
+    strategy_slots={"ml_slow": 5},
+    flex_slots=0,
+    max_positions=5,
+)
+
+# ML Medium + Momentum + MR + ML Slow: 2+4+2+1+2 flex = max 11
+SLOT_ML_MOM_MR_SLOW = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2, "ml_slow": 1},
+    flex_slots=2,
+    max_positions=11,
 )
 
 # Multi-strategy production mode (full)
