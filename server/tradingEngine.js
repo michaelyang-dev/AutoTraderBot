@@ -45,25 +45,43 @@ const NEVER_BUY = new Set([
 ]);
 
 const UNIVERSE = [
+  // Individual stocks (32)
   { sym: "AAPL", base: 189, sector: "Tech" }, { sym: "GOOGL", base: 141, sector: "Tech" },
   { sym: "MSFT", base: 378, sector: "Tech" }, { sym: "AMZN", base: 178, sector: "Consumer" },
   { sym: "TSLA", base: 248, sector: "Auto" }, { sym: "NVDA", base: 880, sector: "Semis" },
   { sym: "META", base: 505, sector: "Tech" }, { sym: "NFLX", base: 628, sector: "Media" },
   { sym: "AMD", base: 164, sector: "Semis" }, { sym: "JPM", base: 196, sector: "Finance" },
   { sym: "V", base: 278, sector: "Finance" }, { sym: "UNH", base: 527, sector: "Health" },
+  { sym: "CRM", base: 272, sector: "Tech" }, { sym: "ORCL", base: 127, sector: "Tech" },
+  { sym: "ADBE", base: 560, sector: "Tech" }, { sym: "CSCO", base: 49, sector: "Tech" },
+  { sym: "QCOM", base: 155, sector: "Semis" }, { sym: "COST", base: 680, sector: "Staples" },
+  { sym: "WMT", base: 165, sector: "Staples" }, { sym: "HD", base: 345, sector: "Consumer" },
+  { sym: "LOW", base: 220, sector: "Consumer" }, { sym: "LLY", base: 600, sector: "Health" },
+  { sym: "JNJ", base: 156, sector: "Health" }, { sym: "ABBV", base: 155, sector: "Health" },
+  { sym: "BAC", base: 34, sector: "Finance" }, { sym: "GS", base: 385, sector: "Finance" },
+  { sym: "MS", base: 87, sector: "Finance" }, { sym: "CVX", base: 150, sector: "Energy" },
+  { sym: "XOM", base: 104, sector: "Energy" }, { sym: "CAT", base: 290, sector: "Industrial" },
+  { sym: "DE", base: 390, sector: "Industrial" }, { sym: "BA", base: 210, sector: "Industrial" },
+  // Sector ETFs (11)
   { sym: "XLE", base: 93, sector: "Energy" }, { sym: "XLF", base: 48, sector: "Finance" },
   { sym: "XLV", base: 145, sector: "Health" }, { sym: "XLI", base: 130, sector: "Industrial" },
   { sym: "XLK", base: 218, sector: "Tech" }, { sym: "XLY", base: 195, sector: "Consumer" },
   { sym: "XLP", base: 79, sector: "Staples" }, { sym: "XLU", base: 72, sector: "Utilities" },
   { sym: "XLRE", base: 39, sector: "REIT" }, { sym: "XLB", base: 85, sector: "Materials" },
   { sym: "XLC", base: 92, sector: "Media" },
+  // International ETFs (9)
   { sym: "EWZ", base: 29, sector: "International" }, { sym: "EWJ", base: 71, sector: "International" },
   { sym: "FXI", base: 29, sector: "International" }, { sym: "INDA", base: 50, sector: "International" },
   { sym: "EFA", base: 79, sector: "International" }, { sym: "EEM", base: 43, sector: "International" },
+  { sym: "VGK", base: 62, sector: "International" }, { sym: "VWO", base: 42, sector: "International" },
+  { sym: "IEFA", base: 72, sector: "International" },
+  // Commodities (4)
   { sym: "GLD", base: 285, sector: "Commodity" }, { sym: "SLV", base: 31, sector: "Commodity" },
   { sym: "USO", base: 70, sector: "Commodity" }, { sym: "DBC", base: 22, sector: "Commodity" },
+  // Bonds (3)
   { sym: "TLT", base: 85, sector: "Bond" }, { sym: "HYG", base: 77, sector: "Bond" },
   { sym: "LQD", base: 104, sector: "Bond" },
+  // Volatility (1)
   { sym: "VIXY", base: 14, sector: "Volatility" },
 ];
 

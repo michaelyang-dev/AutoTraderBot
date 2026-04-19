@@ -47,21 +47,41 @@ export const NEVER_BUY = new Set([
   "YANG","YINN",                       // leveraged China
 ]);
 
-// Stock Universe — 37 symbols: 12 individual stocks + 25 ETFs
+// Stock Universe — 60 symbols: 32 individual stocks + 28 ETFs
 export const UNIVERSE = [
-  // ── Individual Stocks (12) ──
-  { sym: "AAPL",  base: 189, sector: "Tech"     },
-  { sym: "GOOGL", base: 141, sector: "Tech"     },
-  { sym: "MSFT",  base: 378, sector: "Tech"     },
-  { sym: "AMZN",  base: 178, sector: "Consumer" },
-  { sym: "TSLA",  base: 248, sector: "Auto"     },
-  { sym: "NVDA",  base: 880, sector: "Semis"    },
-  { sym: "META",  base: 505, sector: "Tech"     },
-  { sym: "NFLX",  base: 628, sector: "Media"    },
-  { sym: "AMD",   base: 164, sector: "Semis"    },
-  { sym: "JPM",   base: 196, sector: "Finance"  },
-  { sym: "V",     base: 278, sector: "Finance"  },
-  { sym: "UNH",   base: 527, sector: "Health"   },
+  // ── Individual Stocks (32) ──
+  { sym: "AAPL",  base: 189, sector: "Tech"       },
+  { sym: "GOOGL", base: 141, sector: "Tech"       },
+  { sym: "MSFT",  base: 378, sector: "Tech"       },
+  { sym: "AMZN",  base: 178, sector: "Consumer"   },
+  { sym: "TSLA",  base: 248, sector: "Auto"       },
+  { sym: "NVDA",  base: 880, sector: "Semis"      },
+  { sym: "META",  base: 505, sector: "Tech"       },
+  { sym: "NFLX",  base: 628, sector: "Media"      },
+  { sym: "AMD",   base: 164, sector: "Semis"      },
+  { sym: "JPM",   base: 196, sector: "Finance"    },
+  { sym: "V",     base: 278, sector: "Finance"    },
+  { sym: "UNH",   base: 527, sector: "Health"     },
+  { sym: "CRM",   base: 272, sector: "Tech"       },
+  { sym: "ORCL",  base: 127, sector: "Tech"       },
+  { sym: "ADBE",  base: 560, sector: "Tech"       },
+  { sym: "CSCO",  base: 49,  sector: "Tech"       },
+  { sym: "QCOM",  base: 155, sector: "Semis"      },
+  { sym: "COST",  base: 680, sector: "Staples"    },
+  { sym: "WMT",   base: 165, sector: "Staples"    },
+  { sym: "HD",    base: 345, sector: "Consumer"   },
+  { sym: "LOW",   base: 220, sector: "Consumer"   },
+  { sym: "LLY",   base: 600, sector: "Health"     },
+  { sym: "JNJ",   base: 156, sector: "Health"     },
+  { sym: "ABBV",  base: 155, sector: "Health"     },
+  { sym: "BAC",   base: 34,  sector: "Finance"    },
+  { sym: "GS",    base: 385, sector: "Finance"    },
+  { sym: "MS",    base: 87,  sector: "Finance"    },
+  { sym: "CVX",   base: 150, sector: "Energy"     },
+  { sym: "XOM",   base: 104, sector: "Energy"     },
+  { sym: "CAT",   base: 290, sector: "Industrial" },
+  { sym: "DE",    base: 390, sector: "Industrial" },
+  { sym: "BA",    base: 210, sector: "Industrial" },
 
   // ── Sector ETFs (SPDR, 11) — uncapped, one per sector ──
   { sym: "XLE",  base: 93,  sector: "Energy"     },
@@ -76,13 +96,16 @@ export const UNIVERSE = [
   { sym: "XLB",  base: 85,  sector: "Materials"  },
   { sym: "XLC",  base: 92,  sector: "Media"      },
 
-  // ── International ETFs (6) — capped at 2 positions ──
+  // ── International ETFs (9) — capped at 2 positions ──
   { sym: "EWZ",  base: 29,  sector: "International" },  // Brazil
   { sym: "EWJ",  base: 71,  sector: "International" },  // Japan
   { sym: "FXI",  base: 29,  sector: "International" },  // China
   { sym: "INDA", base: 50,  sector: "International" },  // India
   { sym: "EFA",  base: 79,  sector: "International" },  // Developed ex-US
   { sym: "EEM",  base: 43,  sector: "International" },  // Emerging Markets
+  { sym: "VGK",  base: 62,  sector: "International" },  // Europe
+  { sym: "VWO",  base: 42,  sector: "International" },  // Emerging Markets (Vanguard)
+  { sym: "IEFA", base: 72,  sector: "International" },  // Developed ex-US (iShares)
 
   // ── Commodities (4) — capped at 2 positions ──
   { sym: "GLD",  base: 285, sector: "Commodity" },  // Gold
