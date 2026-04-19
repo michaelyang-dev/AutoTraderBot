@@ -18,7 +18,7 @@ const RISK = {
   MAX_POSITION_PCT: 0.15,
   STOP_LOSS_PCT: -0.08,
   TAKE_PROFIT_PCT: 0.15,
-  MAX_OPEN_POSITIONS: 6,
+  MAX_OPEN_POSITIONS: 8,              // increased from 6 for multi-strategy
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.08,
@@ -28,6 +28,33 @@ const RISK = {
   LOSS_COOLDOWN_CYCLES: 3,
   SECTOR_MAX_POSITIONS: { International: 2, Commodity: 2, Bond: 2, Volatility: 1 },
   VOLUME_CONFIRM_RATIO: 1.5,
+};
+
+// ── Multi-strategy slot allocation ──
+const SLOT_CONFIG = {
+  ml_medium: 2,       // ML primary slots
+  momentum: 4,        // Momentum primary slots
+  flex: 2,            // Shared flex pool
+  max: 8,             // Hard cap (= RISK.MAX_OPEN_POSITIONS)
+};
+
+// ── Momentum strategy parameters ──
+const MOM = {
+  LOOKBACK: 63,          // 63 trading days for ranking
+  TOP_N: 5,              // top 5 signals per cycle
+  SMA_PERIOD: 200,       // trend filter
+  VOL_PERIOD: 20,        // avg volume window
+  VOL_MIN: 500000,       // minimum 20-day avg volume
+  ATR_PERIOD: 14,
+  STOP_LOSS: -0.08,      // -8% from entry
+  TAKE_PROFIT: 0.20,     // +20% from entry
+  TRAIL_STOP: -0.08,     // -8% from peak
+  RANK_BREAK: 20,        // exit if rank > 20
+  MAX_HOLD_DAYS: 60,     // trading days (approx 60 cycles at 1/day)
+  BASE_PCT: 0.12,        // 12% position size
+  HIGH_ATR_PCT: 0.08,    // 8% for volatile stocks
+  HIGH_ATR_THRESH: 0.03, // ATR/price > 3% = volatile
+  COOLDOWN_CYCLES: 5,    // 5-cycle cooldown after momentum sell
 };
 
 const MARKET_HOURS = { OPEN_BUFFER_MINS: 15, CLOSE_BUFFER_MINS: 30 };
@@ -318,6 +345,97 @@ function getSignals(prices) {
 }
 
 // ══════════════════════════════════════════
+//  MOMENTUM SIGNAL ENGINE
+// ══════════════════════════════════════════
+
+/**
+ * Compute momentum rankings and generate buy signals from priceHist/volHist.
+ * Mirrors MomentumStrategy in unified_backtester.py exactly.
+ *
+ * @param {Object} priceHist  - { symbol → [close1, close2, ...] }
+ * @param {Object} volHist    - { symbol → [vol1, vol2, ...] }
+ * @param {Set}    heldSymbols - symbols currently held
+ * @param {Object} earningsMap - { symbol → earningsDateStr }
+ * @returns {{ signals: Array, rankings: Object }} momentum opportunities and rankings
+ */
+function computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap) {
+  const symbols = UNIVERSE.map(s => s.sym).filter(s => !NEVER_BUY.has(s) && s !== "SPY");
+  const rankings = {};
+  const returns63 = {};
+
+  // 1. Compute 63-day returns for all symbols with enough data
+  for (const sym of symbols) {
+    const prices = priceHist[sym];
+    if (!prices || prices.length < MOM.LOOKBACK + 1) continue;
+    const current = prices[prices.length - 1];
+    const past = prices[prices.length - 1 - MOM.LOOKBACK];
+    if (past > 0) {
+      returns63[sym] = (current - past) / past;
+    }
+  }
+
+  // 2. Rank by return (1 = best momentum)
+  const sorted = Object.entries(returns63).sort((a, b) => b[1] - a[1]);
+  sorted.forEach(([sym], idx) => {
+    rankings[sym] = idx + 1;
+  });
+
+  // 3. Generate signals for top N that pass filters
+  const signals = [];
+  let signalCount = 0;
+
+  for (const [sym, ret] of sorted) {
+    if (signalCount >= MOM.TOP_N) break;
+    const rank = rankings[sym];
+
+    // Already held
+    if (heldSymbols.has(sym)) continue;
+
+    const prices = priceHist[sym];
+    const currentPrice = prices[prices.length - 1];
+
+    // SMA200 filter: price must be above 200-day SMA
+    const sma200 = sma(prices, MOM.SMA_PERIOD);
+    if (sma200 === null || currentPrice <= sma200) continue;
+
+    // Volume filter: 20-day avg volume > 500K
+    const vols = volHist[sym];
+    const avg = avgVolume(vols, MOM.VOL_PERIOD);
+    if (avg !== null && avg < MOM.VOL_MIN) continue;
+
+    // Earnings proximity check
+    const earningsDate = earningsMap ? earningsMap[sym] : null;
+    if (earningsDate) {
+      const days = daysUntilEarnings(earningsDate);
+      if (days >= 0 && days <= 3) continue;
+    }
+
+    // Confidence = (100 - rank) / 100
+    const confidence = (100 - rank) / 100;
+
+    // ATR-based position sizing
+    const stockAtr = atr(prices, MOM.ATR_PERIOD);
+    const atrPct = stockAtr ? stockAtr / currentPrice : 0.02;
+    const positionPct = atrPct > MOM.HIGH_ATR_THRESH ? MOM.HIGH_ATR_PCT : MOM.BASE_PCT;
+
+    signals.push({
+      sym,
+      score: confidence,
+      price: currentPrice,
+      consensus: `MOM RANK #${rank} (${(ret * 100).toFixed(1)}%)`,
+      rsiVal: null,
+      mlConf: null,
+      strategy: "momentum",
+      positionPct,
+      rank,
+    });
+    signalCount++;
+  }
+
+  return { signals, rankings };
+}
+
+// ══════════════════════════════════════════
 //  REGIME ENGINE — SPY market trend filter
 // ══════════════════════════════════════════
 
@@ -453,7 +571,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     return await alpaca.getOrders({ status, limit });
   }
 
-  async function fetchBars(symbol, limit = 150) {
+  async function fetchBars(symbol, limit = 250) {
     const calDays = Math.ceil(limit * 1.6) + 10;
     const start = new Date();
     start.setDate(start.getDate() - calDays);
@@ -554,7 +672,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   let error = null;
   let idleSpyShares = 0;
   let trailingPeaks = {};
-  let cooldowns = {};
+  let cooldowns = {};              // strategy-specific: { "sym:strategy" → cycleNumber }
   let trendPositions = {};
   let trendBreakCounts = {};
   let circuitBreaker = { date: null, morningValue: null, tripped: false };
@@ -563,6 +681,18 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   const activityLog = [];
   const portfolioHist = [];
   let tradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
+
+  // ── Strategy attribution ──
+  // Tracks which strategy owns each position: { symbol → "ml" | "momentum" }
+  let positionStrategy = {};
+
+  // ── Momentum strategy state ──
+  let momRankings = {};            // { symbol → rank (1-based) } — refreshed each cycle
+  let momEntryPrices = {};         // { symbol → entry price }
+  let momPeakPrices = {};          // { symbol → peak since entry }
+  let momEntryDates = {};          // { symbol → cycleNumber at entry }
+  let momTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
+  let mlTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
   let pricePollInterval = null;
   let tradeCycleInterval = null;
   let prevMlStatus = "down";
@@ -630,7 +760,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       const results = await Promise.allSettled(
         symbols.map(async (sym) => {
-          const bars = await fetchBars(sym, 150);
+          // Fetch 250 bars: need 200 for SMA200 filter + 63 for momentum lookback
+          const bars = await fetchBars(sym, 250);
           return { sym, closes: bars.map(b => b.c), volumes: bars.map(b => b.v) };
         })
       );
@@ -699,8 +830,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const prevVols = volHist[sym] || [];
         const snap = snapshots[sym];
         if (snap && snap.price > 0) {
-          nextHist[sym] = [...prev.slice(-100), snap.price];
-          nextVol[sym] = [...prevVols.slice(-100), snap.volume || 0];
+          nextHist[sym] = [...prev.slice(-260), snap.price];
+          nextVol[sym] = [...prevVols.slice(-260), snap.volume || 0];
         } else {
           nextHist[sym] = prev;
           nextVol[sym] = prevVols;
@@ -806,9 +937,41 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     try {
       cycleNumber++;
 
-      const isOnCooldown = (sym) => {
-        const lossAt = cooldowns[sym];
-        return lossAt !== undefined && (cycleNumber - lossAt) < RISK.LOSS_COOLDOWN_CYCLES;
+      // Strategy-specific cooldown: key = "sym:strategy"
+      const isOnCooldown = (sym, strategy = "ml") => {
+        const key = `${sym}:${strategy}`;
+        const lossAt = cooldowns[key];
+        const cooldownLen = strategy === "momentum" ? MOM.COOLDOWN_CYCLES : RISK.LOSS_COOLDOWN_CYCLES;
+        return lossAt !== undefined && (cycleNumber - lossAt) < cooldownLen;
+      };
+      const setCooldown = (sym, strategy = "ml") => {
+        cooldowns[`${sym}:${strategy}`] = cycleNumber;
+      };
+
+      // Count positions by strategy for slot allocation
+      const countByStrategy = () => {
+        let ml = 0, mom = 0;
+        for (const pos of currentPositions) {
+          if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
+          if (trendPositions[pos.symbol]) continue;
+          const strat = positionStrategy[pos.symbol] || "ml";
+          if (strat === "momentum") mom++;
+          else ml++;
+        }
+        return { ml, mom, total: ml + mom };
+      };
+
+      // Check if a strategy has slot capacity
+      const hasSlotCapacity = (strategy, counts) => {
+        if (counts.total >= SLOT_CONFIG.max) return false;
+        const primaryKey = strategy === "momentum" ? "momentum" : "ml_medium";
+        const primaryUsed = strategy === "momentum" ? counts.mom : counts.ml;
+        const primaryLimit = SLOT_CONFIG[primaryKey];
+        // Can use primary slot
+        if (primaryUsed < primaryLimit) return true;
+        // Or flex slot if available
+        const flexUsed = counts.total - Math.min(counts.ml, SLOT_CONFIG.ml_medium) - Math.min(counts.mom, SLOT_CONFIG.momentum);
+        return flexUsed < SLOT_CONFIG.flex;
       };
 
       // Fetch live state from Alpaca
@@ -882,11 +1045,13 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       }
 
       // ── STEP 1: Trailing/Fixed Stop-loss & Take-profit on existing positions ──
+      //    (Momentum positions have their own exit rules in STEP 1c)
       const closedSymbols = new Set();
       for (const pos of currentPositions) {
         const { symbol, qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
         if (symbol === "SPY" && idleSpyShares > 0) continue;
         if (trendPositions[symbol]) continue;
+        if (positionStrategy[symbol] === "momentum") continue;  // handled in STEP 1c
 
         // Update trailing peak
         if (RISK.USE_TRAILING_STOP) {
@@ -914,15 +1079,26 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
         if (stopTriggered) {
           try {
+            const strat = positionStrategy[symbol] || "ml";
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
-            if (unrealized_plpc < 0) cooldowns[symbol] = cycleNumber;
+            if (unrealized_plpc < 0) setCooldown(symbol, strat);
+            // Clean up momentum state if this was a momentum position
+            if (strat === "momentum") {
+              delete momEntryPrices[symbol];
+              delete momPeakPrices[symbol];
+              delete momEntryDates[symbol];
+            }
+            delete positionStrategy[symbol];
             addLog(stopMsg, "sell");
-            tradeCount.sells++;
-            if (unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
+            const stratTracker = strat === "momentum" ? momTradeCount : mlTradeCount;
+            tradeCount.sells++; stratTracker.sells++;
+            if (unrealized_pl >= 0) { tradeCount.wins++; stratTracker.wins++; }
+            else { tradeCount.losses++; stratTracker.losses++; }
             tradeCount.totalPnL += unrealized_pl;
-            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "stop-loss", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            stratTracker.totalPnL += unrealized_pl;
+            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: `${strat}-stop-loss`, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             notify.send(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
@@ -931,14 +1107,23 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
         } else if (unrealized_plpc >= RISK.TAKE_PROFIT_PCT) {
           try {
+            const strat = positionStrategy[symbol] || "ml";
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
+            if (strat === "momentum") {
+              delete momEntryPrices[symbol];
+              delete momPeakPrices[symbol];
+              delete momEntryDates[symbol];
+            }
+            delete positionStrategy[symbol];
             addLog(`TAKE-PROFIT ${symbol}: ${qty} shares @ $${curr.toFixed(2)} | P&L: +$${unrealized_pl.toFixed(2)}`, "profit");
-            tradeCount.sells++;
-            tradeCount.wins++;
+            const stratTracker = strat === "momentum" ? momTradeCount : mlTradeCount;
+            tradeCount.sells++; stratTracker.sells++;
+            tradeCount.wins++; stratTracker.wins++;
             tradeCount.totalPnL += unrealized_pl;
-            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: "take-profit", portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            stratTracker.totalPnL += unrealized_pl;
+            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: `${strat}-take-profit`, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
             dailyStats.sells++;
             dailyStats.wins++;
             notify.send(`🎯 TAKE-PROFIT ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Gain: +$${unrealized_pl.toFixed(2)} (+${(unrealized_plpc * 100).toFixed(1)}%)`);
@@ -957,19 +1142,124 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const days = daysUntilEarnings(earningsDate);
         if (days === 1) {
           try {
+            const strat = positionStrategy[pos.symbol] || "ml";
             await closePosition(pos.symbol);
             delete trailingPeaks[pos.symbol];
             closedSymbols.add(pos.symbol);
+            if (strat === "momentum") {
+              delete momEntryPrices[pos.symbol];
+              delete momPeakPrices[pos.symbol];
+              delete momEntryDates[pos.symbol];
+            }
+            delete positionStrategy[pos.symbol];
             addLog(`EARNINGS SELL ${pos.symbol}: earnings tomorrow (${earningsDate}) -- exiting to avoid overnight announcement risk`, "sell");
-            tradeCount.sells++;
-            if (pos.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
+            const stratTracker = strat === "momentum" ? momTradeCount : mlTradeCount;
+            tradeCount.sells++; stratTracker.sells++;
+            if (pos.unrealized_pl >= 0) { tradeCount.wins++; stratTracker.wins++; }
+            else { tradeCount.losses++; stratTracker.losses++; }
             tradeCount.totalPnL += pos.unrealized_pl;
-            recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: "earnings-sell", portfolio_value: cyclePortfolioValue, pnl: pos.unrealized_pl });
+            stratTracker.totalPnL += pos.unrealized_pl;
+            recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: `${strat}-earnings-sell`, portfolio_value: cyclePortfolioValue, pnl: pos.unrealized_pl });
             dailyStats.sells++;
             if (pos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             notify.send(`📉 SELL ${pos.symbol} | ${pos.qty} shares @ $${pos.current_price.toFixed(2)} | Earnings tomorrow — P&L: $${pos.unrealized_pl.toFixed(2)} (${(pos.unrealized_plpc * 100).toFixed(1)}%)`);
           } catch (err) {
             addLog(`Earnings sell failed ${pos.symbol}: ${err.message}`, "error");
+          }
+        }
+      }
+
+      // ── STEP 1c: Momentum-specific exits ──
+      for (const pos of currentPositions) {
+        const sym = pos.symbol;
+        if (closedSymbols.has(sym)) continue;
+        if (sym === "SPY" && idleSpyShares > 0) continue;
+        if (trendPositions[sym]) continue;
+        if (positionStrategy[sym] !== "momentum") continue;
+
+        const { qty, current_price: curr, unrealized_pl } = pos;
+        const entryPrice = momEntryPrices[sym] || pos.avg_entry_price;
+        const peak = momPeakPrices[sym] || curr;
+        const entryCycle = momEntryDates[sym] || cycleNumber;
+
+        // Update peak price tracking
+        if (curr > peak) momPeakPrices[sym] = curr;
+        const currentPeak = momPeakPrices[sym] || curr;
+
+        let exitTriggered = false;
+        let exitReason = "";
+        let exitMsg = "";
+
+        // 1. Stop-loss: -8% from entry
+        const entryReturn = (curr - entryPrice) / entryPrice;
+        if (entryReturn <= MOM.STOP_LOSS) {
+          exitTriggered = true;
+          exitReason = "mom-stop-loss";
+          exitMsg = `MOM STOP-LOSS ${sym}: ${(entryReturn * 100).toFixed(1)}% from entry $${entryPrice.toFixed(2)}`;
+        }
+
+        // 2. Take-profit: +20% from entry
+        if (!exitTriggered && entryReturn >= MOM.TAKE_PROFIT) {
+          exitTriggered = true;
+          exitReason = "mom-take-profit";
+          exitMsg = `MOM TAKE-PROFIT ${sym}: +${(entryReturn * 100).toFixed(1)}% from entry $${entryPrice.toFixed(2)}`;
+        }
+
+        // 3. Trailing stop: -8% from peak
+        if (!exitTriggered) {
+          const dropFromPeak = (curr - currentPeak) / currentPeak;
+          if (dropFromPeak <= MOM.TRAIL_STOP) {
+            exitTriggered = true;
+            exitReason = "mom-trail-stop";
+            exitMsg = `MOM TRAIL-STOP ${sym}: peak $${currentPeak.toFixed(2)}, drop ${(dropFromPeak * 100).toFixed(1)}%`;
+          }
+        }
+
+        // 4. Rank break: falls out of top 20
+        if (!exitTriggered && momRankings[sym] && momRankings[sym] > MOM.RANK_BREAK) {
+          exitTriggered = true;
+          exitReason = "mom-rank-break";
+          exitMsg = `MOM RANK-BREAK ${sym}: rank dropped to #${momRankings[sym]} (threshold: top ${MOM.RANK_BREAK})`;
+        }
+
+        // 5. Max hold: 60 cycles (~60 trading days at 1 cycle/minute during market hours)
+        //    In live trading, 1 cycle = 1 minute, so 60 trading days ≈ 60*390 = 23400 cycles.
+        //    But we approximate: each day ~390 cycles, so max hold = 60 * 390 cycles.
+        //    Simpler: track calendar days from entry instead.
+        if (!exitTriggered) {
+          const cyclesHeld = cycleNumber - entryCycle;
+          // ~390 trade cycles per trading day (6.5h * 60min/h)
+          const approxDaysHeld = cyclesHeld / 390;
+          if (approxDaysHeld >= MOM.MAX_HOLD_DAYS) {
+            exitTriggered = true;
+            exitReason = "mom-max-hold";
+            exitMsg = `MOM MAX-HOLD ${sym}: held ~${approxDaysHeld.toFixed(0)} trading days (max: ${MOM.MAX_HOLD_DAYS})`;
+          }
+        }
+
+        if (exitTriggered) {
+          try {
+            await closePosition(sym);
+            closedSymbols.add(sym);
+            delete momEntryPrices[sym];
+            delete momPeakPrices[sym];
+            delete momEntryDates[sym];
+            delete positionStrategy[sym];
+            if (unrealized_pl < 0) setCooldown(sym, "momentum");
+            addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
+            tradeCount.sells++;
+            momTradeCount.sells++;
+            if (unrealized_pl >= 0) { tradeCount.wins++; momTradeCount.wins++; }
+            else { tradeCount.losses++; momTradeCount.losses++; }
+            tradeCount.totalPnL += unrealized_pl;
+            momTradeCount.totalPnL += unrealized_pl;
+            recordTrade({ symbol: sym, action: "sell", shares: qty, price: curr, strategy: exitReason, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            dailyStats.sells++;
+            if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+            const pnlSign = unrealized_pl >= 0 ? "+" : "";
+            notify.send(`📊 MOM ${exitReason.replace("mom-", "").toUpperCase()} ${sym} | ${qty} shares @ $${curr.toFixed(2)} | P&L: ${pnlSign}$${unrealized_pl.toFixed(2)}`);
+          } catch (err) {
+            addLog(`Momentum exit failed ${sym}: ${err.message}`, "error");
           }
         }
       }
@@ -1016,13 +1306,19 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             try {
               await closePosition(sym);
               const posData = currentPositions.find(p => p.symbol === sym);
-              if (posData && posData.unrealized_plpc < 0) cooldowns[sym] = cycleNumber;
+              const blStrat = positionStrategy[sym] || "ml";
+              if (posData && posData.unrealized_plpc < 0) setCooldown(sym, blStrat);
+              if (blStrat === "momentum") { delete momEntryPrices[sym]; delete momPeakPrices[sym]; delete momEntryDates[sym]; }
+              delete positionStrategy[sym];
               addLog(`SELL ${sym}: ${analysis.consensus} -- closing blacklisted position`, "sell");
               if (posData) {
-                tradeCount.sells++;
-                if (posData.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
+                const blTracker = blStrat === "momentum" ? momTradeCount : mlTradeCount;
+                tradeCount.sells++; blTracker.sells++;
+                if (posData.unrealized_pl >= 0) { tradeCount.wins++; blTracker.wins++; }
+                else { tradeCount.losses++; blTracker.losses++; }
                 tradeCount.totalPnL += posData.unrealized_pl;
-                recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
+                blTracker.totalPnL += posData.unrealized_pl;
+                recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: blStrat, portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
                 dailyStats.sells++;
                 if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
                 notify.send(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | Blacklisted — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
@@ -1039,17 +1335,20 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
         const analysis = getSignals(prices);
 
-        // Sell on SELL consensus
-        if (heldSymbols.has(sym) && !trendPositions[sym] && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
+        // Sell on SELL consensus (only for ML positions — momentum has its own exit rules)
+        if (heldSymbols.has(sym) && !trendPositions[sym] && positionStrategy[sym] !== "momentum" && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
           try {
             await closePosition(sym);
             const posData = currentPositions.find(p => p.symbol === sym);
-            if (posData && posData.unrealized_plpc < 0) cooldowns[sym] = cycleNumber;
+            if (posData && posData.unrealized_plpc < 0) setCooldown(sym, "ml");
+            delete positionStrategy[sym];
             addLog(`SELL ${sym}: ${analysis.consensus} -- closing position`, "sell");
             if (posData) {
-              tradeCount.sells++;
-              if (posData.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
+              tradeCount.sells++; mlTradeCount.sells++;
+              if (posData.unrealized_pl >= 0) { tradeCount.wins++; mlTradeCount.wins++; }
+              else { tradeCount.losses++; mlTradeCount.losses++; }
               tradeCount.totalPnL += posData.unrealized_pl;
+              mlTradeCount.totalPnL += posData.unrealized_pl;
               recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
               dailyStats.sells++;
               if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
@@ -1074,12 +1373,11 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           continue;
         }
 
-        if (isOnCooldown(sym)) {
-          const remaining = RISK.LOSS_COOLDOWN_CYCLES - (cycleNumber - cooldowns[sym]);
+        if (isOnCooldown(sym, "ml")) {
+          const cdKey = `${sym}:ml`;
+          const remaining = RISK.LOSS_COOLDOWN_CYCLES - (cycleNumber - cooldowns[cdKey]);
           if (isMLBuy) {
-            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: loss cooldown, ${remaining} cycle${remaining !== 1 ? "s" : ""} remaining`, "system");
-          } else {
-            addLog(`Skipping ${sym} -- cooldown active, ${remaining} cycle${remaining !== 1 ? "s" : ""} remaining`, "system");
+            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: ML cooldown, ${remaining} cycle${remaining !== 1 ? "s" : ""} remaining`, "system");
           }
           continue;
         }
@@ -1129,18 +1427,50 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         }
       }
 
-      // ── STEP 3: Rank & execute buys ──
-      opportunities.sort((a, b) => b.score - a.score);
-      const slotsAvail = RISK.MAX_OPEN_POSITIONS - activePositionCount;
+      // ── STEP 2b: Compute momentum signals ──
+      const momResult = computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap);
+      momRankings = momResult.rankings;  // store globally for exit checks
+
+      // Filter momentum signals: check cooldowns and regime
+      const momOpportunities = [];
+      if (regime !== "BEARISH") {
+        for (const sig of momResult.signals) {
+          if (isOnCooldown(sig.sym, "momentum")) continue;
+          // First-to-fire: skip if ML already claimed this symbol
+          if (opportunities.some(o => o.sym === sig.sym)) continue;
+          momOpportunities.push(sig);
+        }
+      }
+
+      if (momOpportunities.length > 0) {
+        addLog(`MOM signals: ${momOpportunities.length} candidate${momOpportunities.length !== 1 ? "s" : ""} (${momOpportunities.map(o => `${o.sym} #${o.rank}`).join(", ")})`, "system");
+      }
+
+      // ── STEP 3: Rank & execute buys (strategy-aware slot allocation) ──
+      // Tag ML opportunities with strategy
+      for (const opp of opportunities) {
+        if (!opp.strategy) opp.strategy = "ml";
+      }
+
+      // Merge: ML first (higher priority), then momentum
+      const allOpportunities = [...opportunities, ...momOpportunities];
+      // Sort within each strategy group by score, ML first
+      allOpportunities.sort((a, b) => {
+        if (a.strategy !== b.strategy) return a.strategy === "ml" ? -1 : 1;
+        return b.score - a.score;
+      });
+
+      const counts = countByStrategy();
+      const slotsAvail = SLOT_CONFIG.max - counts.total;
 
       // Pre-execution diagnostic summary
-      if (mlActive && opportunities.length > 0) {
-        addLog(`BUY FILTER CHECK -- ${opportunities.length} candidate${opportunities.length !== 1 ? "s" : ""} passed pre-filters | positions: ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })} | portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
+      if (allOpportunities.length > 0) {
+        addLog(`BUY FILTER CHECK -- ${allOpportunities.length} candidate${allOpportunities.length !== 1 ? "s" : ""} (${opportunities.length} ML + ${momOpportunities.length} MOM) | positions: ${counts.total}/${SLOT_CONFIG.max} (ML ${counts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${counts.mom}/${SLOT_CONFIG.momentum}) | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
       }
 
       if (skipNewBuys) {
-        if (opportunities.length > 0) {
-          addLog(`Close buffer active -- skipping ${opportunities.length} pending ML buy${opportunities.length !== 1 ? "s" : ""}: ${opportunities.map(o => o.sym).join(", ")}`, "system");
+        if (allOpportunities.length > 0) {
+          addLog(`Close buffer active -- skipping ${allOpportunities.length} pending buys: ${allOpportunities.map(o => o.sym).join(", ")}`, "system");
         }
         // Update state with fresh data
         positionsRaw = await getPositions();
@@ -1151,27 +1481,23 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       }
 
       if (slotsAvail <= 0) {
-        if (opportunities.length > 0) {
-          addLog(`Position limit full (${activePositionCount}/${RISK.MAX_OPEN_POSITIONS}) -- skipping all ${opportunities.length} ML buy${opportunities.length !== 1 ? "s" : ""}: ${opportunities.map(o => o.sym).join(", ")}`, "system");
+        if (allOpportunities.length > 0) {
+          addLog(`Position limit full (${counts.total}/${SLOT_CONFIG.max}) -- skipping all ${allOpportunities.length} buys: ${allOpportunities.map(o => o.sym).join(", ")}`, "system");
         }
-      } else if (opportunities.length > slotsAvail) {
-        const cut = opportunities.slice(slotsAvail).map(o => o.sym);
-        addLog(`${slotsAvail} slot${slotsAvail !== 1 ? "s" : ""} open -- processing top ${slotsAvail} of ${opportunities.length} candidates; cutting: ${cut.join(", ")}`, "system");
       }
 
-      // ── STEP 3a: Sell idle SPY to free cash before ML buys ──
+      // ── STEP 3a: Sell idle SPY to free cash before buys ──
       const spyPos = currentPositions.find(p => p.symbol === "SPY");
-      if (idleSpyShares > 0 && spyPos && opportunities.length > 0) {
+      if (idleSpyShares > 0 && spyPos && allOpportunities.length > 0) {
         const spyShareCount = spyPos.qty;
         const spyPrice = spyPos.current_price;
         const idleValue = spyPos.market_value;
         try {
           await closePosition("SPY");
           idleSpyShares = 0;
-          addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`, "system");
+          addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`, "system");
           recordTrade({ symbol: "SPY", action: "sell", shares: spyShareCount, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
-          notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${opportunities.length} ML pick${opportunities.length !== 1 ? "s" : ""}`);
-          // Refresh cash after selling idle SPY
+          notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
           const freshAcct = await getAccount();
           cycleCash = freshAcct.cash;
         } catch (err) {
@@ -1179,10 +1505,17 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         }
       }
 
-      // Track sectors bought this cycle
+      // Track sectors bought this cycle and live slot counts
       const boughtThisCycle = {};
+      let liveCounts = { ...counts };  // mutable copy for tracking during execution
 
-      for (const opp of opportunities.slice(0, Math.max(0, slotsAvail))) {
+      for (const opp of allOpportunities) {
+        // Check strategy-specific slot capacity
+        if (!hasSlotCapacity(opp.strategy, liveCounts)) {
+          addLog(`SKIP ${opp.sym} -- no ${opp.strategy} slot available (ML ${liveCounts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${liveCounts.mom}/${SLOT_CONFIG.momentum}, total ${liveCounts.total}/${SLOT_CONFIG.max})`, "system");
+          continue;
+        }
+
         // Sector position limit
         const sector = getSector(opp.sym);
         const sectorLimit = RISK.SECTOR_MAX_POSITIONS[sector];
@@ -1195,8 +1528,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
         }
 
-        // Volume confirmation check -- skip for ML-driven trades
-        if (!mlActive) {
+        // Volume confirmation check -- skip for ML-driven and momentum trades
+        if (opp.strategy !== "ml" && opp.strategy !== "momentum") {
           const vols = volHist[opp.sym];
           const avg = avgVolume(vols, 20);
           if (avg !== null) {
@@ -1209,53 +1542,85 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
         }
 
-        // Skip if earnings within 3 calendar days
-        const earningsDate = earningsMap[opp.sym];
-        if (earningsDate) {
-          const days = daysUntilEarnings(earningsDate);
-          if (days >= 0 && days <= 3) {
-            addLog(`SKIP ${opp.sym}: earnings in ${days} day(s) on ${earningsDate}`, "system");
-            continue;
+        // Skip if earnings within 3 calendar days (already filtered for momentum in computeMomentumSignals)
+        if (opp.strategy !== "momentum") {
+          const earningsDate = earningsMap[opp.sym];
+          if (earningsDate) {
+            const days = daysUntilEarnings(earningsDate);
+            if (days >= 0 && days <= 3) {
+              addLog(`SKIP ${opp.sym}: earnings in ${days} day(s) on ${earningsDate}`, "system");
+              continue;
+            }
           }
         }
 
-        // ATR-based position sizing
-        const stockAtr = atr(priceHist[opp.sym], 14);
-        const atrPct = stockAtr ? stockAtr / opp.price : RISK.ATR_TARGET_PCT;
-        const volatilityScale = RISK.ATR_TARGET_PCT / atrPct;
-        const regimeMult = regime === "CAUTIOUS" ? 0.75 : 1.0;
-        const mlMult = opp.mlConf != null
-          ? Math.min(1.0, Math.max(0.60, opp.mlConf * 1.6 - 0.28))
-          : 1.0;
-        const dynPositionPct = Math.max(
-          RISK.MIN_POSITION_PCT,
-          Math.min(RISK.MAX_POSITION_PCT, RISK.MAX_POSITION_PCT * volatilityScale * regimeMult * mlMult)
-        );
+        // Position sizing — strategy-specific
+        let dynPositionPct;
+        if (opp.strategy === "momentum") {
+          // Momentum: fixed 12% or 8% based on ATR (already computed in signal)
+          dynPositionPct = opp.positionPct;
+        } else {
+          // ML: ATR-based dynamic sizing with regime and confidence multipliers
+          const stockAtr = atr(priceHist[opp.sym], 14);
+          const atrPct = stockAtr ? stockAtr / opp.price : RISK.ATR_TARGET_PCT;
+          const volatilityScale = RISK.ATR_TARGET_PCT / atrPct;
+          const regimeMult = regime === "CAUTIOUS" ? 0.75 : 1.0;
+          const mlMult = opp.mlConf != null
+            ? Math.min(1.0, Math.max(0.60, opp.mlConf * 1.6 - 0.28))
+            : 1.0;
+          dynPositionPct = Math.max(
+            RISK.MIN_POSITION_PCT,
+            Math.min(RISK.MAX_POSITION_PCT, RISK.MAX_POSITION_PCT * volatilityScale * regimeMult * mlMult)
+          );
+        }
 
         const maxAlloc = cyclePortfolioValue * dynPositionPct;
         const allocCash = Math.min(maxAlloc, cycleCash * RISK.MAX_CASH_DEPLOY_PCT);
         if (allocCash < opp.price) {
-          addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc would be $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of $${cyclePortfolioValue.toFixed(0)} portfolio, max 90% of $${cycleCash.toFixed(0)} cash)`, "system");
+          addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
           continue;
         }
 
         const shares = Math.floor(allocCash / opp.price);
         if (shares <= 0) {
-          addLog(`SKIP ${opp.sym} -- 0 shares computable at $${opp.price.toFixed(2)}/share with $${allocCash.toFixed(2)} allocated`, "system");
+          addLog(`SKIP ${opp.sym} -- 0 shares at $${opp.price.toFixed(2)}/share with $${allocCash.toFixed(2)} allocated`, "system");
           continue;
         }
 
         try {
           const order = await placeOrder({ symbol: opp.sym, qty: shares, side: "buy", type: "market" });
           boughtThisCycle[sector] = (boughtThisCycle[sector] || 0) + 1;
-          const mlNote = opp.mlConf != null ? `, ML ${(opp.mlConf * 100).toFixed(0)}% conf` : "";
-          addLog(`BUY ${opp.sym}: ${shares} shares | ${opp.consensus} (score: ${opp.score.toFixed(2)}) | alloc ${(dynPositionPct * 100).toFixed(1)}% (ATR ${(atrPct * 100).toFixed(1)}%${regime === "CAUTIOUS" ? ", cautious 75%" : ""}${mlNote}) | Order: ${order.status}`, "buy");
-          tradeCount.buys++;
+
+          // Track strategy attribution
+          positionStrategy[opp.sym] = opp.strategy;
+          const stratTracker = opp.strategy === "momentum" ? momTradeCount : mlTradeCount;
+          tradeCount.buys++; stratTracker.buys++;
           dailyStats.buys++;
-          recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: opp.mlConf != null ? "ml" : "consensus", ml_confidence: opp.mlConf, portfolio_value: cyclePortfolioValue });
-          notify.send(opp.mlConf != null
-            ? `🤖 ML BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | Confidence: ${(opp.mlConf * 100).toFixed(0)}% | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
-            : `📊 BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
+
+          // Update live slot counts
+          if (opp.strategy === "momentum") {
+            liveCounts.mom++;
+            // Track momentum entry state
+            momEntryPrices[opp.sym] = opp.price;
+            momPeakPrices[opp.sym] = opp.price;
+            momEntryDates[opp.sym] = cycleNumber;
+          } else {
+            liveCounts.ml++;
+          }
+          liveCounts.total++;
+
+          if (opp.strategy === "momentum") {
+            addLog(`MOM BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
+            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "momentum", portfolio_value: cyclePortfolioValue });
+            notify.send(`📊 MOM BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
+          } else {
+            const mlNote = opp.mlConf != null ? `, ML ${(opp.mlConf * 100).toFixed(0)}% conf` : "";
+            addLog(`ML BUY ${opp.sym}: ${shares} shares | ${opp.consensus} (score: ${opp.score.toFixed(2)}) | alloc ${(dynPositionPct * 100).toFixed(1)}%${mlNote} | Order: ${order.status}`, "buy");
+            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: opp.mlConf != null ? "ml" : "consensus", ml_confidence: opp.mlConf, portfolio_value: cyclePortfolioValue });
+            notify.send(opp.mlConf != null
+              ? `🤖 ML BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | Confidence: ${(opp.mlConf * 100).toFixed(0)}% | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+              : `📊 BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
+          }
         } catch (err) {
           addLog(`Buy failed ${opp.sym}: ${err.message}`, "error");
         }
@@ -1458,6 +1823,17 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           summary += `\nWin/Loss: ${dailyStats.wins}/${dailyStats.losses}`;
           summary += `\nML Status: ${mlStatus}`;
           summary += `\nRegime: ${regime}`;
+          // Strategy breakdown
+          let mlPos = 0, momPos = 0;
+          for (const p of positionsRaw) {
+            if (p.symbol === "SPY" && idleSpyShares > 0) continue;
+            if (trendPositions[p.symbol]) continue;
+            if (positionStrategy[p.symbol] === "momentum") momPos++;
+            else mlPos++;
+          }
+          summary += `\nSlots: ML ${mlPos}/${SLOT_CONFIG.ml_medium} | MOM ${momPos}/${SLOT_CONFIG.momentum} | Flex ${Math.max(0, mlPos + momPos - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum)}/${SLOT_CONFIG.flex}`;
+          summary += `\nML P&L: $${mlTradeCount.totalPnL.toFixed(0)} (${mlTradeCount.wins}W/${mlTradeCount.losses}L)`;
+          summary += `\nMOM P&L: $${momTradeCount.totalPnL.toFixed(0)} (${momTradeCount.wins}W/${momTradeCount.losses}L)`;
           summary += `\nSPY Idle: ${idleSpyShares} shares ($${spyIdleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
 
           notify.send(summary, { immediate: true });
@@ -1552,6 +1928,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   // ══════════════════════════════════════════
 
   function getState() {
+    // Count positions by strategy
+    let mlPositions = 0, momPositions = 0;
+    for (const sym of Object.keys(positions)) {
+      if (sym === "SPY" && idleSpyShares > 0) continue;
+      if (trendPositions[sym]) continue;
+      const strat = positionStrategy[sym] || "ml";
+      if (strat === "momentum") momPositions++;
+      else mlPositions++;
+    }
+
     return {
       running,
       tick,
@@ -1571,6 +1957,15 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       mlStatus,
       idleSpyShares,
       circuitBreaker: { ...circuitBreaker },
+      // Strategy breakdown
+      positionStrategy: { ...positionStrategy },
+      slotConfig: SLOT_CONFIG,
+      strategyStats: {
+        ml: { positions: mlPositions, slots: SLOT_CONFIG.ml_medium, trades: { ...mlTradeCount } },
+        momentum: { positions: momPositions, slots: SLOT_CONFIG.momentum, trades: { ...momTradeCount } },
+        flex: { used: Math.max(0, mlPositions + momPositions - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum), total: SLOT_CONFIG.flex },
+      },
+      momRankings: { ...momRankings },
     };
   }
 

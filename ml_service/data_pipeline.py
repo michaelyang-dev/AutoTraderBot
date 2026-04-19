@@ -328,14 +328,59 @@ def main():
     vixy_c = aligned_close("VIXY")
     tlt_c  = aligned_close("TLT")
 
+    # ── Forward-adjust VIXY for reverse splits ───────────────────────────
+    # yfinance backward-adjusts prices (multiplying old prices UP for
+    # reverse splits), which inflates historical VIXY by 80x+.  Since we
+    # use vixy_level as an absolute feature, we need all prices on the
+    # CURRENT share basis.  Compute cumulative forward-adjustment factor
+    # from the split history and apply it.
+    print("\n  Adjusting VIXY for reverse splits ...")
+    vixy_ticker = yf.Ticker("VIXY")
+    vixy_splits = vixy_ticker.splits
+    if len(vixy_splits) > 0:
+        # Build a cumulative forward-adjustment factor for each date:
+        # For date d, factor = product of all split ratios AFTER d
+        # (reverse split ratio < 1 reduces old prices to current basis)
+        split_dates = pd.to_datetime(vixy_splits.index).tz_localize(None).sort_values()
+        split_ratios = vixy_splits.reindex(vixy_splits.index.sort_values()).values
+
+        # Cumulative factor from the END (most recent splits first)
+        cum_factor = np.ones(len(split_dates) + 1)
+        for i in range(len(split_ratios) - 1, -1, -1):
+            cum_factor[i] = cum_factor[i + 1] * split_ratios[i]
+        # cum_factor[0] = product of ALL ratios (for dates before first split)
+        # cum_factor[-1] = 1.0 (for dates after last split)
+
+        # For each date in vixy_c, find the adjustment factor
+        adjustment = pd.Series(1.0, index=vixy_c.index)
+        for i, sd in enumerate(split_dates):
+            # Dates strictly before this split get multiplied by this split's ratio
+            mask = adjustment.index < sd
+            adjustment[mask] *= split_ratios[i]
+
+        old_sample = vixy_c.loc[vixy_c.index == "2020-06-15"]
+        vixy_c = vixy_c * adjustment
+        new_sample = vixy_c.loc[vixy_c.index == "2020-06-15"]
+        print(f"    Splits found: {len(vixy_splits)}")
+        print(f"    Total adjustment factor for oldest data: {cum_factor[0]:.6f}")
+        if len(old_sample) > 0 and len(new_sample) > 0:
+            print(f"    2020-06-15 BEFORE: {old_sample.values[0]:.2f}")
+            print(f"    2020-06-15 AFTER:  {new_sample.values[0]:.2f}")
+        print(f"    VIXY range after adjustment: {vixy_c.min():.2f} - {vixy_c.max():.2f}")
+    else:
+        print("    No splits found for VIXY")
+
     # Cross-asset features
+    # Use backward-adjusted (continuous) VIXY for returns, but
+    # forward-adjusted VIXY for the absolute level feature.
+    vixy_c_backward = aligned_close("VIXY")  # original backward-adjusted (continuous)
     cross = pd.DataFrame(index=date_index)
     for n in [5, 10, 20, 60, 120]:
         cross[f"spy_ret_{n}d"]  = spy_c.pct_change(n)
         cross[f"tlt_ret_{n}d"]  = tlt_c.pct_change(n)
-    cross["vixy_level"]         = vixy_c
-    cross["vixy_ret_5d"]        = vixy_c.pct_change(5)
-    cross["vixy_ret_20d"]       = vixy_c.pct_change(20)
+    cross["vixy_level"]         = vixy_c       # forward-adjusted (current share basis)
+    cross["vixy_ret_5d"]        = vixy_c_backward.pct_change(5)   # from continuous series
+    cross["vixy_ret_20d"]       = vixy_c_backward.pct_change(20)  # from continuous series
 
     # Calendar features
     cross["day_of_week"] = date_index.dayofweek          # 0=Mon … 4=Fri

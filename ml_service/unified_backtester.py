@@ -1,0 +1,901 @@
+"""
+Unified Multi-Strategy Backtest Engine
+======================================
+Infrastructure for coordinating multiple trading strategies in a single
+backtest. Each strategy implements a standard interface; the PortfolioManager
+handles slot allocation, overlap/conflict resolution, and SPY idle cash.
+
+Validation
+----------
+Run this file directly to validate against the original backtest_ml.py:
+
+    python3 unified_backtester.py
+
+The validation runs MLMediumStrategy (wrapping the existing LightGBM model)
+as the sole active strategy, and compares results against the original
+backtest_ml.py simulation. Results must match exactly.
+
+Multi-Strategy Slot System
+--------------------------
+  ML Medium:      2 primary slots
+  Momentum:       1 primary slot  (placeholder)
+  Mean Reversion: 1 primary slot  (placeholder)
+  ML Fast:        1 primary slot  (placeholder)
+  ML Slow:        1 primary slot  (placeholder)
+  Flex pool:      2 shared slots
+  Total max:      8 positions
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from pathlib import Path
+import warnings
+import time
+
+import numpy as np
+import pandas as pd
+
+warnings.filterwarnings("ignore")
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+INITIAL_CASH    = 100_000.0
+SLIPPAGE        = 0.0005       # 0.05% per leg (one-way)
+HOLD_DAYS       = 10           # default hold period (trading days)
+POSITION_PCT    = 0.12         # 12% of portfolio per position at full confidence
+
+# SPY idle-cash parking
+SPY_RESERVE_PCT   = 0.30      # always keep 30% as cash reserve
+SPY_THRESHOLD_PCT = 0.20      # park idle cash when it exceeds 20% of portfolio
+SPY_INVEST_PCT    = 0.85      # invest 85% of idle cash into SPY
+
+# Multi-strategy coordination
+OVERLAP_2X      = 1.25        # size multiplier when 2 strategies agree
+OVERLAP_3X      = 1.50        # size multiplier when 3+ agree
+COOLDOWN_DAYS   = 5           # days a symbol is blocked after a sell
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Data Classes
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class Signal:
+    """A buy signal produced by a strategy."""
+    symbol: str
+    confidence: float          # 0.0–1.0
+    strategy_name: str
+    fwd_ret: float = 0.0      # backtesting only — actual forward return
+    price_based: bool = False  # True for strategies that use actual prices (not fwd_ret)
+
+
+@dataclass
+class Position:
+    """An open position managed by the portfolio."""
+    symbol: str
+    strategy_name: str
+    cost: float
+    entry_idx: int
+    exit_idx: int
+    fwd_ret: float
+    confidence: float
+    price_based: bool = False  # True for price-based strategies (momentum, etc.)
+    entry_price: float = 0.0   # actual entry price (price-based only)
+    peak_price: float = 0.0    # highest price since entry (for trailing stop)
+
+
+@dataclass
+class SlotConfig:
+    """Controls how many positions each strategy may hold."""
+    strategy_slots: dict       # strategy_name → primary slot count
+    flex_slots: int = 2        # shared pool available to any strategy
+    max_positions: int = 8     # hard cap across all strategies
+
+    def available_for(self, strategy_name, strategy_counts, total_open):
+        """Return how many additional positions *strategy_name* can open."""
+        primary = self.strategy_slots.get(strategy_name, 0)
+        held = strategy_counts.get(strategy_name, 0)
+        primary_avail = max(0, primary - held)
+
+        # Flex: count positions beyond each strategy's primary allocation
+        total_in_primary = sum(
+            min(strategy_counts.get(s, 0), self.strategy_slots.get(s, 0))
+            for s in self.strategy_slots
+        )
+        flex_used = max(0, total_open - total_in_primary)
+        flex_avail = max(0, self.flex_slots - flex_used)
+
+        return min(primary_avail + flex_avail, self.max_positions - total_open)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Strategy Interface
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Strategy(ABC):
+    """
+    Base class for all trading strategies.
+
+    Every strategy must implement four members:
+
+        name                        → unique string identifier
+        generate_signals(date, ud)  → list[Signal] of BUY candidates
+        check_exit(pos, cur)        → (should_exit, reason)
+        get_position_size(sig, pv)  → target $ amount
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+    @abstractmethod
+    def generate_signals(self, date, universe_data):
+        """Return a list of Signal objects for BUY candidates, sorted by
+        confidence descending.  *universe_data* is strategy-specific
+        context (may be None)."""
+        ...
+
+    @abstractmethod
+    def check_exit(self, position, current_data):
+        """Return *(should_exit, reason)*.  *current_data* is a dict with
+        keys ``idx``, ``date``, ``n_dates``."""
+        ...
+
+    @abstractmethod
+    def get_position_size(self, signal, portfolio_value):
+        """Return the target dollar amount to invest.  The PortfolioManager
+        will cap it at ``available_cash * 0.95``."""
+        ...
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ML Medium Strategy — wraps the existing LightGBM model
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MLMediumStrategy(Strategy):
+    """
+    Produces BUY signals when the model's predicted probability exceeds
+    *threshold*.  Uses a fixed 10-trading-day hold period and ML confidence
+    scaling for position sizing.
+    """
+
+    def __init__(self, predictions_df, threshold=0.55, position_pct=POSITION_PCT):
+        self._threshold = threshold
+        self._position_pct = position_pct
+        self._signals_by_date = {}
+        self._build_lookup(predictions_df)
+
+    @property
+    def name(self):
+        return "ml_medium"
+
+    # -- private ----------------------------------------------------------
+
+    def _build_lookup(self, df):
+        """Pre-build per-date signal lists, sorted by prob descending."""
+        for date, grp in df[["date", "symbol", "prob", "fwd_ret"]].groupby("date"):
+            g = grp.sort_values("prob", ascending=False)
+            self._signals_by_date[date] = [
+                (row.symbol, row.prob, row.fwd_ret)
+                for row in g.itertuples(index=False)
+            ]
+
+    # -- interface --------------------------------------------------------
+
+    def generate_signals(self, date, universe_data):
+        raw = self._signals_by_date.get(date, [])
+        return [
+            Signal(symbol=sym, confidence=prob,
+                   strategy_name=self.name, fwd_ret=fwd_ret)
+            for sym, prob, fwd_ret in raw
+            if prob > self._threshold
+        ]
+
+    def check_exit(self, position, current_data):
+        if current_data["idx"] >= position.exit_idx:
+            return True, "hold_complete"
+        return False, ""
+
+    def get_position_size(self, signal, portfolio_value):
+        ml_mult = min(1.0, max(0.60, signal.confidence * 1.6 - 0.28))
+        return portfolio_value * self._position_pct * ml_mult
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Placeholder Strategies (not yet implemented — generate no signals)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MomentumStrategy(Strategy):
+    """
+    3-month momentum strategy: buy top-ranked stocks by 63-day return.
+
+    Signal generation:
+      - Rank all universe symbols by 63-trading-day total return
+      - Generate BUY for top 5 that pass filters
+      - Confidence = (100 - rank) / 100  (rank 1 → 0.99, rank 5 → 0.95)
+
+    Filters:
+      - NEVER_BUY blacklist (leveraged/inverse/volatility products)
+      - Price above 200-day SMA
+      - 20-day avg volume > 500K shares
+
+    Exit rules (checked in order):
+      - Stop-loss: price drops 8% from entry
+      - Take-profit: price rises 20% from entry
+      - Trailing stop: price drops 8% from peak since entry
+      - Momentum break: symbol's rank drops below top 20
+      - Max hold: 60 trading days
+
+    Position sizing:
+      - Base: 12% of portfolio
+      - Reduced to 8% if ATR(14) / price > 3%
+    """
+
+    NEVER_BUY = {
+        "VIXY", "UVXY", "VXX", "SVXY",
+        "TQQQ", "SQQQ", "QQQ3",
+        "SPXU", "SPXS", "SDS", "UPRO",
+        "QID", "SDOW",
+        "LABU", "LABD", "JNUG", "JDST", "NUGT", "DUST",
+        "FNGU", "FNGD", "SOXL", "SOXS", "YANG", "YINN",
+    }
+
+    # Tunable parameters
+    LOOKBACK       = 63     # trading days for momentum ranking
+    TOP_N          = 5      # signals per day
+    SMA_PERIOD     = 200    # trend filter
+    VOL_PERIOD     = 20     # avg volume window
+    VOL_MIN        = 500_000
+    ATR_PERIOD     = 14
+    STOP_LOSS      = -0.08
+    TAKE_PROFIT    = 0.20
+    TRAIL_STOP     = -0.08  # from peak
+    RANK_BREAK     = 20     # exit if rank drops below top N
+    MAX_HOLD       = 60     # trading days
+    BASE_PCT       = 0.12
+    HIGH_ATR_PCT   = 0.08
+    HIGH_ATR_THRESH = 0.03  # ATR/price threshold
+
+    def __init__(self, price_data, volume_data=None):
+        """
+        Args
+        ----
+        price_data : DataFrame — close prices, columns=symbols, index=dates
+        volume_data : DataFrame — daily volume, same shape (optional, for volume filter)
+        """
+        self._price_data = price_data
+        self._volume_data = volume_data
+        self._symbols = [s for s in price_data.columns if s not in self.NEVER_BUY and s != "SPY"]
+
+        # Pre-compute all indicators
+        self._mom_ret = {}      # {date → {sym → 63d return}}
+        self._rankings = {}     # {date → {sym → rank (1-based)}}
+        self._sma200 = {}       # {date → {sym → sma200}}
+        self._atr_pct = {}      # {date → {sym → atr/price}}
+        self._avg_vol = {}      # {date → {sym → 20d avg volume}}
+        self._precompute()
+
+    @property
+    def name(self):
+        return "momentum"
+
+    def _precompute(self):
+        """Pre-compute momentum returns, rankings, SMA, ATR, volume."""
+        dates = self._price_data.index.tolist()
+        px = self._price_data
+
+        # 63-day returns
+        ret63 = px.pct_change(self.LOOKBACK)
+
+        # 200-day SMA
+        sma200 = px.rolling(self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
+
+        # ATR(14) as percentage of price
+        # True Range = max(H-L, |H-Cp|, |L-Cp|) — with close-only data, use |C-Cp|
+        daily_ret_abs = px.pct_change().abs()
+        atr = daily_ret_abs.rolling(self.ATR_PERIOD, min_periods=self.ATR_PERIOD).mean()
+
+        # 20-day avg volume
+        avg_vol = None
+        if self._volume_data is not None:
+            avg_vol = self._volume_data.rolling(self.VOL_PERIOD, min_periods=self.VOL_PERIOD).mean()
+
+        for date in dates:
+            if date not in ret63.index:
+                continue
+
+            # Momentum returns for this date
+            rets = {}
+            for sym in self._symbols:
+                if sym in ret63.columns:
+                    r = ret63.at[date, sym]
+                    if not np.isnan(r):
+                        rets[sym] = r
+            self._mom_ret[date] = rets
+
+            # Rankings (1 = best momentum)
+            if rets:
+                sorted_syms = sorted(rets.keys(), key=lambda s: rets[s], reverse=True)
+                self._rankings[date] = {s: rank + 1 for rank, s in enumerate(sorted_syms)}
+
+            # SMA200
+            sma_day = {}
+            for sym in self._symbols:
+                if sym in sma200.columns:
+                    v = sma200.at[date, sym]
+                    if not np.isnan(v):
+                        sma_day[sym] = v
+            self._sma200[date] = sma_day
+
+            # ATR percentage
+            atr_day = {}
+            for sym in self._symbols:
+                if sym in atr.columns:
+                    v = atr.at[date, sym]
+                    if not np.isnan(v):
+                        atr_day[sym] = v
+            self._atr_pct[date] = atr_day
+
+            # Volume
+            if avg_vol is not None:
+                vol_day = {}
+                for sym in self._symbols:
+                    if sym in avg_vol.columns:
+                        v = avg_vol.at[date, sym]
+                        if not np.isnan(v):
+                            vol_day[sym] = v
+                self._avg_vol[date] = vol_day
+
+    def generate_signals(self, date, universe_data):
+        rankings = self._rankings.get(date, {})
+        if not rankings:
+            return []
+
+        sma_day = self._sma200.get(date, {})
+        vol_day = self._avg_vol.get(date, {})
+        prices = self._price_data.loc[date] if date in self._price_data.index else {}
+
+        signals = []
+        # Iterate by rank order
+        sorted_syms = sorted(rankings.keys(), key=lambda s: rankings[s])
+
+        for sym in sorted_syms:
+            if len(signals) >= self.TOP_N:
+                break
+
+            rank = rankings[sym]
+
+            # Filter: above 200-SMA
+            if sym in sma_day and sym in prices:
+                px = prices[sym] if not isinstance(prices, dict) else prices.get(sym, np.nan)
+                if isinstance(px, (int, float)) and not np.isnan(px):
+                    if px < sma_day[sym]:
+                        continue
+                else:
+                    continue
+            else:
+                continue  # skip if no SMA data
+
+            # Filter: volume
+            if vol_day and sym in vol_day:
+                if vol_day[sym] < self.VOL_MIN:
+                    continue
+
+            confidence = (100 - rank) / 100.0
+
+            signals.append(Signal(
+                symbol=sym,
+                confidence=confidence,
+                strategy_name=self.name,
+                fwd_ret=0.0,
+                price_based=True,
+            ))
+
+        return signals
+
+    def check_exit(self, position, current_data):
+        idx = current_data["idx"]
+        date = current_data["date"]
+        prices = current_data.get("prices", {})
+
+        # Max hold
+        days_held = idx - position.entry_idx
+        if days_held >= self.MAX_HOLD:
+            return True, "max_hold"
+
+        # Need current price for other exit rules
+        cur_px = prices.get(position.symbol, np.nan)
+        if np.isnan(cur_px) or cur_px <= 0:
+            return False, ""
+
+        entry_px = position.entry_price
+        if entry_px <= 0:
+            return False, ""
+
+        ret_from_entry = (cur_px / entry_px) - 1.0
+
+        # Stop-loss
+        if ret_from_entry <= self.STOP_LOSS:
+            return True, "stop_loss"
+
+        # Take-profit
+        if ret_from_entry >= self.TAKE_PROFIT:
+            return True, "take_profit"
+
+        # Trailing stop (from peak)
+        if position.peak_price > 0:
+            ret_from_peak = (cur_px / position.peak_price) - 1.0
+            if ret_from_peak <= self.TRAIL_STOP:
+                return True, "trailing_stop"
+
+        # Momentum break — rank dropped below top 20
+        rankings = self._rankings.get(date, {})
+        rank = rankings.get(position.symbol, 999)
+        if rank > self.RANK_BREAK:
+            return True, "momentum_break"
+
+        return False, ""
+
+    def get_position_size(self, signal, portfolio_value):
+        # Check ATR for the signal date — use reduced size for high-vol stocks
+        # (ATR data keyed by most recent date is close enough)
+        atr_pct = 0.0
+        for date in sorted(self._atr_pct.keys(), reverse=True):
+            atr_day = self._atr_pct[date]
+            if signal.symbol in atr_day:
+                atr_pct = atr_day[signal.symbol]
+                break
+
+        if atr_pct > self.HIGH_ATR_THRESH:
+            return portfolio_value * self.HIGH_ATR_PCT
+        return portfolio_value * self.BASE_PCT
+
+
+class MeanReversionStrategy(Strategy):
+    @property
+    def name(self):
+        return "mean_reversion"
+    def generate_signals(self, date, universe_data):
+        return []
+    def check_exit(self, position, current_data):
+        return False, ""
+    def get_position_size(self, signal, portfolio_value):
+        return 0.0
+
+
+class MLFastStrategy(Strategy):
+    @property
+    def name(self):
+        return "ml_fast"
+    def generate_signals(self, date, universe_data):
+        return []
+    def check_exit(self, position, current_data):
+        return False, ""
+    def get_position_size(self, signal, portfolio_value):
+        return 0.0
+
+
+class MLSlowStrategy(Strategy):
+    @property
+    def name(self):
+        return "ml_slow"
+    def generate_signals(self, date, universe_data):
+        return []
+    def check_exit(self, position, current_data):
+        return False, ""
+    def get_position_size(self, signal, portfolio_value):
+        return 0.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Portfolio Manager
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PortfolioManager:
+    """
+    Coordinates multiple strategies in a single simulation.
+
+    Day-by-day loop:
+      1. Close expiring positions (via ``strategy.check_exit``)
+      2. Gather signals from every active strategy
+      3. Resolve overlaps (size boost) and conflicts (cooldowns)
+      4. Allocate slots, size positions, execute buys
+      5. Park idle cash in SPY
+      6. Mark-to-market
+    """
+
+    def __init__(self, strategies, slot_config,
+                 initial_cash=INITIAL_CASH, slippage=SLIPPAGE,
+                 hold_days=HOLD_DAYS):
+        self.strategies = {s.name: s for s in strategies}
+        self.slot_config = slot_config
+        self.initial_cash = initial_cash
+        self.slippage = slippage
+        self.hold_days = hold_days
+
+    # ── public API ───────────────────────────────────────────────────────
+
+    def run(self, all_dates, spy_prices=None, price_data=None):
+        """
+        Execute the backtest.
+
+        Args
+        ----
+        all_dates : sorted list of trading-day timestamps
+        spy_prices : ``{date → float}`` for idle-cash parking (None to disable)
+        price_data : DataFrame with close prices (columns=symbols, index=dates).
+                     Required for price-based strategies (momentum, etc.).
+
+        Returns
+        -------
+        (portfolio_series, trades_list)
+        """
+        n_dates = len(all_dates)
+        multi = len(self.strategies) > 1
+
+        # Pre-build price lookup for price-based strategies
+        # {date → {symbol → price}}
+        px_lookup = {}
+        if price_data is not None:
+            for date in all_dates:
+                if date in price_data.index:
+                    px_lookup[date] = price_data.loc[date].to_dict()
+
+        # -- per-run state (local, so PortfolioManager is reusable) --------
+        cash            = float(self.initial_cash)
+        positions       = {}        # symbol → Position
+        idle_spy_shares = 0.0
+        trades          = []        # list of per-trade returns
+        cooldowns       = {}        # (symbol, strategy_name) → expiry index
+        port_vals       = []
+
+        for i, date in enumerate(all_dates):
+            spy_px = spy_prices.get(date) if spy_prices else None
+            if spy_px is not None and (np.isnan(spy_px) or spy_px <= 0):
+                spy_px = None
+
+            day_prices = px_lookup.get(date, {})
+            cur = {"idx": i, "date": date, "n_dates": n_dates,
+                   "prices": day_prices}
+
+            # ── 1. Update peak prices for price-based positions ──────────
+            for sym, pos in positions.items():
+                if pos.price_based and sym in day_prices:
+                    px = day_prices[sym]
+                    if not np.isnan(px) and px > pos.peak_price:
+                        pos.peak_price = px
+
+            # ── 2. Close expiring positions ──────────────────────────────
+            to_close = []
+            for sym, pos in positions.items():
+                strat = self.strategies[pos.strategy_name]
+                should_exit, _reason = strat.check_exit(pos, cur)
+                if should_exit:
+                    to_close.append(sym)
+
+            for sym in to_close:
+                pos = positions.pop(sym)
+                if pos.price_based:
+                    # Use actual closing price
+                    close_px = day_prices.get(sym, pos.entry_price)
+                    if np.isnan(close_px):
+                        close_px = pos.entry_price
+                    actual_ret = (close_px / pos.entry_price) - 1.0
+                    gross = pos.cost * (1.0 + actual_ret)
+                else:
+                    gross = pos.cost * (1.0 + pos.fwd_ret)
+                net   = gross * (1.0 - self.slippage)
+                cash += net
+                trades.append((net - pos.cost) / pos.cost)
+                if multi:
+                    cooldowns[(sym, pos.strategy_name)] = i + COOLDOWN_DAYS
+
+            # ── 3. Gather signals from all strategies ────────────────────
+            all_signals = []
+            for strat in self.strategies.values():
+                all_signals.extend(strat.generate_signals(date, None))
+
+            # Exclude held symbols
+            held = set(positions.keys())
+            # For non-price-based signals, also exclude NaN fwd_ret
+            all_signals = [s for s in all_signals
+                           if s.symbol not in held
+                           and (s.price_based or not np.isnan(s.fwd_ret))]
+
+            # Cooldowns (multi-strategy only — per-strategy cooldown)
+            if multi:
+                all_signals = [s for s in all_signals
+                               if cooldowns.get((s.symbol, s.strategy_name), -1) <= i]
+
+            # ── 4. Resolve overlaps (first-strategy-wins) ────────────────
+            # When multiple strategies signal the same symbol, keep the first
+            # signal (by generation order). No size amplification.
+            seen_syms = set()
+            resolved = []
+            for sig in all_signals:
+                if sig.symbol not in seen_syms:
+                    seen_syms.add(sig.symbol)
+                    resolved.append(sig)
+
+            resolved.sort(key=lambda s: s.confidence, reverse=True)
+
+            # ── 5. Execute buys ──────────────────────────────────────────
+            max_slots = self.slot_config.max_positions - len(positions)
+
+            # Release idle SPY before buying picks
+            if (spy_px and idle_spy_shares > 0
+                    and resolved and max_slots > 0):
+                proceeds = idle_spy_shares * spy_px * (1.0 - self.slippage)
+                cash += proceeds
+                idle_spy_shares = 0.0
+
+            # Consider up to max_slots candidates (matches original [:slots])
+            for sig in resolved[:max_slots]:
+                # Per-strategy slot check
+                counts = {}
+                for p in positions.values():
+                    counts[p.strategy_name] = counts.get(
+                        p.strategy_name, 0) + 1
+                if self.slot_config.available_for(
+                        sig.strategy_name, counts, len(positions)) <= 0:
+                    continue
+
+                # For price-based signals, require a valid entry price
+                entry_px = 0.0
+                if sig.price_based:
+                    entry_px = day_prices.get(sig.symbol, np.nan)
+                    if np.isnan(entry_px) or entry_px <= 0:
+                        continue
+
+                # Position sizing (strategy provides target)
+                strat = self.strategies[sig.strategy_name]
+                port_est = cash
+                for p in positions.values():
+                    if p.price_based:
+                        px = day_prices.get(p.symbol, p.entry_price)
+                        port_est += p.cost * (px / p.entry_price if p.entry_price > 0 else 1.0)
+                    else:
+                        port_est += p.cost
+                target = strat.get_position_size(sig, port_est)
+
+                cost = min(target, cash * 0.95)
+                if cost < 50.0:
+                    continue
+
+                cash -= cost * (1.0 + self.slippage)
+                exit_idx = min(i + self.hold_days, n_dates - 1)
+
+                positions[sig.symbol] = Position(
+                    symbol=sig.symbol,
+                    strategy_name=sig.strategy_name,
+                    cost=cost,
+                    entry_idx=i,
+                    exit_idx=exit_idx,
+                    fwd_ret=sig.fwd_ret,
+                    confidence=sig.confidence,
+                    price_based=sig.price_based,
+                    entry_price=entry_px,
+                    peak_price=entry_px,
+                )
+
+            # ── 6. Park idle cash in SPY ─────────────────────────────────
+            if spy_px:
+                pos_val = 0.0
+                for p in positions.values():
+                    if p.price_based:
+                        px = day_prices.get(p.symbol, p.entry_price)
+                        pos_val += p.cost * (px / p.entry_price if p.entry_price > 0 else 1.0)
+                    else:
+                        pos_val += p.cost * (1.0 + p.fwd_ret
+                                             * (i - p.entry_idx) / self.hold_days)
+                est_port  = cash + idle_spy_shares * spy_px + pos_val
+                reserved  = est_port * SPY_RESERVE_PCT
+                idle_cash = cash - reserved
+                if idle_cash > est_port * SPY_THRESHOLD_PCT:
+                    invest = min(idle_cash * SPY_INVEST_PCT, cash * 0.95)
+                    new_shares       = invest / spy_px
+                    cash            -= invest * (1.0 + self.slippage)
+                    idle_spy_shares += new_shares
+
+            # ── 7. Mark-to-market ────────────────────────────────────────
+            port_val = cash + (idle_spy_shares * spy_px if spy_px else 0)
+            for pos in positions.values():
+                if pos.price_based:
+                    px = day_prices.get(pos.symbol, pos.entry_price)
+                    port_val += pos.cost * (px / pos.entry_price if pos.entry_price > 0 else 1.0)
+                else:
+                    days_held  = i - pos.entry_idx
+                    interp_ret = pos.fwd_ret * days_held / self.hold_days
+                    port_val  += pos.cost * (1.0 + interp_ret)
+            port_vals.append(port_val)
+
+        series = pd.Series(port_vals, index=pd.DatetimeIndex(all_dates))
+        return series, [float(t) for t in trades]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Pre-built Slot Configurations
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Validation mode: ML-only, 6 slots (matches original backtest_ml.py)
+SLOT_ML_ONLY = SlotConfig(
+    strategy_slots={"ml_medium": 6},
+    flex_slots=0,
+    max_positions=6,
+)
+
+# Momentum-only mode: 5 primary + 2 flex = 7 max positions
+SLOT_MOM_ONLY = SlotConfig(
+    strategy_slots={"momentum": 5},
+    flex_slots=2,
+    max_positions=7,
+)
+
+# ML + Momentum combined: ML 2 + Mom 4 + 2 flex = max 8
+SLOT_ML_MOM = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 4},
+    flex_slots=2,
+    max_positions=8,
+)
+
+# Multi-strategy production mode (full)
+SLOT_MULTI = SlotConfig(
+    strategy_slots={
+        "ml_medium":      2,
+        "momentum":       1,
+        "mean_reversion": 1,
+        "ml_fast":        1,
+        "ml_slow":        1,
+    },
+    flex_slots=2,
+    max_positions=8,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Validation — compare against original backtest_ml.py
+# ══════════════════════════════════════════════════════════════════════════════
+
+def validate():
+    """Run both engines side-by-side and print a comparison table."""
+    from backtest_ml import (
+        load_predictions, fetch_benchmarks, run_simulation,
+        make_ml_signal_fn, calc_metrics, calc_alpha_beta,
+        INITIAL_CASH as BT_CASH,
+    )
+
+    t0 = time.perf_counter()
+    print("=" * 75)
+    print("  UNIFIED BACKTESTER — VALIDATION")
+    print("  Original backtest_ml.py  vs  unified_backtester.py")
+    print("  Strategy: ML Medium only  |  Threshold >0.55  |  SPY idle ON")
+    print("=" * 75)
+
+    # ── Load data ────────────────────────────────────────────────────────
+    df = load_predictions()
+    all_dates     = sorted(df["date"].unique().tolist())
+    universe_syms = sorted(df["symbol"].unique().tolist())
+    years         = (all_dates[-1] - all_dates[0]).days / 365.25
+
+    start = pd.Timestamp(all_dates[0]).strftime("%Y-%m-%d")
+    end   = (pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+    close = fetch_benchmarks(start, end, universe_syms)
+    close = close.reindex(
+        pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates]), method="ffill")
+    spy_px  = close["SPY"].dropna()
+    spy_bh  = spy_px / spy_px.iloc[0] * BT_CASH
+    spy_dict = close["SPY"].to_dict()
+
+    # ── 1. Original backtest_ml.py ───────────────────────────────────────
+    print("\n  Running ORIGINAL backtest_ml.py ...", flush=True)
+    df_sigs = df[["date", "symbol", "prob", "fwd_ret"]].copy()
+    sigs_by_date = {}
+    for date, grp in df_sigs.groupby("date"):
+        grp_s = grp.sort_values("prob", ascending=False)
+        sigs_by_date[date] = list(
+            grp_s[["symbol", "prob", "fwd_ret"]].itertuples(
+                index=False, name=None))
+
+    orig_vals, orig_trades = run_simulation(
+        sigs_by_date, all_dates,
+        signal_fn=make_ml_signal_fn(0.55),
+        years=years, label="Original", verbose=False,
+        spy_prices=spy_dict,
+    )
+    m_orig = calc_metrics(orig_vals, orig_trades, years, "Original")
+    a_orig, _ = calc_alpha_beta(
+        orig_vals, spy_bh.reindex(orig_vals.index, method="ffill"))
+    m_orig["alpha"] = a_orig
+
+    # ── 2. Unified backtester ────────────────────────────────────────────
+    print("  Running UNIFIED backtester ...", flush=True)
+    ml = MLMediumStrategy(df, threshold=0.55)
+    pm = PortfolioManager(strategies=[ml], slot_config=SLOT_ML_ONLY)
+    uni_vals, uni_trades = pm.run(all_dates, spy_prices=spy_dict)
+    m_uni = calc_metrics(uni_vals, uni_trades, years, "Unified")
+    a_uni, _ = calc_alpha_beta(
+        uni_vals, spy_bh.reindex(uni_vals.index, method="ffill"))
+    m_uni["alpha"] = a_uni
+
+    # ── 3. Comparison table ──────────────────────────────────────────────
+    rows = [
+        ("CAGR",          "cagr",          lambda v: f"{v:+.4%}"),
+        ("Sharpe",        "sharpe",        lambda v: f"{v:.6f}"),
+        ("Sortino",       "sortino",       lambda v: f"{v:.6f}"),
+        ("Max Drawdown",  "max_dd",        lambda v: f"{v:.6%}"),
+        ("Final Value",   "final_value",   lambda v: f"${v:,.2f}"),
+        ("Alpha vs SPY",  "alpha",         lambda v: f"{v:+.4%}"),
+        ("Total Trades",  "n_trades",      lambda v: f"{v}"),
+        ("Win Rate",      "win_rate",      lambda v: f"{v:.6%}"),
+        ("Profit Factor", "profit_factor",
+         lambda v: f"{v:.6f}" if np.isfinite(v) else "inf"),
+        ("Avg Trade Ret", "avg_trade_ret", lambda v: f"{v:+.6%}"),
+    ]
+
+    c0, c1, c2, c3 = 16, 18, 18, 18
+    print(f"\n{'=' * (c0+c1+c2+c3+4)}")
+    print(f"  {'Metric':<{c0}} {'Original':<{c1}} {'Unified':<{c2}} {'Delta':<{c3}}")
+    print(f"  {'─'*(c0-1)} {'─'*(c1-1)} {'─'*(c2-1)} {'─'*(c3-1)}")
+
+    all_match = True
+    for label, key, fmt in rows:
+        vo, vu = m_orig[key], m_uni[key]
+        if key == "n_trades":
+            d = int(vu) - int(vo)
+            ds = f"{d:+d}"
+            ok = d == 0
+        else:
+            d = vu - vo
+            ds = f"{d:+.10f}"
+            ok = abs(d) < 1e-6
+        if not ok:
+            all_match = False
+        tag = " ✓" if ok else " ✗"
+        print(f"  {label:<{c0}} {fmt(vo):<{c1}} {fmt(vu):<{c2}} {ds:<{c3}}{tag}")
+
+    # ── 4. Day-by-day & trade-by-trade diffs ─────────────────────────────
+    day_diff = np.abs(orig_vals.values - uni_vals.values)
+    print(f"\n  Portfolio value — day-by-day:")
+    print(f"    Max  |Δ|: ${day_diff.max():,.6f}")
+    print(f"    Mean |Δ|: ${day_diff.mean():,.6f}")
+
+    if len(orig_trades) == len(uni_trades):
+        t_diff = [abs(a - b) for a, b in zip(orig_trades, uni_trades)]
+        print(f"\n  Trade returns — trade-by-trade:")
+        print(f"    Max  |Δ|: {max(t_diff):.12f}")
+        print(f"    Count:    {len(orig_trades)} == {len(uni_trades)} ✓")
+    else:
+        print(f"\n  Trade count MISMATCH: {len(orig_trades)} vs {len(uni_trades)} ✗")
+        all_match = False
+
+    # ── 5. Verdict ───────────────────────────────────────────────────────
+    print(f"\n{'=' * (c0+c1+c2+c3+4)}")
+    if all_match and day_diff.max() < 0.01:
+        print("  VERDICT:  EXACT MATCH ✓")
+        print("  The unified backtester reproduces the original results.")
+    elif day_diff.max() < 1.0:
+        print("  VERDICT:  NEAR MATCH (rounding diffs < $1)")
+    else:
+        print("  VERDICT:  MISMATCH ✗  — investigate the differences above.")
+    print(f"{'=' * (c0+c1+c2+c3+4)}")
+
+    # ── 6. Slot configuration summary ────────────────────────────────────
+    print(f"\n  Validation slot config (matches backtest_ml.py):")
+    print(f"    ml_medium: {SLOT_ML_ONLY.strategy_slots['ml_medium']} slots  "
+          f"|  flex: {SLOT_ML_ONLY.flex_slots}  |  max: {SLOT_ML_ONLY.max_positions}")
+
+    print(f"\n  Multi-strategy slot config (for future use):")
+    for sname, n in SLOT_MULTI.strategy_slots.items():
+        status = "active" if sname == "ml_medium" else "placeholder"
+        print(f"    {sname:<20} {n} slot(s)  ({status})")
+    print(f"    {'flex pool':<20} {SLOT_MULTI.flex_slots} slot(s)")
+    print(f"    {'total max':<20} {SLOT_MULTI.max_positions}")
+
+    print(f"\n  Runtime: {time.perf_counter() - t0:.1f}s")
+
+
+if __name__ == "__main__":
+    validate()
