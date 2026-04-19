@@ -164,7 +164,12 @@ const REGIME_RECOVERY_DAYS = 3;
 const SPY_IDLE_RESERVE_PCT = 0.30;
 const SPY_IDLE_THRESHOLD_PCT = 0.20;
 const SPY_IDLE_INVEST_PCT = 0.85;
-const CIRCUIT_BREAKER_PCT = 0.02;
+// ── Multi-layer circuit breaker ──
+const CB_DAILY_LIMIT  = 0.04;  // Layer 1: 4% max daily loss
+const CB_WEEKLY_LIMIT = 0.08;  // Layer 2: 8% max weekly loss (5 trading days)
+const CB_PEAK_DD_LIMIT = 0.20; // Layer 3: 20% drawdown from all-time peak
+const CB_STATE_FILE = path.join(__dirname, "..", "ml_service", "data", "circuit_breaker_state.json");
+
 const PRICE_POLL_MS = 15000;
 const TRADE_CYCLE_MS = 60000;
 
@@ -942,7 +947,25 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   let cooldowns = {};              // strategy-specific: { "sym:strategy" → cycleNumber }
   let trendPositions = {};
   let trendBreakCounts = {};
-  let circuitBreaker = { date: null, morningValue: null, tripped: false };
+  // ── Multi-layer circuit breaker state ──
+  let circuitBreaker = {
+    // Layer 1: Daily
+    dailyDate: null,           // YYYY-MM-DD of current tracking day
+    marketOpenValue: null,     // portfolio value at market open
+    dailyHalted: false,
+    // Layer 2: Weekly (rolling 5 trading days)
+    weeklyValues: [],          // [{date, openValue}] — last 5 trading days
+    weeklyHalted: false,
+    weeklyResetDate: null,     // Monday date for auto-reset
+    // Layer 3: Peak drawdown
+    peakValue: 0,
+    peakDate: null,
+    peakHalted: false,         // manual reset only
+    // Notification dedup
+    _dailyNotified: false,
+    _weeklyNotified: false,
+    _peakNotified: false,
+  };
   let cycleNumber = 0;
   let tick = 0;
 
@@ -986,6 +1009,212 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     activityLog.push(entry);
     if (activityLog.length > 500) activityLog.splice(0, activityLog.length - 500);
     console.log(`[${type}] ${msg}`);
+  }
+
+  // ── Circuit breaker persistence ──
+
+  function loadCircuitBreakerState() {
+    try {
+      if (fs.existsSync(CB_STATE_FILE)) {
+        const raw = fs.readFileSync(CB_STATE_FILE, "utf8");
+        const saved = JSON.parse(raw);
+        circuitBreaker.peakValue = saved.peakValue || 0;
+        circuitBreaker.peakDate = saved.peakDate || null;
+        circuitBreaker.peakHalted = saved.peakHalted || false;
+        circuitBreaker.weeklyValues = saved.weeklyValues || [];
+        addLog(`[circuit-breaker] State loaded: peak=$${circuitBreaker.peakValue.toFixed(0)} (${circuitBreaker.peakDate || "never"})${circuitBreaker.peakHalted ? " | PEAK HALT ACTIVE" : ""}`, "system");
+      }
+    } catch (err) {
+      addLog(`[circuit-breaker] Failed to load state: ${err.message}`, "error");
+    }
+  }
+
+  function saveCircuitBreakerState() {
+    try {
+      const state = {
+        peakValue: circuitBreaker.peakValue,
+        peakDate: circuitBreaker.peakDate,
+        peakHalted: circuitBreaker.peakHalted,
+        weeklyValues: circuitBreaker.weeklyValues,
+        savedAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(CB_STATE_FILE, JSON.stringify(state, null, 2));
+    } catch (err) {
+      addLog(`[circuit-breaker] Failed to save state: ${err.message}`, "error");
+    }
+  }
+
+  /**
+   * Check all 3 circuit breaker layers.
+   * @param {number} currentValue — current portfolio value
+   * @returns {{safe: boolean, reason: string, layer: string, details: object}}
+   */
+  function checkCircuitBreakers(currentValue) {
+    const todayDate = new Date().toISOString().split("T")[0];
+    const etNow = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const dayOfWeek = etNow.getDay(); // 0=Sun, 1=Mon
+
+    // ── New day detection & daily reset ──
+    if (circuitBreaker.dailyDate !== todayDate) {
+      if (circuitBreaker.dailyHalted) {
+        addLog(`[circuit-breaker] Daily halt auto-reset at market open (new day: ${todayDate})`, "system");
+        notify.send("✅ CIRCUIT BREAKER — Daily halt reset. New trading day.", { immediate: true });
+      }
+      circuitBreaker.dailyDate = todayDate;
+      circuitBreaker.marketOpenValue = currentValue;
+      circuitBreaker.dailyHalted = false;
+      circuitBreaker._dailyNotified = false;
+
+      // Track opening value for weekly rolling window
+      circuitBreaker.weeklyValues.push({ date: todayDate, openValue: currentValue });
+      if (circuitBreaker.weeklyValues.length > 5) {
+        circuitBreaker.weeklyValues = circuitBreaker.weeklyValues.slice(-5);
+      }
+    }
+
+    // ── Monday auto-reset for weekly halt ──
+    if (dayOfWeek === 1 && circuitBreaker.weeklyResetDate !== todayDate) {
+      if (circuitBreaker.weeklyHalted) {
+        addLog(`[circuit-breaker] Weekly halt auto-reset at Monday open (${todayDate})`, "system");
+        notify.send("✅ CIRCUIT BREAKER — Weekly halt reset. New trading week.", { immediate: true });
+      }
+      circuitBreaker.weeklyHalted = false;
+      circuitBreaker._weeklyNotified = false;
+      circuitBreaker.weeklyResetDate = todayDate;
+    }
+
+    if (!circuitBreaker.marketOpenValue) {
+      circuitBreaker.marketOpenValue = currentValue;
+    }
+
+    // ── Update peak value ──
+    if (currentValue > circuitBreaker.peakValue) {
+      circuitBreaker.peakValue = currentValue;
+      circuitBreaker.peakDate = todayDate;
+    }
+
+    // ── Layer 3: Peak drawdown (check first — most severe) ──
+    if (circuitBreaker.peakHalted) {
+      return {
+        safe: false,
+        reason: `Peak drawdown halt active (peak $${circuitBreaker.peakValue.toFixed(0)} on ${circuitBreaker.peakDate}, current $${currentValue.toFixed(0)}, DD ${((1 - currentValue / circuitBreaker.peakValue) * 100).toFixed(1)}%). Manual reset required.`,
+        layer: "peak",
+        details: getCircuitBreakerDetails(currentValue),
+      };
+    }
+
+    const peakDD = circuitBreaker.peakValue > 0 ? 1 - currentValue / circuitBreaker.peakValue : 0;
+    if (peakDD >= CB_PEAK_DD_LIMIT) {
+      circuitBreaker.peakHalted = true;
+      const ddPct = (peakDD * 100).toFixed(1);
+      addLog(`[circuit-breaker] *** LAYER 3: PEAK DRAWDOWN ${ddPct}% *** Peak $${circuitBreaker.peakValue.toFixed(0)} → $${currentValue.toFixed(0)}. Manual reset required.`, "error");
+      notify.send(`🚨🚨 CIRCUIT BREAKER LAYER 3: PEAK DRAWDOWN ${ddPct}% — Peak $${circuitBreaker.peakValue.toFixed(0)} → Current $${currentValue.toFixed(0)}. All new trades HALTED. Manual reset required.`, { deduplicate: false, immediate: true });
+      saveCircuitBreakerState();
+      return {
+        safe: false,
+        reason: `Peak drawdown ${ddPct}% exceeds ${CB_PEAK_DD_LIMIT * 100}% limit`,
+        layer: "peak",
+        details: getCircuitBreakerDetails(currentValue),
+      };
+    }
+
+    // ── Layer 2: Weekly loss ──
+    if (circuitBreaker.weeklyHalted) {
+      return {
+        safe: false,
+        reason: "Weekly loss halt active. Auto-resets Monday at market open.",
+        layer: "weekly",
+        details: getCircuitBreakerDetails(currentValue),
+      };
+    }
+
+    if (circuitBreaker.weeklyValues.length > 0) {
+      const weekStart = circuitBreaker.weeklyValues[0].openValue;
+      const weeklyLoss = weekStart > 0 ? (weekStart - currentValue) / weekStart : 0;
+      if (weeklyLoss >= CB_WEEKLY_LIMIT) {
+        circuitBreaker.weeklyHalted = true;
+        const lossPct = (weeklyLoss * 100).toFixed(1);
+        addLog(`[circuit-breaker] ** LAYER 2: WEEKLY LOSS ${lossPct}% ** Week start $${weekStart.toFixed(0)} → $${currentValue.toFixed(0)}. Halted until Monday.`, "error");
+        notify.send(`🚨 CIRCUIT BREAKER LAYER 2: WEEKLY LOSS ${lossPct}% — $${weekStart.toFixed(0)} → $${currentValue.toFixed(0)}. New trades halted until Monday.`, { deduplicate: true, immediate: true });
+        saveCircuitBreakerState();
+        return {
+          safe: false,
+          reason: `Weekly loss ${lossPct}% exceeds ${CB_WEEKLY_LIMIT * 100}% limit`,
+          layer: "weekly",
+          details: getCircuitBreakerDetails(currentValue),
+        };
+      }
+    }
+
+    // ── Layer 1: Daily loss ──
+    if (circuitBreaker.dailyHalted) {
+      return {
+        safe: false,
+        reason: "Daily loss halt active. Auto-resets tomorrow at market open.",
+        layer: "daily",
+        details: getCircuitBreakerDetails(currentValue),
+      };
+    }
+
+    const dailyLoss = circuitBreaker.marketOpenValue > 0
+      ? (circuitBreaker.marketOpenValue - currentValue) / circuitBreaker.marketOpenValue : 0;
+    if (dailyLoss >= CB_DAILY_LIMIT) {
+      circuitBreaker.dailyHalted = true;
+      const lossPct = (dailyLoss * 100).toFixed(1);
+      addLog(`[circuit-breaker] * LAYER 1: DAILY LOSS ${lossPct}% * Open $${circuitBreaker.marketOpenValue.toFixed(0)} → $${currentValue.toFixed(0)}. Halted until tomorrow.`, "error");
+      if (!circuitBreaker._dailyNotified) {
+        notify.send(`🚨 CIRCUIT BREAKER LAYER 1: DAILY LOSS ${lossPct}% — $${circuitBreaker.marketOpenValue.toFixed(0)} → $${currentValue.toFixed(0)}. New trades halted until tomorrow.`, { deduplicate: true, immediate: true });
+        circuitBreaker._dailyNotified = true;
+      }
+      saveCircuitBreakerState();
+      return {
+        safe: false,
+        reason: `Daily loss ${lossPct}% exceeds ${CB_DAILY_LIMIT * 100}% limit`,
+        layer: "daily",
+        details: getCircuitBreakerDetails(currentValue),
+      };
+    }
+
+    // All clear
+    return { safe: true, reason: "All layers OK", layer: "none", details: getCircuitBreakerDetails(currentValue) };
+  }
+
+  function getCircuitBreakerDetails(currentValue) {
+    const dailyLoss = circuitBreaker.marketOpenValue > 0
+      ? (circuitBreaker.marketOpenValue - currentValue) / circuitBreaker.marketOpenValue : 0;
+    const weekStart = circuitBreaker.weeklyValues.length > 0
+      ? circuitBreaker.weeklyValues[0].openValue : currentValue;
+    const weeklyLoss = weekStart > 0 ? (weekStart - currentValue) / weekStart : 0;
+    const peakDD = circuitBreaker.peakValue > 0 ? 1 - currentValue / circuitBreaker.peakValue : 0;
+
+    return {
+      daily: {
+        limit: CB_DAILY_LIMIT,
+        current: dailyLoss,
+        halted: circuitBreaker.dailyHalted,
+        openValue: circuitBreaker.marketOpenValue,
+        currentValue,
+        pct: `${(dailyLoss * 100).toFixed(2)}%`,
+      },
+      weekly: {
+        limit: CB_WEEKLY_LIMIT,
+        current: weeklyLoss,
+        halted: circuitBreaker.weeklyHalted,
+        weekStartValue: weekStart,
+        currentValue,
+        tradingDays: circuitBreaker.weeklyValues.length,
+        pct: `${(weeklyLoss * 100).toFixed(2)}%`,
+      },
+      peak: {
+        limit: CB_PEAK_DD_LIMIT,
+        current: peakDD,
+        halted: circuitBreaker.peakHalted,
+        peakValue: circuitBreaker.peakValue,
+        peakDate: circuitBreaker.peakDate,
+        currentValue,
+        pct: `${(peakDD * 100).toFixed(2)}%`,
+      },
+    };
   }
 
   // ══════════════════════════════════════════
@@ -1076,6 +1305,17 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       addLog(`Initial regime: ${regime} (SPY SMA50: ${regimeResult.sma50?.toFixed(2) || "N/A"}, SMA200: ${regimeResult.sma200?.toFixed(2) || "N/A"})`, "system");
 
       error = null;
+      // Load persisted circuit breaker state (peak value, weekly values)
+      loadCircuitBreakerState();
+      // Initialize peak with current portfolio value if not set
+      if (circuitBreaker.peakValue === 0) {
+        const acctInit = await getAccount();
+        circuitBreaker.peakValue = acctInit.portfolio_value;
+        circuitBreaker.peakDate = new Date().toISOString().split("T")[0];
+        saveCircuitBreakerState();
+        addLog(`[circuit-breaker] Peak initialized: $${circuitBreaker.peakValue.toFixed(0)}`, "system");
+      }
+
       addLog("Trading engine initialized successfully", "system");
     } catch (err) {
       error = err.message;
@@ -1285,18 +1525,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       let cycleCash = account.cash;
       const cyclePortfolioValue = account.portfolio_value;
 
-      // Daily loss circuit breaker
-      const todayDate = new Date().toISOString().split("T")[0];
-      if (circuitBreaker.date !== todayDate) {
-        // Notify circuit breaker reset if it was tripped yesterday
-        if (circuitBreaker.tripped) {
-          notify.send("✅ CIRCUIT BREAKER RESET — New trading day, buys enabled.", { immediate: true });
-        }
-        circuitBreaker.date = todayDate;
-        circuitBreaker.morningValue = cyclePortfolioValue;
-        circuitBreaker.tripped = false;
+      // Multi-layer circuit breaker (daily 4%, weekly 8%, peak 20%)
+      const cbResult = checkCircuitBreakers(cyclePortfolioValue);
+      if (!cbResult.safe) {
+        skipNewBuys = true;
+        addLog(`[circuit-breaker] ${cbResult.layer.toUpperCase()} HALT: ${cbResult.reason}`, "error");
+      }
 
-        // Reset daily stats for the new day
+      // Reset daily stats on new day
+      const todayDate = new Date().toISOString().split("T")[0];
+      if (dailyStats.date !== todayDate) {
         const dayOfWeek = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).getDay();
         dailyStats = {
           date: todayDate, buys: 0, sells: 0, wins: 0, losses: 0,
@@ -1305,19 +1543,9 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             ? cyclePortfolioValue : dailyStats.weekStartValue,
         };
       }
-      if (!circuitBreaker.morningValue) {
-        circuitBreaker.morningValue = cyclePortfolioValue;
-      }
-      const dayDrop = (cyclePortfolioValue - circuitBreaker.morningValue) / circuitBreaker.morningValue;
-      if (dayDrop <= -CIRCUIT_BREAKER_PCT) {
-        circuitBreaker.tripped = true;
-      }
-      if (circuitBreaker.tripped) {
-        skipNewBuys = true;
-        const dropPct = (((cyclePortfolioValue - circuitBreaker.morningValue) / circuitBreaker.morningValue) * 100).toFixed(2);
-        addLog(`Circuit breaker activated -- portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}), no new buys until tomorrow.`, "error");
-        notify.send(`🚨 CIRCUIT BREAKER — Portfolio down ${dropPct}% today ($${circuitBreaker.morningValue.toFixed(0)} -> $${cyclePortfolioValue.toFixed(0)}). No new buys until tomorrow.`, { deduplicate: true, immediate: true });
-      }
+
+      // Persist circuit breaker state each cycle (peak tracking)
+      saveCircuitBreakerState();
 
       // ── Volatility targeting: track daily returns and update scale ──
       if (previousDayValue !== null && previousDayValue > 0) {
@@ -2219,7 +2447,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       if (minutesUntilClose <= 5) {
         const today = new Date().toISOString().split("T")[0];
         const activePos = positionsRaw.filter(p => p.symbol !== "SPY").length;
-        const dailyPnl = portfolioValue - (circuitBreaker.morningValue || portfolioValue);
+        const dailyPnl = portfolioValue - (circuitBreaker.marketOpenValue || portfolioValue);
         recordDailySnapshot({
           date: today,
           portfolio_value: portfolioValue,
@@ -2231,7 +2459,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         // Send daily/weekly summary via Telegram (once per day)
         if (!dailyStats.summarySent) {
           dailyStats.summarySent = true;
-          const dailyPnlPct = circuitBreaker.morningValue ? (dailyPnl / circuitBreaker.morningValue * 100) : 0;
+          const dailyPnlPct = circuitBreaker.marketOpenValue ? (dailyPnl / circuitBreaker.marketOpenValue * 100) : 0;
           const spyIdlePos = positionsRaw.find(p => p.symbol === "SPY");
           const spyIdleValue = spyIdlePos ? spyIdlePos.market_value : 0;
           const etDay = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" })).getDay();
@@ -2390,7 +2618,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       mlStatus,
       idleSpyShares,
       volTargeting: { scale: currentVolScale, dailyReturnsCount: dailyReturns.length },
-      circuitBreaker: { ...circuitBreaker },
+      circuitBreaker: {
+        state: circuitBreaker.peakHalted ? "peak_halt" : circuitBreaker.weeklyHalted ? "weekly_halt" : circuitBreaker.dailyHalted ? "daily_halt" : "ok",
+        dailyHalted: circuitBreaker.dailyHalted,
+        weeklyHalted: circuitBreaker.weeklyHalted,
+        peakHalted: circuitBreaker.peakHalted,
+        marketOpenValue: circuitBreaker.marketOpenValue,
+        peakValue: circuitBreaker.peakValue,
+        peakDate: circuitBreaker.peakDate,
+        details: getCircuitBreakerDetails(portfolioValue),
+      },
       // Strategy breakdown
       positionStrategy: { ...positionStrategy },
       slotConfig: SLOT_CONFIG,
@@ -2408,6 +2645,35 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     return activityLog.slice(-limit);
   }
 
+  function getCircuitBreakerStatus() {
+    const currentValue = portfolioValue || 0;
+    const cbResult = checkCircuitBreakers(currentValue);
+    return {
+      state: circuitBreaker.peakHalted ? "peak_halt" : circuitBreaker.weeklyHalted ? "weekly_halt" : circuitBreaker.dailyHalted ? "daily_halt" : "ok",
+      safe: cbResult.safe,
+      reason: cbResult.reason,
+      layer: cbResult.layer,
+      portfolioValue: currentValue,
+      layers: getCircuitBreakerDetails(currentValue),
+    };
+  }
+
+  function resetPeakCircuitBreaker() {
+    if (!circuitBreaker.peakHalted) {
+      return { success: false, message: "Peak circuit breaker is not currently halted." };
+    }
+    const oldPeak = circuitBreaker.peakValue;
+    circuitBreaker.peakHalted = false;
+    circuitBreaker._peakNotified = false;
+    // Reset peak to current value so it doesn't immediately re-trigger
+    circuitBreaker.peakValue = portfolioValue || circuitBreaker.peakValue;
+    circuitBreaker.peakDate = new Date().toISOString().split("T")[0];
+    saveCircuitBreakerState();
+    addLog(`[circuit-breaker] Peak halt MANUALLY RESET. Old peak $${oldPeak.toFixed(0)}, new peak $${circuitBreaker.peakValue.toFixed(0)}.`, "system");
+    notify.send(`✅ CIRCUIT BREAKER — Peak drawdown halt manually reset. New peak: $${circuitBreaker.peakValue.toFixed(0)}`, { immediate: true });
+    return { success: true, message: `Peak halt reset. New peak: $${circuitBreaker.peakValue.toFixed(0)}` };
+  }
+
   // ── Public API ──
   return {
     start,
@@ -2415,5 +2681,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     getState,
     getActivityFeed,
     isRunning: () => running,
+    getCircuitBreakerStatus,
+    resetPeakCircuitBreaker,
   };
 };

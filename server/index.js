@@ -889,6 +889,34 @@ app.get("/api/trading/status", (req, res) => {
 });
 
 // ══════════════════════════════════════════
+//  CIRCUIT BREAKER
+// ══════════════════════════════════════════
+
+app.get("/api/circuit-breaker/status", (req, res) => {
+  try {
+    const status = engine.getCircuitBreakerStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/circuit-breaker/reset/peak", (req, res) => {
+  try {
+    const { confirm } = req.body || {};
+    if (confirm !== true) {
+      return res.status(400).json({
+        error: "Must include { confirm: true } in request body to reset peak circuit breaker.",
+      });
+    }
+    const result = engine.resetPeakCircuitBreaker();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════
 //  START
 // ══════════════════════════════════════════
 
