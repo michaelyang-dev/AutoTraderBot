@@ -56,12 +56,16 @@ log = logging.getLogger("signal_server")
 # Individual stocks that have quarterly earnings (ETFs get zeros)
 STOCK_SYMBOLS = [
     "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
+    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
+    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
 ]
 
 UNIVERSE = [
     "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
+    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
+    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
     "XLE","XLF","XLV","XLI","XLK","XLY","XLP","XLU","XLRE","XLB","XLC",
-    "EWZ","EWJ","FXI","INDA","EFA","EEM",
+    "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
     "GLD","SLV","USO","DBC",
     "TLT","HYG","LQD",
     "VIXY",

@@ -24,16 +24,20 @@ FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 # Individual stocks that have quarterly earnings (ETFs get zeros)
 STOCK_SYMBOLS = [
     "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
+    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
+    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
 ]
 
 # ── Universe ──────────────────────────────────────────────────────────────────
 UNIVERSE = [
-    # Individual stocks (12)
+    # Individual stocks (32)
     "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
+    "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
+    "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
     # Sector ETFs (11)
     "XLE","XLF","XLV","XLI","XLK","XLY","XLP","XLU","XLRE","XLB","XLC",
-    # International ETFs (6)
-    "EWZ","EWJ","FXI","INDA","EFA","EEM",
+    # International ETFs (9)
+    "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
     # Commodities (4)
     "GLD","SLV","USO","DBC",
     # Bonds (3)
