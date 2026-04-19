@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-Monthly Model Retraining (Calibrated Production Model)
-=======================================================
+Monthly Model Retraining (Calibrated Production Model v2 — with Fundamentals)
+===============================================================================
 Automates the full retrain pipeline for the calibrated 3-strategy system:
 
-  1. Run data_pipeline.py  → rebuild features.parquet with latest prices + VIXY fix
-  2. Train calibrated model (CalibratedClassifierCV + isotonic, walk-forward CV)
+  1. Run fred_data_pipeline.py  → refresh macro data (yield curve, HY spread, DXY)
+  2. Run fmp_fundamentals_pipeline.py  → refresh fundamental data (income, ratios, etc.)
+  3. Run data_pipeline.py  → rebuild features.parquet (80 features incl. fundamentals)
+  4. Train calibrated model (CalibratedClassifierCV + isotonic, walk-forward CV)
+     → NaN-aware training (fundamentals can be NaN for ETFs; LightGBM handles natively)
      → save candidate model + predictions
-  3. Run Path B backtest (ML Medium + Momentum + Mean Reversion)
+  5. Run Path B backtest (ML Medium + Momentum + Mean Reversion)
      with the candidate predictions via unified_backtester
-  4. Deploy gate: candidate Path B must have CAGR >= baseline AND Sharpe >= baseline
-  5. If PASS: backup current model, promote candidate, update metrics, email
-  6. If FAIL: discard candidate, keep current model, email
+  6. Deploy gate: candidate Path B must have CAGR >= baseline AND Sharpe >= baseline
+  7. If PASS: backup current model, promote candidate, update metrics, email
+  8. If FAIL: discard candidate, keep current model, email
 
 Cron example (1st of each month at 6 AM):
     0 6 1 * * cd /path/to/auto-trader/ml_service && /path/to/python3 retrain.py >> /path/to/retrain.log 2>&1
@@ -97,6 +100,17 @@ LGB_PARAMS = dict(
     n_jobs            = -1,
     verbose           = -1,
 )
+
+# Fundamental feature columns (LightGBM handles NaN natively for ETFs)
+FUNDAMENTAL_FEATURE_COLS = [
+    "revenue_growth_yoy", "eps_growth_yoy", "revenue_growth_qoq",
+    "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
+    "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
+    "debt_to_equity", "current_ratio", "roe", "roa",
+    "days_since_earnings", "days_until_earnings", "eps_surprise_last",
+    "eps_revision_30d", "revenue_revision_30d",
+    "insider_buy_ratio_90d", "insider_net_shares_90d",
+]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,12 +233,14 @@ def train_calibrated_model():
     df = df.sort_values(["date", "symbol"]).reset_index(drop=True)
 
     before = len(df)
-    df = df.dropna()
+    # Drop NaN only for non-fundamental columns (fundamentals can be NaN for ETFs;
+    # LightGBM handles NaN natively)
+    feature_cols = get_feature_cols(df)
+    non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
+    df = df.dropna(subset=non_fund_cols + ["target"])
     log(f"Loaded {before:,} → {len(df):,} rows after dropping NaN  |  "
         f"{df['symbol'].nunique()} symbols  |  "
         f"{df['date'].min().date()} → {df['date'].max().date()}")
-
-    feature_cols = get_feature_cols(df)
     log(f"Features: {len(feature_cols)} columns")
 
     # Reconstruct forward returns for backtest compatibility
@@ -376,9 +392,37 @@ def main():
     log("Monthly Model Retraining (Calibrated Production Model)")
     log("=" * 65)
 
-    # ── 1. Run data pipeline (fetch latest prices, rebuild features) ─────
+    # ── 1. Run FRED macro data pipeline ───────────────────────────────
     try:
-        run_step("data_pipeline.py", "Data Pipeline (fetch prices & rebuild features)")
+        run_step("fred_data_pipeline.py", "FRED Macro Pipeline (yield curve, HY spread, DXY)")
+    except RuntimeError as exc:
+        log(f"FRED pipeline failed: {exc}")
+        send_email(
+            "AutoTrader: Model Retrain FAILED — FRED Pipeline Error",
+            f"Model retraining failed at FRED macro data pipeline stage.\n\n"
+            f"Error: {exc}\n\n"
+            f"The current production model is unchanged.\n"
+            f"Timestamp: {datetime.now(ET).isoformat()}",
+        )
+        return 1
+
+    # ── 2. Run FMP fundamentals pipeline ────────────────────────────
+    try:
+        run_step("fmp_fundamentals_pipeline.py", "FMP Fundamentals Pipeline (income, ratios, earnings, insiders)")
+    except RuntimeError as exc:
+        log(f"FMP fundamentals pipeline failed: {exc}")
+        send_email(
+            "AutoTrader: Model Retrain FAILED — FMP Fundamentals Error",
+            f"Model retraining failed at FMP fundamentals pipeline stage.\n\n"
+            f"Error: {exc}\n\n"
+            f"The current production model is unchanged.\n"
+            f"Timestamp: {datetime.now(ET).isoformat()}",
+        )
+        return 1
+
+    # ── 3. Run data pipeline (fetch latest prices, rebuild features) ─────
+    try:
+        run_step("data_pipeline.py", "Data Pipeline (fetch prices & rebuild 80 features with fundamentals)")
     except RuntimeError as exc:
         log(f"Data pipeline failed: {exc}")
         send_email(
@@ -390,10 +434,10 @@ def main():
         )
         return 1
 
-    # ── 2. Train calibrated model ────────────────────────────────────────
+    # ── 4. Train calibrated model ────────────────────────────────────────
     log("")
     log("─" * 65)
-    log("Training calibrated model (CalibratedClassifierCV + isotonic)")
+    log("Training calibrated model (CalibratedClassifierCV + isotonic, 80 features)")
     log("─" * 65)
 
     try:
@@ -409,7 +453,7 @@ def main():
         )
         return 1
 
-    # ── 3. Save candidate files ──────────────────────────────────────────
+    # ── 5. Save candidate files ──────────────────────────────────────────
     log("")
     log("Saving candidate model and predictions ...")
     joblib.dump(candidate_model, str(CANDIDATE_MODEL))
@@ -421,7 +465,7 @@ def main():
         CANDIDATE_PREDS, index=False, engine="pyarrow", compression="snappy")
     log(f"  Candidate preds → {CANDIDATE_PREDS.name}  ({len(candidate_preds):,} rows)")
 
-    # ── 4. Run Path B backtest with candidate predictions ────────────────
+    # ── 6. Run Path B backtest with candidate predictions ────────────────
     log("")
     log("─" * 65)
     log("Running Path B backtest with candidate model ...")
@@ -457,7 +501,7 @@ def main():
         f"MaxDD={format_pct(new_dd)}  Trades={new_trades}  WR={format_pct(new_wr)}  "
         f"Alpha={format_pct(new_alpha)}  AUC={oos_auc:.4f}")
 
-    # ── 5. Compare to baseline ───────────────────────────────────────────
+    # ── 7. Compare to baseline ───────────────────────────────────────────
     log("")
     log("─" * 65)
     log("Deploy gate check")
@@ -497,7 +541,7 @@ def main():
                 failures.append(f"Sharpe {new_sharpe:.3f} < baseline {prev_sharpe:.3f}")
             reason = "; ".join(failures)
 
-    # ── 6. Deploy or reject ──────────────────────────────────────────────
+    # ── 8. Deploy or reject ──────────────────────────────────────────────
     log("")
     if status == "DEPLOYED":
         log(f"DEPLOYING candidate model — {reason}")
@@ -541,7 +585,7 @@ def main():
             f"{'Trades':<20} {prev_metrics.get('n_trades', 'N/A') if prev_metrics else 'N/A':<15} {new_trades}\n"
             f"{'─' * 55}\n\n"
             f"Backtest: Path B (ML Medium + Momentum + Mean Reversion)\n"
-            f"Model type: CalibratedClassifierCV (isotonic)\n"
+            f"Model type: CalibratedClassifierCV (isotonic, 80 features incl. fundamentals)\n"
             f"Production model updated successfully.\n",
         )
 
@@ -573,7 +617,7 @@ def main():
             f"Candidate files have been deleted.\n",
         )
 
-    # ── 7. Summary ───────────────────────────────────────────────────────
+    # ── 9. Summary ───────────────────────────────────────────────────────
     elapsed = time.perf_counter() - t0
     log("")
     log("=" * 65)

@@ -40,8 +40,10 @@ UNIVERSE = [
     "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
     # Commodities (4)
     "GLD","SLV","USO","DBC",
-    # Bonds (3)
-    "TLT","HYG","LQD",
+    # Bonds (5)
+    "TLT","HYG","LQD","IEF","SHY",
+    # Dollar / Copper (2) — feature calculation only, not traded
+    "UUP","CPER",
     # Volatility (1)
     "VIXY",
 ]
@@ -193,6 +195,318 @@ def compute_obv_trend(close: pd.Series, volume: pd.Series, window: int = 20) -> 
     )
 
 
+# ── Fundamental feature columns (allowed to be NaN for ETFs) ─────────────────
+FUNDAMENTAL_FEATURE_COLS = [
+    "revenue_growth_yoy", "eps_growth_yoy", "revenue_growth_qoq",
+    "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
+    "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
+    "debt_to_equity", "current_ratio", "roe", "roa",
+    "days_since_earnings", "days_until_earnings", "eps_surprise_last",
+    "eps_revision_30d", "revenue_revision_30d",
+    "insider_buy_ratio_90d", "insider_net_shares_90d",
+]
+
+
+def _load_fundamental_data(date_index):
+    """Load all fundamental parquet files into a dict."""
+    files = {
+        "income": OUTPUT_DIR / "fundamentals_income.parquet",
+        "ratios": OUTPUT_DIR / "fundamentals_ratios.parquet",
+        "metrics": OUTPUT_DIR / "fundamentals_metrics.parquet",
+        "estimates": OUTPUT_DIR / "fundamentals_estimates.parquet",
+        "earnings": OUTPUT_DIR / "fundamentals_earnings.parquet",
+        "insiders": OUTPUT_DIR / "fundamentals_insiders.parquet",
+    }
+
+    missing = [k for k, v in files.items() if not v.exists()]
+    if missing:
+        print(f"\n  WARNING: Missing fundamental files: {missing}")
+        print("  Run fmp_fundamentals_pipeline.py first. Skipping fundamental features.")
+        return None
+
+    print("\n  Loading fundamental data ...")
+    data = {}
+    for key, path in files.items():
+        df = pd.read_parquet(path)
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+        if "filing_date" in df.columns:
+            df["filing_date"] = pd.to_datetime(df["filing_date"])
+        data[key] = df
+        print(f"    {key}: {len(df):,} rows")
+
+    return data
+
+
+def _compute_fundamental_features(symbol, date_index, fund_data):
+    """
+    Compute fundamental features for one symbol, using filingDate
+    for timing to avoid look-ahead bias. Returns a DataFrame indexed
+    by date, or None if no data.
+    """
+    income = fund_data["income"]
+    ratios = fund_data["ratios"]
+    metrics = fund_data["metrics"]
+    earnings = fund_data["earnings"]
+    estimates = fund_data["estimates"]
+    insiders = fund_data["insiders"]
+
+    sym_income = income[income["symbol"] == symbol].sort_values("date")
+    sym_ratios = ratios[ratios["symbol"] == symbol].sort_values("date")
+    sym_metrics = metrics[metrics["symbol"] == symbol].sort_values("date")
+    sym_earnings = earnings[earnings["symbol"] == symbol].sort_values("date")
+    sym_estimates = estimates[estimates["symbol"] == symbol].sort_values("date")
+    sym_insiders = insiders[insiders["symbol"] == symbol].sort_values("date") if len(insiders) > 0 else pd.DataFrame()
+
+    if len(sym_income) == 0:
+        return None
+
+    feat = pd.DataFrame(index=date_index)
+
+    # ── Map quarterly data to daily dates using filingDate ────────────
+    # For each trading day, the "latest known" quarter is the most recent
+    # one with filingDate <= that trading day.
+
+    # Build lookup: for each filing_date, store the quarter's data
+    inc_by_filing = sym_income.dropna(subset=["filing_date"]).sort_values("filing_date")
+    rat_by_date = sym_ratios.sort_values("date")
+    met_by_date = sym_metrics.sort_values("date")
+
+    if len(inc_by_filing) == 0:
+        return None
+
+    # ── Growth rates ─────────────────────────────────────────────────
+    # Revenue YoY: compare to same quarter one year ago (4 quarters back)
+    inc_sorted = inc_by_filing.copy()
+    inc_sorted["revenue_yoy"] = np.nan
+    inc_sorted["eps_yoy"] = np.nan
+    inc_sorted["revenue_qoq"] = np.nan
+
+    for idx in range(len(inc_sorted)):
+        row = inc_sorted.iloc[idx]
+        rev = row.get("revenue")
+        eps = row.get("eps_diluted") or row.get("eps")
+
+        # YoY: find same period 4 quarters ago
+        if idx + 4 < len(inc_sorted):
+            prev = inc_sorted.iloc[idx + 4]  # sorted descending by date? No, ascending
+        # Actually inc_by_filing is sorted ascending, so idx-4 would be 4 quarters earlier
+        if idx >= 4:
+            prev = inc_sorted.iloc[idx - 4]
+            prev_rev = prev.get("revenue")
+            prev_eps = prev.get("eps_diluted") or prev.get("eps")
+            if prev_rev and abs(prev_rev) > 1e-6 and rev is not None:
+                inc_sorted.iloc[idx, inc_sorted.columns.get_loc("revenue_yoy")] = (rev - prev_rev) / abs(prev_rev)
+            if prev_eps and abs(prev_eps) > 1e-6 and eps is not None:
+                inc_sorted.iloc[idx, inc_sorted.columns.get_loc("eps_yoy")] = (eps - prev_eps) / abs(prev_eps)
+
+        # QoQ: compare to previous quarter
+        if idx >= 1:
+            prev = inc_sorted.iloc[idx - 1]
+            prev_rev = prev.get("revenue")
+            if prev_rev and abs(prev_rev) > 1e-6 and rev is not None:
+                inc_sorted.iloc[idx, inc_sorted.columns.get_loc("revenue_qoq")] = (rev - prev_rev) / abs(prev_rev)
+
+    # ── Margins ──────────────────────────────────────────────────────
+    inc_sorted["_gross_margin"] = np.where(
+        inc_sorted["revenue"].notna() & (inc_sorted["revenue"].abs() > 0),
+        inc_sorted["gross_profit"] / inc_sorted["revenue"], np.nan)
+    inc_sorted["_operating_margin"] = np.where(
+        inc_sorted["revenue"].notna() & (inc_sorted["revenue"].abs() > 0),
+        inc_sorted["operating_income"] / inc_sorted["revenue"], np.nan)
+    inc_sorted["_net_margin"] = np.where(
+        inc_sorted["revenue"].notna() & (inc_sorted["revenue"].abs() > 0),
+        inc_sorted["net_income"] / inc_sorted["revenue"], np.nan)
+
+    # Margin trend (slope of net_margin over last 4 quarters)
+    inc_sorted["_margin_trend"] = np.nan
+    nm_vals = inc_sorted["_net_margin"].values
+    for idx in range(3, len(nm_vals)):
+        window = nm_vals[idx-3:idx+1]
+        valid = window[~np.isnan(window)]
+        if len(valid) >= 3:
+            slope = np.polyfit(range(len(valid)), valid, 1)[0]
+            inc_sorted.iloc[idx, inc_sorted.columns.get_loc("_margin_trend")] = slope
+
+    # ── EPS surprise ─────────────────────────────────────────────────
+    # Most recent earnings where actual is reported
+    reported = sym_earnings[sym_earnings["eps_actual"].notna()].sort_values("date")
+
+    # ── Map quarterly values to daily dates using filingDate ──────────
+    # For each trading day, find the latest quarter with filingDate <= that day
+    filing_dates = inc_sorted["filing_date"].values
+    n_quarters = len(inc_sorted)
+
+    # Pre-build arrays for fast lookup
+    rev_yoy_arr = inc_sorted["revenue_yoy"].values
+    eps_yoy_arr = inc_sorted["eps_yoy"].values
+    rev_qoq_arr = inc_sorted["revenue_qoq"].values
+    gm_arr = inc_sorted["_gross_margin"].values
+    om_arr = inc_sorted["_operating_margin"].values
+    nm_arr = inc_sorted["_net_margin"].values
+    mt_arr = inc_sorted["_margin_trend"].values
+
+    # Ratios arrays
+    rat_dates = rat_by_date["date"].values if len(rat_by_date) > 0 else np.array([])
+    pe_arr = rat_by_date["pe_ratio"].values if len(rat_by_date) > 0 else np.array([])
+    ps_arr = rat_by_date["ps_ratio"].values if len(rat_by_date) > 0 else np.array([])
+    dte_arr = rat_by_date["debt_to_equity"].values if len(rat_by_date) > 0 else np.array([])
+    cr_arr = rat_by_date["current_ratio"].values if len(rat_by_date) > 0 else np.array([])
+
+    # Metrics arrays
+    met_dates = met_by_date["date"].values if len(met_by_date) > 0 else np.array([])
+    roe_arr = met_by_date["roe"].values if len(met_by_date) > 0 else np.array([])
+    roa_arr = met_by_date["roa"].values if len(met_by_date) > 0 else np.array([])
+
+    # Earnings dates
+    earn_dates = reported["date"].values if len(reported) > 0 else np.array([])
+    eps_actual_arr = reported["eps_actual"].values if len(reported) > 0 else np.array([])
+    eps_est_arr = reported["eps_estimated"].values if len(reported) > 0 else np.array([])
+
+    # Future earnings dates (for days_until_earnings)
+    all_earn_dates = sym_earnings["date"].values if len(sym_earnings) > 0 else np.array([])
+
+    # Build daily feature arrays
+    n_days = len(date_index)
+    rev_growth_yoy = np.full(n_days, np.nan)
+    eps_growth_yoy = np.full(n_days, np.nan)
+    rev_growth_qoq = np.full(n_days, np.nan)
+    gross_margin = np.full(n_days, np.nan)
+    operating_margin = np.full(n_days, np.nan)
+    net_margin = np.full(n_days, np.nan)
+    margin_trend = np.full(n_days, np.nan)
+    pe_ratio_daily = np.full(n_days, np.nan)
+    ps_ratio_daily = np.full(n_days, np.nan)
+    dte_daily = np.full(n_days, np.nan)
+    cr_daily = np.full(n_days, np.nan)
+    roe_daily = np.full(n_days, np.nan)
+    roa_daily = np.full(n_days, np.nan)
+    days_since = np.full(n_days, np.nan)
+    days_until = np.full(n_days, np.nan)
+    eps_surprise = np.full(n_days, np.nan)
+
+    date_vals = date_index.values
+
+    for d in range(n_days):
+        dt = date_vals[d]
+
+        # Find latest quarter with filing_date <= dt
+        q_idx = np.searchsorted(filing_dates, dt, side="right") - 1
+        if q_idx >= 0 and q_idx < n_quarters:
+            rev_growth_yoy[d] = rev_yoy_arr[q_idx]
+            eps_growth_yoy[d] = eps_yoy_arr[q_idx]
+            rev_growth_qoq[d] = rev_qoq_arr[q_idx]
+            gross_margin[d] = gm_arr[q_idx]
+            operating_margin[d] = om_arr[q_idx]
+            net_margin[d] = nm_arr[q_idx]
+            margin_trend[d] = mt_arr[q_idx]
+
+        # Ratios: latest quarter date <= dt
+        if len(rat_dates) > 0:
+            r_idx = np.searchsorted(rat_dates, dt, side="right") - 1
+            if r_idx >= 0:
+                pe_ratio_daily[d] = pe_arr[r_idx]
+                ps_ratio_daily[d] = ps_arr[r_idx]
+                dte_daily[d] = dte_arr[r_idx]
+                cr_daily[d] = cr_arr[r_idx]
+
+        # Metrics
+        if len(met_dates) > 0:
+            m_idx = np.searchsorted(met_dates, dt, side="right") - 1
+            if m_idx >= 0:
+                roe_daily[d] = roe_arr[m_idx]
+                roa_daily[d] = roa_arr[m_idx]
+
+        # Days since last earnings
+        if len(earn_dates) > 0:
+            e_idx = np.searchsorted(earn_dates, dt, side="right") - 1
+            if e_idx >= 0:
+                diff = (dt - earn_dates[e_idx]) / np.timedelta64(1, "D")
+                days_since[d] = diff
+
+                # EPS surprise from most recent reported
+                actual = eps_actual_arr[e_idx]
+                est = eps_est_arr[e_idx]
+                if not np.isnan(actual) and est is not None and not np.isnan(est) and abs(est) > 1e-9:
+                    eps_surprise[d] = (actual - est) / abs(est)
+
+        # Days until next earnings
+        if len(all_earn_dates) > 0:
+            next_idx = np.searchsorted(all_earn_dates, dt, side="right")
+            if next_idx < len(all_earn_dates):
+                diff = (all_earn_dates[next_idx] - dt) / np.timedelta64(1, "D")
+                days_until[d] = diff
+
+    feat["revenue_growth_yoy"] = rev_growth_yoy
+    feat["eps_growth_yoy"] = eps_growth_yoy
+    feat["revenue_growth_qoq"] = rev_growth_qoq
+    feat["gross_margin"] = gross_margin
+    feat["operating_margin"] = operating_margin
+    feat["net_margin"] = net_margin
+    feat["margin_trend_4q"] = margin_trend
+    feat["pe_ratio"] = pe_ratio_daily
+    feat["ps_ratio"] = ps_ratio_daily
+    feat["debt_to_equity"] = dte_daily
+    feat["current_ratio"] = cr_daily
+    feat["roe"] = roe_daily
+    feat["roa"] = roa_daily
+    feat["days_since_earnings"] = days_since
+    feat["days_until_earnings"] = days_until
+    feat["eps_surprise_last"] = np.clip(eps_surprise, -2.0, 2.0)
+
+    # ── Analyst estimate revisions ───────────────────────────────────
+    # Compare current-year estimate to 30 days ago (using estimate snapshots)
+    # Since we only have point-in-time estimates, use the available data
+    # For simplicity: set to NaN (we only have 4 annual estimates, not daily snapshots)
+    feat["eps_revision_30d"] = np.nan
+    feat["revenue_revision_30d"] = np.nan
+
+    # ── Insider activity ─────────────────────────────────────────────
+    buy_ratio = np.full(n_days, np.nan)
+    net_shares = np.full(n_days, np.nan)
+
+    if len(sym_insiders) > 0:
+        ins_dates = sym_insiders["date"].values
+        ins_is_buy = sym_insiders["is_buy"].values
+        ins_shares = sym_insiders["shares"].values
+
+        for d in range(n_days):
+            dt = date_vals[d]
+            # Look back 90 calendar days
+            cutoff = dt - np.timedelta64(90, "D")
+            mask = (ins_dates >= cutoff) & (ins_dates <= dt)
+            if mask.any():
+                buys = ins_is_buy[mask].sum()
+                total = mask.sum()
+                buy_ratio[d] = buys / total if total > 0 else np.nan
+
+                # Net shares: positive = net buying
+                buy_shares = ins_shares[mask & (ins_is_buy == 1)].sum() if (mask & (ins_is_buy == 1)).any() else 0
+                sell_shares = ins_shares[mask & (ins_is_buy == 0)].sum() if (mask & (ins_is_buy == 0)).any() else 0
+                net_shares[d] = buy_shares - sell_shares
+
+    feat["insider_buy_ratio_90d"] = buy_ratio
+    feat["insider_net_shares_90d"] = net_shares
+
+    return feat
+
+
+def _consec_streak(returns: pd.Series, positive: bool = True) -> pd.Series:
+    """Count consecutive positive (or negative) monthly returns."""
+    result = pd.Series(0, index=returns.index, dtype=float)
+    streak = 0
+    for i in range(len(returns)):
+        r = returns.iloc[i]
+        if np.isnan(r):
+            streak = 0
+        elif (positive and r > 0) or (not positive and r < 0):
+            streak += 1
+        else:
+            streak = 0
+        result.iloc[i] = streak
+    return result
+
+
 def compute_symbol_features(df: pd.DataFrame) -> pd.DataFrame:
     c = df["close"]
     v = df["volume"]
@@ -231,6 +545,42 @@ def compute_symbol_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # OBV 20-day trend (slope)
     feat["obv_trend_20d"] = compute_obv_trend(c, v, 20)
+
+    # ── Long-timeframe technical features (for ML Slow v2) ──────────────
+    feat["ret_126d"] = c.pct_change(126)
+    feat["ret_252d"] = c.pct_change(252)
+
+    # Distance from 52-week high/low
+    high_252 = df["high"].rolling(252, min_periods=252).max()
+    low_252  = df["low"].rolling(252, min_periods=252).min()
+    feat["dist_52w_high"] = (c - high_252) / high_252.replace(0, np.nan)
+    feat["dist_52w_low"]  = (c - low_252)  / low_252.replace(0, np.nan)
+
+    # SMA200 slope (30-day change in SMA200)
+    sma200 = c.rolling(200).mean()
+    sma200_30ago = sma200.shift(30)
+    feat["sma200_slope"] = (sma200 - sma200_30ago) / sma200_30ago.replace(0, np.nan)
+
+    # Max drawdown over past 6 months (126 trading days)
+    def _rolling_max_dd(prices, window=126):
+        result = pd.Series(np.nan, index=prices.index)
+        arr = prices.values
+        for i in range(window, len(arr)):
+            segment = arr[i - window : i + 1]
+            valid = segment[~np.isnan(segment)]
+            if len(valid) < 10:
+                continue
+            peak = np.maximum.accumulate(valid)
+            dd = (valid - peak) / np.where(peak > 0, peak, np.nan)
+            result.iloc[i] = np.nanmin(dd)
+        return result
+
+    feat["max_dd_6m"] = _rolling_max_dd(c, 126)
+
+    # Consecutive up/down months
+    monthly_ret = c.pct_change(21)  # ~1 month in trading days
+    feat["consec_up_months"] = _consec_streak(monthly_ret, positive=True)
+    feat["consec_down_months"] = _consec_streak(monthly_ret, positive=False)
 
     return feat
 
@@ -387,6 +737,58 @@ def main():
     cross["month"]       = date_index.month
     cross["quarter"]     = date_index.quarter
 
+    # ── Macro regime features (from FRED + cross-asset ETFs) ─────────────
+    macro_file = OUTPUT_DIR / "macro_fred.parquet"
+    if macro_file.exists():
+        print("\n  Loading FRED macro data ...")
+        macro = pd.read_parquet(macro_file)
+        macro.index = pd.to_datetime(macro.index).tz_localize(None)
+        macro = macro.reindex(date_index, method="ffill")
+        # Backfill any series that starts late (e.g. BAMLH0A0HYM2)
+        macro = macro.bfill()
+
+        # Yield curve
+        cross["yield_curve_10y2y"] = macro.get("T10Y2Y", pd.Series(np.nan, index=date_index))
+        yc = cross["yield_curve_10y2y"]
+        cross["yield_curve_30d_change"] = yc - yc.shift(30)
+
+        # High yield spread
+        hy = macro.get("BAMLH0A0HYM2", pd.Series(np.nan, index=date_index))
+        cross["hy_spread"] = hy
+        cross["hy_spread_30d_change"] = hy - hy.shift(30)
+
+        # Dollar index
+        dxy = macro.get("DTWEXBGS", pd.Series(np.nan, index=date_index))
+        cross["dxy_level"] = dxy
+        cross["dxy_30d_change"] = (dxy - dxy.shift(30)) / dxy.shift(30).replace(0, np.nan)
+
+        print(f"    FRED features added: yield_curve, hy_spread, dxy")
+    else:
+        print("  WARNING: macro_fred.parquet not found — run fred_data_pipeline.py first")
+        for col in ["yield_curve_10y2y", "yield_curve_30d_change",
+                     "hy_spread", "hy_spread_30d_change",
+                     "dxy_level", "dxy_30d_change"]:
+            cross[col] = np.nan
+
+    # Cross-asset ratio features (from ETF prices)
+    hyg_c = aligned_close("HYG")
+    lqd_c = aligned_close("LQD")
+    cper_c = aligned_close("CPER")
+    gld_c = aligned_close("GLD")
+
+    hyg_lqd = hyg_c / lqd_c.replace(0, np.nan)
+    cross["hyg_lqd_ratio"] = hyg_lqd
+    cross["hyg_lqd_30d_change"] = (hyg_lqd - hyg_lqd.shift(30)) / hyg_lqd.shift(30).replace(0, np.nan)
+
+    copper_gold = cper_c / gld_c.replace(0, np.nan)
+    cross["copper_gold_ratio"] = copper_gold
+    cross["copper_gold_30d_change"] = (copper_gold - copper_gold.shift(30)) / copper_gold.shift(30).replace(0, np.nan)
+
+    print(f"    Cross-asset ratios added: HYG/LQD, CPER/GLD")
+
+    # ── Load fundamental data (if available) ────────────────────────────
+    fund_data = _load_fundamental_data(date_index)
+
     # 3. Compute per-symbol features + target, then concatenate
     print("\nComputing features ...")
     all_frames = []
@@ -403,6 +805,12 @@ def main():
         # Per-symbol technical features
         feat = compute_symbol_features(df)
 
+        # Fundamental features (stocks only; ETFs get NaN which LightGBM handles)
+        if fund_data is not None:
+            fund_feat = _compute_fundamental_features(sym, date_index, fund_data)
+            if fund_feat is not None:
+                feat = feat.join(fund_feat, how="left")
+
         # Target: forward 10-day return > 2% (computed BEFORE dropping NaNs)
         fwd_ret = df["close"].pct_change(10).shift(-10)
         feat["target"] = (fwd_ret > 0.02).astype("Int8")  # nullable int → NaN for last rows
@@ -417,10 +825,12 @@ def main():
         # Drop rows where the target is NaN (last 10 days — look-ahead unavailable)
         feat = feat[feat["target"].notna()]
 
-        # Drop rows with any NaN feature (warmup period + genuine gaps)
-        # Keep target separate so we don't accidentally forward-fill it
-        feature_cols = [c for c in feat.columns if c not in ("symbol", "target")]
-        feat = feat.dropna(subset=feature_cols)
+        # Drop rows with any NaN in non-fundamental features (warmup period)
+        # Fundamental features are allowed to be NaN (ETFs, missing data)
+        # because LightGBM handles NaN natively
+        non_fund_cols = [c for c in feat.columns
+                         if c not in ("symbol", "target") and c not in FUNDAMENTAL_FEATURE_COLS]
+        feat = feat.dropna(subset=non_fund_cols)
 
         n_rows = len(feat)
         pos_pct = feat["target"].mean() * 100
@@ -436,6 +846,106 @@ def main():
     master = pd.concat(all_frames, ignore_index=True)
     master["date"] = pd.to_datetime(master["date"])
     master = master.sort_values(["date", "symbol"]).reset_index(drop=True)
+
+    # ── Cross-sectional rank features ────────────────────────────────────
+    # Compute percentile ranks across all stocks on each date
+    print("Computing cross-sectional rank features ...")
+    for ret_col, rank_col, period in [
+        ("ret_60d",  "return_rank_3m",  None),   # 60d ~ 3 months
+        ("ret_126d", "return_rank_6m",  None),
+        ("ret_252d", "return_rank_12m", None),
+    ]:
+        if ret_col in master.columns:
+            master[rank_col] = master.groupby("date")[ret_col].rank(pct=True)
+        else:
+            master[rank_col] = np.nan
+
+    # Volatility ranks (use existing vol columns)
+    for vol_col, rank_col in [
+        ("vol_60d",  "vol_rank_3m"),
+    ]:
+        if vol_col in master.columns:
+            master[rank_col] = master.groupby("date")[vol_col].rank(pct=True)
+        else:
+            master[rank_col] = np.nan
+
+    # 6-month volatility (126-day rolling std) — compute and rank
+    # We need per-symbol close for this; use the return columns
+    # vol_126d = daily_ret.rolling(126).std() * sqrt(252) — compute from ret_5d
+    # Actually compute from the existing data: use ret_126d dispersion as proxy
+    # Better: compute directly from close prices stored in raw
+    vol_126d_vals = []
+    for _, row in master.iterrows():
+        vol_126d_vals.append(np.nan)  # placeholder
+
+    # More efficient: compute vol_126d per symbol then merge
+    print("  Computing 126-day volatility ...")
+    vol_126d_series = {}
+    for sym in UNIVERSE:
+        df_sym = raw.get(sym, pd.DataFrame())
+        if df_sym.empty:
+            continue
+        c = df_sym["close"].reindex(date_index)
+        daily_r = c.pct_change()
+        vol_126d_series[sym] = daily_r.rolling(126, min_periods=126).std() * np.sqrt(252)
+
+    # Map back to master
+    master["vol_126d"] = np.nan
+    for sym, vol_s in vol_126d_series.items():
+        mask = master["symbol"] == sym
+        dates = master.loc[mask, "date"]
+        master.loc[mask, "vol_126d"] = vol_s.reindex(dates.values).values
+
+    master["vol_rank_6m"] = master.groupby("date")["vol_126d"].rank(pct=True)
+
+    # ── Fundamental cross-sectional features ────────────────────────────
+    # PE and PS relative to universe median on each date
+    if "pe_ratio" in master.columns:
+        pe_median = master.groupby("date")["pe_ratio"].transform("median")
+        master["pe_vs_universe_median"] = np.where(
+            pe_median.notna() & (pe_median.abs() > 0),
+            master["pe_ratio"] / pe_median - 1.0,
+            np.nan,
+        )
+    if "ps_ratio" in master.columns:
+        ps_median = master.groupby("date")["ps_ratio"].transform("median")
+        master["ps_vs_universe_median"] = np.where(
+            ps_median.notna() & (ps_median.abs() > 0),
+            master["ps_ratio"] / ps_median - 1.0,
+            np.nan,
+        )
+
+    n_rank_features = 5
+    n_fund_cross = sum(1 for c in ["pe_vs_universe_median", "ps_vs_universe_median"] if c in master.columns)
+    print(f"  Added {n_rank_features} cross-sectional rank features + {n_fund_cross} fundamental cross-sectional features")
+
+    # ── Clip fundamental outliers ───────────────────────────────────────
+    print("Clipping fundamental feature outliers ...")
+    clip_rules = {
+        "pe_ratio": (-100, 500),
+        "ps_ratio": (0, 100),
+        "debt_to_equity": (0, 50),
+        "current_ratio": (0, 50),
+        "roe": (-5, 5),
+        "roa": (-5, 5),
+    }
+    for col, (lo, hi) in clip_rules.items():
+        if col in master.columns:
+            before_min, before_max = master[col].min(), master[col].max()
+            master[col] = master[col].clip(lo, hi)
+            print(f"  {col}: [{before_min:.2f}, {before_max:.2f}] → [{lo}, {hi}]")
+
+    # Log-scale insider_net_shares_90d
+    if "insider_net_shares_90d" in master.columns:
+        before_min, before_max = master["insider_net_shares_90d"].min(), master["insider_net_shares_90d"].max()
+        master["insider_net_shares_90d"] = np.sign(master["insider_net_shares_90d"]) * np.log1p(master["insider_net_shares_90d"].abs())
+        print(f"  insider_net_shares_90d: [{before_min:.0f}, {before_max:.0f}] → log-scaled [{master['insider_net_shares_90d'].min():.2f}, {master['insider_net_shares_90d'].max():.2f}]")
+
+    # Also clip cross-sectional valuation features derived from clipped PE/PS
+    if "pe_vs_universe_median" in master.columns:
+        master["pe_vs_universe_median"] = master["pe_vs_universe_median"].clip(-10, 20)
+    if "ps_vs_universe_median" in master.columns:
+        master["ps_vs_universe_median"] = master["ps_vs_universe_median"].clip(-1, 10)
 
     print(f"Final dataset: {len(master):,} rows × {len(master.columns)} columns")
     print(f"Date range in data: {master['date'].min().date()} → {master['date'].max().date()}")
