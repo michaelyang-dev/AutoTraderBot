@@ -126,6 +126,19 @@ const alpaca = new Alpaca({
   paper: true,
 });
 
+// ── Alpaca symbol format mapping ──
+// S&P 500 lists use hyphens (BF-B) but Alpaca API requires dots (BF.B)
+const ALPACA_SYMBOL_MAP = {
+  "BF-B": "BF.B",
+  "BRK-B": "BRK.B",
+  "BRK-A": "BRK.A",
+};
+const REVERSE_SYMBOL_MAP = Object.fromEntries(
+  Object.entries(ALPACA_SYMBOL_MAP).map(([k, v]) => [v, k])
+);
+function toAlpacaSymbol(sym) { return ALPACA_SYMBOL_MAP[sym] || sym; }
+function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
+
 // ══════════════════════════════════════════
 //  ACCOUNT
 // ══════════════════════════════════════════
@@ -162,7 +175,7 @@ app.get("/api/positions", async (req, res) => {
     const positions = await alpaca.getPositions();
     res.json(
       positions.map((p) => ({
-        symbol: p.symbol,
+        symbol: fromAlpacaSymbol(p.symbol),
         qty: parseFloat(p.qty),
         avg_entry_price: parseFloat(p.avg_entry_price),
         current_price: parseFloat(p.current_price),
@@ -192,7 +205,7 @@ app.post("/api/orders", async (req, res) => {
     }
 
     const orderParams = {
-      symbol: symbol.toUpperCase(),
+      symbol: toAlpacaSymbol(symbol.toUpperCase()),
       qty: parseInt(qty),
       side,             // "buy" or "sell"
       type,             // "market", "limit", "stop", "stop_limit"
@@ -231,7 +244,7 @@ app.get("/api/orders", async (req, res) => {
     res.json(
       orders.map((o) => ({
         id: o.id,
-        symbol: o.symbol,
+        symbol: fromAlpacaSymbol(o.symbol),
         qty: parseFloat(o.qty),
         filled_qty: parseFloat(o.filled_qty || 0),
         side: o.side,
@@ -263,7 +276,7 @@ app.delete("/api/orders", async (req, res) => {
 app.delete("/api/positions/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
-    await alpaca.closePosition(symbol.toUpperCase());
+    await alpaca.closePosition(toAlpacaSymbol(symbol.toUpperCase()));
     res.json({ message: `Position ${symbol} closed` });
   } catch (err) {
     console.error("Close position error:", err.message);
@@ -290,7 +303,7 @@ app.delete("/api/positions", async (req, res) => {
 app.get("/api/quote/:symbol", async (req, res) => {
   try {
     const { symbol } = req.params;
-    const snapshot = await alpaca.getSnapshot(symbol.toUpperCase());
+    const snapshot = await alpaca.getSnapshot(toAlpacaSymbol(symbol.toUpperCase()));
     res.json({
       symbol: symbol.toUpperCase(),
       price: parseFloat(snapshot.LatestTrade?.Price || snapshot.DailyBar?.ClosePrice || 0),
@@ -316,12 +329,13 @@ app.get("/api/snapshots", async (req, res) => {
       return res.status(400).json({ error: "Provide ?symbols=AAPL,MSFT,..." });
     }
 
-    const snapshots = await alpaca.getSnapshots(symbols);
+    const alpacaSymbols = symbols.map(toAlpacaSymbol);
+    const snapshots = await alpaca.getSnapshots(alpacaSymbols);
     // Alpaca SDK returns an array of snapshot objects (not a symbol→snapshot map).
     // Property names are PascalCase: LatestTrade.Price, DailyBar.ClosePrice, etc.
     const result = {};
     for (const snap of snapshots) {
-      const sym = snap.symbol;
+      const sym = fromAlpacaSymbol(snap.symbol);
       if (!sym) continue;
       result[sym] = {
         price: parseFloat(snap.LatestTrade?.Price || snap.DailyBar?.ClosePrice || 0),
@@ -358,7 +372,7 @@ app.get("/api/bars/:symbol", async (req, res) => {
     const startISO = start.toISOString().split("T")[0]; // "YYYY-MM-DD"
 
     const allBars = [];
-    const barIterator = alpaca.getBarsV2(symbol.toUpperCase(), {
+    const barIterator = alpaca.getBarsV2(toAlpacaSymbol(symbol.toUpperCase()), {
       timeframe,
       start: startISO,
       adjustment: "split",
@@ -557,7 +571,7 @@ function earnCacheFile(start, end) {
 // Fetch all daily bars for one symbol via Alpaca getBarsV2
 async function fetchDailyBars(sym, start, end) {
   const bars = [];
-  const iter = alpaca.getBarsV2(sym, {
+  const iter = alpaca.getBarsV2(toAlpacaSymbol(sym), {
     start,
     end,
     timeframe: "1Day",
