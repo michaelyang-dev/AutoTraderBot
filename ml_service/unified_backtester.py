@@ -26,7 +26,6 @@ Multi-Strategy Slot System
   Total max:      8 positions
 """
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 import warnings
@@ -34,6 +33,9 @@ import time
 
 import numpy as np
 import pandas as pd
+
+# Import base classes from strategy_base (shared with strategy modules)
+from strategy_base import Strategy, Signal, Position
 
 warnings.filterwarnings("ignore")
 
@@ -58,33 +60,8 @@ COOLDOWN_DAYS   = 5           # days a symbol is blocked after a sell
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Data Classes
+#  Slot Configuration
 # ══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class Signal:
-    """A buy signal produced by a strategy."""
-    symbol: str
-    confidence: float          # 0.0–1.0
-    strategy_name: str
-    fwd_ret: float = 0.0      # backtesting only — actual forward return
-    price_based: bool = False  # True for strategies that use actual prices (not fwd_ret)
-
-
-@dataclass
-class Position:
-    """An open position managed by the portfolio."""
-    symbol: str
-    strategy_name: str
-    cost: float
-    entry_idx: int
-    exit_idx: int
-    fwd_ret: float
-    confidence: float
-    price_based: bool = False  # True for price-based strategies (momentum, etc.)
-    entry_price: float = 0.0   # actual entry price (price-based only)
-    peak_price: float = 0.0    # highest price since entry (for trailing stop)
-
 
 @dataclass
 class SlotConfig:
@@ -108,47 +85,6 @@ class SlotConfig:
         flex_avail = max(0, self.flex_slots - flex_used)
 
         return min(primary_avail + flex_avail, self.max_positions - total_open)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Strategy Interface
-# ══════════════════════════════════════════════════════════════════════════════
-
-class Strategy(ABC):
-    """
-    Base class for all trading strategies.
-
-    Every strategy must implement four members:
-
-        name                        → unique string identifier
-        generate_signals(date, ud)  → list[Signal] of BUY candidates
-        check_exit(pos, cur)        → (should_exit, reason)
-        get_position_size(sig, pv)  → target $ amount
-    """
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        ...
-
-    @abstractmethod
-    def generate_signals(self, date, universe_data):
-        """Return a list of Signal objects for BUY candidates, sorted by
-        confidence descending.  *universe_data* is strategy-specific
-        context (may be None)."""
-        ...
-
-    @abstractmethod
-    def check_exit(self, position, current_data):
-        """Return *(should_exit, reason)*.  *current_data* is a dict with
-        keys ``idx``, ``date``, ``n_dates``."""
-        ...
-
-    @abstractmethod
-    def get_position_size(self, signal, portfolio_value):
-        """Return the target dollar amount to invest.  The PortfolioManager
-        will cap it at ``available_cash * 0.95``."""
-        ...
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -454,16 +390,8 @@ class MomentumStrategy(Strategy):
         return portfolio_value * self.BASE_PCT
 
 
-class MeanReversionStrategy(Strategy):
-    @property
-    def name(self):
-        return "mean_reversion"
-    def generate_signals(self, date, universe_data):
-        return []
-    def check_exit(self, position, current_data):
-        return False, ""
-    def get_position_size(self, signal, portfolio_value):
-        return 0.0
+# MeanReversionStrategy — imported from strategies module
+from strategies.mean_reversion_strategy import MeanReversionStrategy  # noqa: E402
 
 
 class MLFastStrategy(Strategy):
@@ -739,6 +667,27 @@ SLOT_ML_MOM = SlotConfig(
     strategy_slots={"ml_medium": 2, "momentum": 4},
     flex_slots=2,
     max_positions=8,
+)
+
+# Mean Reversion only: 5 primary, no flex
+SLOT_MR_ONLY = SlotConfig(
+    strategy_slots={"mean_reversion": 5},
+    flex_slots=0,
+    max_positions=5,
+)
+
+# ML + Mean Reversion: ML 2 + MR 2 + 2 flex = max 6
+SLOT_ML_MR = SlotConfig(
+    strategy_slots={"ml_medium": 2, "mean_reversion": 2},
+    flex_slots=2,
+    max_positions=6,
+)
+
+# ML + Momentum + Mean Reversion: ML 2 + Mom 4 + MR 2 + 2 flex = max 10
+SLOT_ML_MOM_MR = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2},
+    flex_slots=2,
+    max_positions=10,
 )
 
 # Multi-strategy production mode (full)

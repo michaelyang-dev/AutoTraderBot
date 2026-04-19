@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -168,7 +169,8 @@ def _load_all_earnings() -> dict:
 
 # ── Server state ──────────────────────────────────────────────────────────────
 class State:
-    model:          Optional[lgb.Booster]  = None
+    model:          object                 = None   # lgb.Booster or CalibratedClassifierCV
+    model_type:     str                    = "booster"  # "booster" or "calibrated"
     cache:          list                   = []
     last_update:    Optional[datetime]     = None
     is_stale:       bool                   = True
@@ -331,7 +333,10 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         raise RuntimeError("No valid feature rows produced")
 
     X     = np.array(rows, dtype=np.float64)
-    probs = state.model.predict(X)   # shape (n,) for binary booster
+    if state.model_type == "calibrated":
+        probs = state.model.predict_proba(X)[:, 1]  # CalibratedClassifierCV
+    else:
+        probs = state.model.predict(X)               # lgb.Booster — shape (n,)
 
     signals = []
     for sym, prob in zip(symbols, probs):
@@ -412,8 +417,14 @@ async def lifespan(app: FastAPI):
         sys.exit(1)
 
     log.info("Loading model from %s ...", MODEL_FILE)
-    state.model = lgb.Booster(model_file=str(MODEL_FILE))
-    log.info("Model loaded — %d features", state.model.num_feature())
+    try:
+        state.model = joblib.load(str(MODEL_FILE))
+        state.model_type = "calibrated"
+        log.info("Model loaded (calibrated/joblib) — CalibratedClassifierCV")
+    except Exception:
+        state.model = lgb.Booster(model_file=str(MODEL_FILE))
+        state.model_type = "booster"
+        log.info("Model loaded (native LightGBM) — %d features", state.model.num_feature())
 
     # Load earnings history (uses file cache; only hits FMP API on first run)
     state.earnings_cache = _load_all_earnings()
