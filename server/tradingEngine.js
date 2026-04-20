@@ -754,7 +754,7 @@ function fetchMLSignals() {
 //  FACTORY — createTradingEngine
 // ══════════════════════════════════════════
 
-module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnapshot, fetchEarningsFromFMP }) {
+module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) {
 
   // ── Alpaca SDK wrappers ──
 
@@ -948,41 +948,6 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       addLog(`Failed symbols: ${failedSymbols.slice(0, 20).join(", ")}${failedSymbols.length > 20 ? ` (+${failedSymbols.length - 20} more)` : ""}`, "error");
     }
     return results;
-  }
-
-  // ── Trade journal ──
-
-  function recordTrade(trade) {
-    try {
-      insertTrade.run({
-        timestamp: trade.timestamp || new Date().toISOString(),
-        symbol: trade.symbol,
-        action: trade.action,
-        shares: parseFloat(trade.shares),
-        price: parseFloat(trade.price),
-        strategy: trade.strategy,
-        ml_confidence: trade.ml_confidence != null ? parseFloat(trade.ml_confidence) : null,
-        portfolio_value: trade.portfolio_value != null ? parseFloat(trade.portfolio_value) : null,
-        pnl: trade.pnl != null ? parseFloat(trade.pnl) : null,
-        notes: trade.notes || null,
-      });
-    } catch (err) {
-      console.error("Trade journal write failed:", err.message);
-    }
-  }
-
-  function recordDailySnapshot(snap) {
-    try {
-      insertSnapshot.run({
-        date: snap.date,
-        portfolio_value: parseFloat(snap.portfolio_value),
-        cash: parseFloat(snap.cash),
-        positions_count: parseInt(snap.positions_count),
-        daily_pnl: snap.daily_pnl != null ? parseFloat(snap.daily_pnl) : null,
-      });
-    } catch (err) {
-      console.error("Daily snapshot write failed:", err.message);
-    }
   }
 
   // ── Earnings cache (4h TTL) ──
@@ -1828,7 +1793,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             else { tradeCount.losses++; stratTracker.losses++; }
             tradeCount.totalPnL += unrealized_pl;
             stratTracker.totalPnL += unrealized_pl;
-            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: `${strat}-stop-loss`, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            try { journal.closePosition({ symbol, fillPrice: curr, exitReason: "stop-loss" }); } catch (_) {}
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             notify.send(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
@@ -1860,7 +1825,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             tradeCount.wins++; stratTracker.wins++;
             tradeCount.totalPnL += unrealized_pl;
             stratTracker.totalPnL += unrealized_pl;
-            recordTrade({ symbol, action: "sell", shares: qty, price: curr, strategy: `${strat}-take-profit`, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            try { journal.closePosition({ symbol, fillPrice: curr, exitReason: "take-profit" }); } catch (_) {}
             dailyStats.sells++;
             dailyStats.wins++;
             notify.send(`🎯 TAKE-PROFIT ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Gain: +$${unrealized_pl.toFixed(2)} (+${(unrealized_plpc * 100).toFixed(1)}%)`);
@@ -1899,7 +1864,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             else { tradeCount.losses++; stratTracker.losses++; }
             tradeCount.totalPnL += pos.unrealized_pl;
             stratTracker.totalPnL += pos.unrealized_pl;
-            recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: `${strat}-earnings-sell`, portfolio_value: cyclePortfolioValue, pnl: pos.unrealized_pl });
+            try { journal.closePosition({ symbol: pos.symbol, fillPrice: pos.current_price, exitReason: "earnings-sell" }); } catch (_) {}
             dailyStats.sells++;
             if (pos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             notify.send(`📉 SELL ${pos.symbol} | ${pos.qty} shares @ $${pos.current_price.toFixed(2)} | Earnings tomorrow — P&L: $${pos.unrealized_pl.toFixed(2)} (${(pos.unrealized_plpc * 100).toFixed(1)}%)`);
@@ -1993,7 +1958,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             else { tradeCount.losses++; momTradeCount.losses++; }
             tradeCount.totalPnL += unrealized_pl;
             momTradeCount.totalPnL += unrealized_pl;
-            recordTrade({ symbol: sym, action: "sell", shares: qty, price: curr, strategy: exitReason, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            try { journal.closePosition({ symbol: sym, fillPrice: curr, exitReason }); } catch (_) {}
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             const pnlSign = unrealized_pl >= 0 ? "+" : "";
@@ -2072,7 +2037,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             else { tradeCount.losses++; mrTradeCount.losses++; }
             tradeCount.totalPnL += unrealized_pl;
             mrTradeCount.totalPnL += unrealized_pl;
-            recordTrade({ symbol: sym, action: "sell", shares: qty, price: curr, strategy: exitReason, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            try { journal.closePosition({ symbol: sym, fillPrice: curr, exitReason }); } catch (_) {}
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             const pnlSign = unrealized_pl >= 0 ? "+" : "";
@@ -2158,7 +2123,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             else { tradeCount.losses++; mcTradeCount.losses++; }
             tradeCount.totalPnL += unrealized_pl;
             mcTradeCount.totalPnL += unrealized_pl;
-            recordTrade({ symbol: sym, action: "sell", shares: qty, price: curr, strategy: exitReason, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            try { journal.closePosition({ symbol: sym, fillPrice: curr, exitReason }); } catch (_) {}
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             const pnlSign = unrealized_pl >= 0 ? "+" : "";
@@ -2225,7 +2190,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 else { tradeCount.losses++; blTracker.losses++; }
                 tradeCount.totalPnL += posData.unrealized_pl;
                 blTracker.totalPnL += posData.unrealized_pl;
-                recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: blStrat, portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
+                try { journal.closePosition({ symbol: sym, fillPrice: posData.current_price, exitReason: "blacklist" }); } catch (_) {}
                 dailyStats.sells++;
                 if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
                 notify.send(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | Blacklisted — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
@@ -2256,7 +2221,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
               else { tradeCount.losses++; mlTradeCount.losses++; }
               tradeCount.totalPnL += posData.unrealized_pl;
               mlTradeCount.totalPnL += posData.unrealized_pl;
-              recordTrade({ symbol: sym, action: "sell", shares: posData.qty, price: posData.current_price, strategy: "ml", portfolio_value: cyclePortfolioValue, pnl: posData.unrealized_pl });
+              try { journal.closePosition({ symbol: sym, fillPrice: posData.current_price, exitReason: "consensus-sell" }); } catch (_) {}
               dailyStats.sells++;
               if (posData.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
               notify.send(`📉 SELL ${sym} | ${posData.qty} shares @ $${posData.current_price.toFixed(2)} | ${analysis.consensus} — P&L: $${posData.unrealized_pl.toFixed(2)} (${(posData.unrealized_plpc * 100).toFixed(1)}%)`);
@@ -2443,7 +2408,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           await closePosition("SPY");
           idleSpyShares = 0;
           addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`, "system");
-          recordTrade({ symbol: "SPY", action: "sell", shares: spyShareCount, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
+          try { journal.closePosition({ symbol: "SPY", fillPrice: spyPrice, exitReason: "idle-spy-sell" }); } catch (_) {}
           notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
           const freshAcct = await getAccount();
           cycleCash = freshAcct.cash;
@@ -2605,20 +2570,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
           if (opp.strategy === "mega_cap") {
             addLog(`MCAP BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
-            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "mega_cap", portfolio_value: cyclePortfolioValue });
             notify.send(`🏛️ MCAP BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
           } else if (opp.strategy === "momentum") {
             addLog(`MOM BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
-            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "momentum", portfolio_value: cyclePortfolioValue });
             notify.send(`📊 MOM BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
           } else if (opp.strategy === "mean_reversion") {
             addLog(`MR BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | conf ${(opp.score * 100).toFixed(0)}% | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
-            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "mean_reversion", portfolio_value: cyclePortfolioValue });
             notify.send(`🔄 MR BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
           } else {
             const mlNote = opp.mlConf != null ? `, ML ${(opp.mlConf * 100).toFixed(0)}% conf` : "";
             addLog(`ML BUY ${opp.sym}: ${shares} shares | ${opp.consensus} (score: ${opp.score.toFixed(2)}) | alloc ${(dynPositionPct * 100).toFixed(1)}%${mlNote} | Order: ${order.status}`, "buy");
-            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: opp.mlConf != null ? "ml" : "consensus", ml_confidence: opp.mlConf, portfolio_value: cyclePortfolioValue });
             notify.send(opp.mlConf != null
               ? `🤖 ML BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | Confidence: ${(opp.mlConf * 100).toFixed(0)}% | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`
               : `📊 BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
@@ -2652,7 +2613,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             tradeCount.sells++;
             if (trendPnl >= 0) tradeCount.wins++; else tradeCount.losses++;
             tradeCount.totalPnL += trendPnl;
-            recordTrade({ symbol: sym, action: "sell", shares: pos.qty, price: curr, strategy: "trend-stop", portfolio_value: cyclePortfolioValue, pnl: trendPnl });
+            try { journal.closePosition({ symbol: sym, fillPrice: curr, exitReason: "trend-stop" }); } catch (_) {}
             dailyStats.sells++;
             if (trendPnl >= 0) dailyStats.wins++; else dailyStats.losses++;
             notify.send(`📈 TREND SELL ${sym} | ${pos.qty} shares @ $${curr.toFixed(2)} | Trail-stop hit, peak $${peak.toFixed(2)} | P&L: $${trendPnl.toFixed(2)}`);
@@ -2684,7 +2645,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 tradeCount.sells++;
                 if (breakPos.unrealized_pl >= 0) tradeCount.wins++; else tradeCount.losses++;
                 tradeCount.totalPnL += breakPos.unrealized_pl;
-                recordTrade({ symbol: sym, action: "sell", shares: breakPos.qty, price: breakPos.current_price, strategy: "trend-break", portfolio_value: cyclePortfolioValue, pnl: breakPos.unrealized_pl });
+                try { journal.closePosition({ symbol: sym, fillPrice: breakPos.current_price, exitReason: "trend-break" }); } catch (_) {}
                 dailyStats.sells++;
                 if (breakPos.unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
                 notify.send(`📈 TREND SELL ${sym} | ${breakPos.qty} shares @ $${breakPos.current_price.toFixed(2)} | 200-SMA break | P&L: $${breakPos.unrealized_pl.toFixed(2)}`);
@@ -2732,7 +2693,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 addLog(`TREND-BUY ${sym}: ${shares} sh | ${ts.daysAbove200}/40 days above 200-SMA | Order: ${order.status}`, "buy");
                 tradeCount.buys++;
                 dailyStats.buys++;
-                recordTrade({ symbol: sym, action: "buy", shares, price: currPrice, strategy: "trend", portfolio_value: cyclePortfolioValue });
+                try { journal.recordOrderSubmitted({ alpaca_order_id: order.id || null, symbol: sym, side: "buy", qty: shares, strategy: "trend", regime, intended_price: currPrice }); } catch (_) {}
                 notify.send(`📈 TREND BUY ${sym} | ${shares} shares @ $${currPrice.toFixed(2)} | ${ts.daysAbove200}/40 days above 200-SMA`);
                 if (Object.keys(trendPositions).length >= 8) break;
               } catch (err) {
@@ -2758,10 +2719,10 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             if (spyPrice && spyPrice > 0 && parkAmount >= spyPrice) {
               const spySharesToBuy = Math.floor(parkAmount / spyPrice);
               if (spySharesToBuy > 0) {
-                await placeOrder({ symbol: "SPY", qty: spySharesToBuy, side: "buy", type: "market" });
+                const spyOrder = await placeOrder({ symbol: "SPY", qty: spySharesToBuy, side: "buy", type: "market" });
                 idleSpyShares += spySharesToBuy;
                 addLog(`[idle-spy] Parking $${parkAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })} -> ${spySharesToBuy} SPY @ $${spyPrice.toFixed(2)} | Total idle SPY: ${idleSpyShares} shares`, "system");
-                recordTrade({ symbol: "SPY", action: "buy", shares: spySharesToBuy, price: spyPrice, strategy: "idle-spy", portfolio_value: cyclePortfolioValue });
+                try { journal.recordOrderSubmitted({ alpaca_order_id: spyOrder.id || null, symbol: "SPY", side: "buy", qty: spySharesToBuy, strategy: "idle-spy", regime, intended_price: spyPrice }); } catch (_) {}
                 notify.send(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
               }
             }
@@ -2794,15 +2755,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const today = new Date().toISOString().split("T")[0];
         const activePos = positionsRaw.filter(p => p.symbol !== "SPY").length;
         const dailyPnl = portfolioValue - (circuitBreaker.marketOpenValue || portfolioValue);
-        recordDailySnapshot({
-          date: today,
-          portfolio_value: portfolioValue,
-          cash: cash,
-          positions_count: activePos,
-          daily_pnl: dailyPnl,
-        });
-
-        // Journal: richer daily snapshot
+        // Journal: daily snapshot
         try {
           const dailyPnlPct = circuitBreaker.marketOpenValue ? (dailyPnl / circuitBreaker.marketOpenValue) : 0;
           const spyClose = priceHist.SPY?.[priceHist.SPY.length - 1] || null;

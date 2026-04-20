@@ -707,8 +707,6 @@ function fetchEarningsFromFMP(symbols) {
 
 const engine = createTradingEngine({
   alpaca,
-  insertTrade,
-  insertSnapshot,
   fetchEarningsFromFMP,
 });
 
