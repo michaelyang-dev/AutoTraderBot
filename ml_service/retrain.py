@@ -100,7 +100,7 @@ def notify_telegram(message: str):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
     }
 
     for attempt in range(1, 3):
@@ -110,7 +110,7 @@ def notify_telegram(message: str):
                 log("  Telegram notification sent")
                 return
             log(f"  Telegram API error (attempt {attempt}/2): {resp.status_code} — {resp.text[:200]}")
-            # If Markdown parse failed, retry without parse_mode
+            # If HTML parse failed, retry without parse_mode
             if resp.status_code == 400 and "can't parse" in resp.text:
                 payload.pop("parse_mode", None)
                 retry = requests.post(url, json=payload, timeout=10)
@@ -524,7 +524,7 @@ def main():
         if not passed:
             log("\n  DEPLOY GATE FAILED — keeping old models")
             notify_telegram(
-                f"*AutoTrader Retrain: DEPLOY GATE FAILED*\n\n"
+                f"<b>AutoTrader Retrain: DEPLOY GATE FAILED</b>\n\n"
                 f"Old model retained.\n"
                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
                 f"CAGR: {gate_metrics.get('cagr')}\n"
@@ -554,7 +554,7 @@ def main():
                 subprocess.run(["pm2", "restart", "signal-server"],
                                capture_output=True, timeout=30)
             notify_telegram(
-                f"*AutoTrader Retrain: VERIFICATION FAILED*\n\n"
+                f"<b>AutoTrader Retrain: VERIFICATION FAILED</b>\n\n"
                 f"Rolled back to backup: {backup_path}\n"
                 f"Error: Health check failed within 2 minutes"
             )
@@ -578,7 +578,7 @@ def main():
 
         if not args.dry_run:
             notify_telegram(
-                f"*AutoTrader Retrain: SUCCESS*\n\n"
+                f"<b>AutoTrader Retrain: SUCCESS</b>\n\n"
                 f"New model active.\n"
                 f"Ensemble AUC: {train_metrics.get('ensemble_auc')}\n"
                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
@@ -603,7 +603,7 @@ def main():
                            capture_output=True, timeout=30)
 
         notify_telegram(
-            f"*AutoTrader Retrain: FAILED at step {step_num}*\n\n"
+            f"<b>AutoTrader Retrain: FAILED at step {step_num}</b>\n\n"
             f"Old model still active.\n"
             f"Error: {exc}"
         )

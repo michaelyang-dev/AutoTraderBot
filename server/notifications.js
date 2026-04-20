@@ -81,11 +81,10 @@ function deriveSubject(messages) {
 // ── Telegram API ─────────────────────────────────────────────────
 
 /**
- * Escape special characters for Telegram Markdown v1.
- * Preserves intentional *bold* and _italic_ by only escaping within dynamic content.
+ * Escape the 3 characters that are special in Telegram HTML: < > &
  */
-function escapeMarkdown(text) {
-  return text.replace(/([[\]()~`>#+\-=|{}.!])/g, '\\$1');
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -103,7 +102,7 @@ async function sendTelegram(text) {
         body: JSON.stringify({
           chat_id: TELEGRAM_CHAT_ID,
           text,
-          parse_mode: "Markdown",
+          parse_mode: "HTML",
         }),
       });
 
@@ -112,7 +111,7 @@ async function sendTelegram(text) {
       const body = await res.text();
       console.error(`Telegram API error (attempt ${attempt}/2): ${res.status} — ${body}`);
 
-      // If Markdown parsing fails, retry without parse_mode
+      // If HTML parsing fails, retry without parse_mode (plain text)
       if (res.status === 400 && body.includes("can't parse")) {
         const retry = await fetch(TELEGRAM_API_URL, {
           method: "POST",
@@ -154,9 +153,8 @@ async function flush() {
     return;
   }
 
-  const header = escapeMarkdown(deriveSubject(messages));
-  const escapedMessages = messages.map(m => escapeMarkdown(m));
-  const body = `*AutoTrader: ${header}*\n\n${escapedMessages.join("\n\n")}`;
+  const header = escapeHtml(deriveSubject(messages));
+  const body = `<b>AutoTrader: ${header}</b>\n\n${messages.map(m => escapeHtml(m)).join("\n\n")}`;
 
   await sendTelegram(body);
   sendTimestamps.push(Date.now());
