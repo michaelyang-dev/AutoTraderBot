@@ -48,9 +48,7 @@ const alpaca = new Alpaca({
   paper: true,
 });
 
-// Symbol mapping (same as tradingEngine.js)
-const REVERSE_SYMBOL_MAP = { "BF.B": "BF-B", "BRK.B": "BRK-B", "BRK.A": "BRK-A" };
-function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
+const { fromAlpacaSymbol } = require("../server/symbolMap");
 
 const TIMEOUT_MS = 15000;
 
@@ -85,8 +83,13 @@ async function reconcile() {
   const dbPath = path.join(__dirname, "..", "data", "journal.db");
   journal.initDb(dbPath);
 
-  // Fetch orders from last 24 hours
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  // Determine the earliest date to fetch — only pull orders after our first real trade
+  const db = journal.getDb();
+  const earliest = db.prepare("SELECT MIN(submitted_at) as earliest FROM trades WHERE strategy != 'unknown'").get();
+  const fallback24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const since = earliest?.earliest || fallback24h;
+  log(`[reconcile] Fetching Alpaca orders since ${since}${earliest?.earliest ? "" : " (fallback 24h — no real trades yet)"}`);
+
   let orders;
   try {
     orders = await fetchWithRetry(() => alpaca.getOrders({
@@ -95,7 +98,7 @@ async function reconcile() {
       limit: 500,
       direction: "desc",
     }), "getOrders");
-    log(`Fetched ${orders.length} orders from Alpaca (last 24h)`);
+    log(`Fetched ${orders.length} orders from Alpaca`);
   } catch (err) {
     log(`ERROR fetching orders: ${err.message}`);
     process.exit(1);

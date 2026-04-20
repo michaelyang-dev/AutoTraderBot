@@ -44,8 +44,7 @@ const alpaca = new Alpaca({
   paper: true,
 });
 
-const REVERSE_SYMBOL_MAP = { "BF.B": "BF-B", "BRK.B": "BRK-B", "BRK.A": "BRK-A" };
-function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
+const { fromAlpacaSymbol } = require("../server/symbolMap");
 
 async function seed() {
   log(`\n══ Seed Legacy Positions ${DRY_RUN ? "(DRY RUN)" : ""} ══\n`);

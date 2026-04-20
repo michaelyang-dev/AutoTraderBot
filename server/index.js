@@ -28,58 +28,7 @@ process.on("unhandledRejection", (reason) => {
 });
 const path = require("path");
 const Alpaca = require("@alpacahq/alpaca-trade-api");
-const Database = require("better-sqlite3");
-
-// ── Trade Journal SQLite database ──
-const TRADE_DB_PATH = path.join(__dirname, "..", "ml_service", "data", "trades.db");
-const db = new Database(TRADE_DB_PATH);
-db.pragma("journal_mode = WAL");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
-    symbol TEXT NOT NULL,
-    action TEXT NOT NULL,
-    shares REAL NOT NULL,
-    price REAL NOT NULL,
-    strategy TEXT NOT NULL,
-    ml_confidence REAL,
-    portfolio_value REAL,
-    pnl REAL,
-    notes TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS daily_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL UNIQUE,
-    portfolio_value REAL NOT NULL,
-    cash REAL NOT NULL,
-    positions_count INTEGER NOT NULL,
-    daily_pnl REAL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
-  CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_snapshots(date);
-`);
-
-const insertTrade = db.prepare(`
-  INSERT INTO trades (timestamp, symbol, action, shares, price, strategy, ml_confidence, portfolio_value, pnl, notes)
-  VALUES (@timestamp, @symbol, @action, @shares, @price, @strategy, @ml_confidence, @portfolio_value, @pnl, @notes)
-`);
-
-const insertSnapshot = db.prepare(`
-  INSERT INTO daily_snapshots (date, portfolio_value, cash, positions_count, daily_pnl)
-  VALUES (@date, @portfolio_value, @cash, @positions_count, @daily_pnl)
-  ON CONFLICT(date) DO UPDATE SET
-    portfolio_value = @portfolio_value,
-    cash = @cash,
-    positions_count = @positions_count,
-    daily_pnl = @daily_pnl
-`);
-
-console.log(`📓 Trade journal DB: ${TRADE_DB_PATH}`);
+const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 
 // ── Backtest cache directories ──
 const CACHE_ROOT = path.join(__dirname, "backtest_data");
@@ -125,19 +74,6 @@ const alpaca = new Alpaca({
   secretKey: ALPACA_SECRET_KEY,
   paper: true,
 });
-
-// ── Alpaca symbol format mapping ──
-// S&P 500 lists use hyphens (BF-B) but Alpaca API requires dots (BF.B)
-const ALPACA_SYMBOL_MAP = {
-  "BF-B": "BF.B",
-  "BRK-B": "BRK.B",
-  "BRK-A": "BRK.A",
-};
-const REVERSE_SYMBOL_MAP = Object.fromEntries(
-  Object.entries(ALPACA_SYMBOL_MAP).map(([k, v]) => [v, k])
-);
-function toAlpacaSymbol(sym) { return ALPACA_SYMBOL_MAP[sym] || sym; }
-function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
 
 // ══════════════════════════════════════════
 //  ACCOUNT
@@ -722,69 +658,6 @@ app.get("/api/backtest/cache-status", (req, res) => {
   res.json({ status, allCached, warmupStart });
 });
 
-// ══════════════════════════════════════════
-//  TRADE JOURNAL
-// ══════════════════════════════════════════
-
-app.post("/api/trade-journal", (req, res) => {
-  try {
-    const { timestamp, symbol, action, shares, price, strategy, ml_confidence, portfolio_value, pnl, notes } = req.body;
-    insertTrade.run({
-      timestamp: timestamp || new Date().toISOString(),
-      symbol, action,
-      shares: parseFloat(shares),
-      price: parseFloat(price),
-      strategy,
-      ml_confidence: ml_confidence != null ? parseFloat(ml_confidence) : null,
-      portfolio_value: portfolio_value != null ? parseFloat(portfolio_value) : null,
-      pnl: pnl != null ? parseFloat(pnl) : null,
-      notes: notes || null,
-    });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("Trade journal insert error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/trade-journal", (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
-    const trades = db.prepare("SELECT * FROM trades ORDER BY id DESC LIMIT ?").all(limit);
-    res.json(trades);
-  } catch (err) {
-    console.error("Trade journal query error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/api/trade-journal/snapshot", (req, res) => {
-  try {
-    const { date, portfolio_value, cash, positions_count, daily_pnl } = req.body;
-    insertSnapshot.run({
-      date,
-      portfolio_value: parseFloat(portfolio_value),
-      cash: parseFloat(cash),
-      positions_count: parseInt(positions_count),
-      daily_pnl: daily_pnl != null ? parseFloat(daily_pnl) : null,
-    });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("Snapshot insert error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get("/api/trade-journal/snapshots", (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit) || 30, 365);
-    const snapshots = db.prepare("SELECT * FROM daily_snapshots ORDER BY date DESC LIMIT ?").all(limit);
-    res.json(snapshots);
-  } catch (err) {
-    console.error("Snapshot query error:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ══════════════════════════════════════════
 //  HEALTH CHECK
@@ -937,9 +810,6 @@ app.listen(PORT, async () => {
   console.log(`     GET  /api/backtest/fetch   — download + cache historical data (SSE)`);
   console.log(`     GET  /api/backtest/data    — retrieve cached backtest data`);
   console.log(`     GET  /api/backtest/cache-status — check cache completeness`);
-  console.log(`     GET  /api/trade-journal  — recent trades`);
-  console.log(`     POST /api/trade-journal  — record a trade`);
-  console.log(`     GET  /api/trade-journal/snapshots — daily snapshots`);
   console.log(`     GET  /api/trading-state  — full engine state (poll)`);
   console.log(`     GET  /api/activity-feed  — engine activity log`);
   console.log(`     POST /api/trading/start  — start trading engine`);

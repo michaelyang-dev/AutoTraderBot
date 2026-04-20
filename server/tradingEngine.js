@@ -10,6 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const notify = require("./notifications");
 const journal = require("../db/journal");
+const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 
 // ══════════════════════════════════════════
 //  CONSTANTS (inlined from frontend config)
@@ -162,19 +163,6 @@ const SNAPSHOT_BATCH_SIZE = 100;
 const BAR_FETCH_CONCURRENCY = 5;   // parallel bar fetches (reduced from 20 for rate limits)
 const BAR_FETCH_RETRIES = 3;       // retry failed bar fetches with exponential backoff
 const SNAPSHOT_BATCH_DELAY_MS = 500; // delay between snapshot batches
-
-// ── Alpaca symbol format mapping ──
-// S&P 500 lists use hyphens (BF-B) but Alpaca uses dots (BF.B)
-const ALPACA_SYMBOL_MAP = {
-  "BF-B": "BF.B",
-  "BRK-B": "BRK.B",
-  "BRK-A": "BRK.A",
-};
-const REVERSE_SYMBOL_MAP = Object.fromEntries(
-  Object.entries(ALPACA_SYMBOL_MAP).map(([k, v]) => [v, k])
-);
-function toAlpacaSymbol(sym) { return ALPACA_SYMBOL_MAP[sym] || sym; }
-function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
 
 // ── Global Alpaca rate limiter (max 3 req/sec = 180 req/min, under 200 limit) ──
 const RATE_LIMIT_MIN_INTERVAL_MS = 334; // ~3 req/sec
