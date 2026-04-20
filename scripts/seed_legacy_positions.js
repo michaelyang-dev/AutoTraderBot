@@ -72,13 +72,18 @@ async function seed() {
   }
 
   const now = new Date().toISOString();
+  const db = journal.getDb();
   let seeded = 0, skipped = 0;
+  const seededSymbols = [];
 
   for (const pos of positions) {
     const symbol = fromAlpacaSymbol(pos.symbol);
     const qty = parseFloat(pos.qty);
     const avgCost = parseFloat(pos.avg_entry_price);
     const currentPrice = pos.current_price ? parseFloat(pos.current_price) : null;
+    const marketValue = pos.market_value ? parseFloat(pos.market_value) : null;
+    const unrealizedPnl = pos.unrealized_pl ? parseFloat(pos.unrealized_pl) : null;
+    const unrealizedPnlPct = pos.unrealized_plpc ? parseFloat(pos.unrealized_plpc) : null;
     const costBasis = qty * avgCost;
     const legacyOrderId = `LEGACY_${symbol}`;
 
@@ -91,48 +96,72 @@ async function seed() {
     }
 
     if (DRY_RUN) {
-      log(`  DRY RUN: Would seed ${symbol} — ${qty} shares @ $${avgCost.toFixed(2)} (cost basis $${costBasis.toFixed(2)})`);
+      log(`  DRY RUN: Would seed ${symbol} — ${qty} shares @ $${avgCost.toFixed(2)} | current $${currentPrice?.toFixed(2) || "?"} | P&L $${unrealizedPnl?.toFixed(2) || "?"}`);
       seeded++;
+      seededSymbols.push(symbol);
       continue;
     }
 
-    // Insert buy trade row
-    const tradeId = journal.recordOrderSubmitted({
-      alpaca_order_id: legacyOrderId,
-      symbol,
-      side: "buy",
-      qty,
-      strategy: "legacy",
-      intended_price: avgCost,
+    // Single transaction per position: trade insert + position insert + linkage
+    const seedOne = db.transaction(() => {
+      // Insert buy trade row
+      const tradeId = journal.recordOrderSubmitted({
+        alpaca_order_id: legacyOrderId,
+        symbol,
+        side: "buy",
+        qty,
+        strategy: "legacy",
+        regime: "UNKNOWN",
+        intended_price: avgCost,
+      });
+
+      journal.recordOrderFilled({
+        alpaca_order_id: legacyOrderId,
+        filled_qty: qty,
+        fill_price: avgCost,
+        fill_time: now,
+      });
+
+      // Stamp notes and zero slippage
+      db.prepare("UPDATE trades SET notes = ?, slippage_bps = 0 WHERE id = ?")
+        .run("Seeded at journal deployment. No historical fill data. Actual entry predates journal.", tradeId);
+
+      // Insert position row linked to the trade
+      journal.upsertPosition({
+        symbol,
+        qty,
+        avg_cost: avgCost,
+        cost_basis: costBasis,
+        current_price: currentPrice,
+        current_value: marketValue,
+        unrealized_pnl: unrealizedPnl,
+        unrealized_pnl_pct: unrealizedPnlPct,
+        strategy: "legacy",
+        entry_regime: "UNKNOWN",
+        entry_trade_id: tradeId,
+        opened_at: now,
+        days_held: 0,
+        highest_price_since_entry: currentPrice || avgCost,
+      });
+
+      return tradeId;
     });
 
-    journal.recordOrderFilled({
-      alpaca_order_id: legacyOrderId,
-      filled_qty: qty,
-      fill_price: avgCost,
-      fill_time: now,
-    });
+    const tradeId = seedOne();
 
-    // Update notes on the trade
-    const db = journal.getDb();
-    db.prepare("UPDATE trades SET notes = ?, slippage_bps = 0 WHERE id = ?")
-      .run("Seeded at journal deployment, no historical fill data", tradeId);
-
-    // Insert position row linked to the trade
-    journal.upsertPosition({
-      symbol,
-      qty,
-      avg_cost: avgCost,
-      cost_basis: costBasis,
-      current_price: currentPrice,
-      strategy: "legacy",
-      entry_regime: "UNKNOWN",
-      entry_trade_id: tradeId,
-      opened_at: now,
-    });
-
-    log(`  SEED ${symbol} — ${qty} shares @ $${avgCost.toFixed(2)} | cost basis $${costBasis.toFixed(2)} | trade #${tradeId}`);
+    log(`  SEED ${symbol} — ${qty} shares @ $${avgCost.toFixed(2)} | current $${currentPrice?.toFixed(2) || "?"} | P&L $${unrealizedPnl?.toFixed(2) || "?"} | trade #${tradeId}`);
     seeded++;
+    seededSymbols.push(symbol);
+  }
+
+  // Log seeding event
+  if (seeded > 0 && !DRY_RUN) {
+    journal.logEvent({
+      event_type: "journal_seeded",
+      severity: "info",
+      message: `Seeded ${seeded} legacy positions`,
+      metadata: { symbols: seededSymbols },
+    });
   }
 
   log(`\n══ Seed complete ══`);
