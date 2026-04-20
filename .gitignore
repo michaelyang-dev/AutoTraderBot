@@ -10,3 +10,4 @@ server/backtest_data/
 *.lgb
 *.png
 ml_service/venv/
+data/journal.db*

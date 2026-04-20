@@ -9,6 +9,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const notify = require("./notifications");
+const journal = require("../db/journal");
 
 // ══════════════════════════════════════════
 //  CONSTANTS (inlined from frontend config)
@@ -818,7 +819,22 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
     try {
       const alpacaSym = toAlpacaSymbol(symbol);
       await rateLimitWait();
-      return await alpaca.closePosition(alpacaSym);
+      const result = await alpaca.closePosition(alpacaSym);
+
+      // Journal: record sell order submitted
+      try {
+        const pos = positionsRaw.find(p => p.symbol === symbol);
+        journal.recordOrderSubmitted({
+          alpaca_order_id: result?.id || null,
+          symbol, side: "sell",
+          qty: pos ? pos.qty : 0,
+          strategy: positionStrategy[symbol] || "unknown",
+          regime,
+          intended_price: pos ? pos.current_price : null,
+        });
+      } catch (_) { /* never crash trading loop */ }
+
+      return result;
     } catch (err) {
       notify.send(`🚨 ORDER REJECTED — ${symbol} close | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
@@ -1193,6 +1209,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       const ddPct = (peakDD * 100).toFixed(1);
       addLog(`[circuit-breaker] *** LAYER 3: PEAK DRAWDOWN ${ddPct}% *** Peak $${circuitBreaker.peakValue.toFixed(0)} → $${currentValue.toFixed(0)}. Manual reset required.`, "error");
       notify.send(`🚨🚨 CIRCUIT BREAKER LAYER 3: PEAK DRAWDOWN ${ddPct}% — Peak $${circuitBreaker.peakValue.toFixed(0)} → Current $${currentValue.toFixed(0)}. All new trades HALTED. Manual reset required.`, { deduplicate: false, immediate: true });
+      try { journal.logEvent({ event_type: "circuit_breaker", severity: "critical", message: `Peak DD ${ddPct}%`, metadata: { layer: "peak", dd_pct: peakDD, peak: circuitBreaker.peakValue, current: currentValue }, portfolio_value: currentValue }); } catch (_) {}
       saveCircuitBreakerState();
       return {
         safe: false,
@@ -1220,6 +1237,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const lossPct = (weeklyLoss * 100).toFixed(1);
         addLog(`[circuit-breaker] ** LAYER 2: WEEKLY LOSS ${lossPct}% ** Week start $${weekStart.toFixed(0)} → $${currentValue.toFixed(0)}. Halted until Monday.`, "error");
         notify.send(`🚨 CIRCUIT BREAKER LAYER 2: WEEKLY LOSS ${lossPct}% — $${weekStart.toFixed(0)} → $${currentValue.toFixed(0)}. New trades halted until Monday.`, { deduplicate: true, immediate: true });
+        try { journal.logEvent({ event_type: "circuit_breaker", severity: "error", message: `Weekly loss ${lossPct}%`, metadata: { layer: "weekly", loss_pct: weeklyLoss, weekStart, current: currentValue }, portfolio_value: currentValue }); } catch (_) {}
         saveCircuitBreakerState();
         return {
           safe: false,
@@ -1248,6 +1266,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       addLog(`[circuit-breaker] * LAYER 1: DAILY LOSS ${lossPct}% * Open $${circuitBreaker.marketOpenValue.toFixed(0)} → $${currentValue.toFixed(0)}. Halted until tomorrow.`, "error");
       if (!circuitBreaker._dailyNotified) {
         notify.send(`🚨 CIRCUIT BREAKER LAYER 1: DAILY LOSS ${lossPct}% — $${circuitBreaker.marketOpenValue.toFixed(0)} → $${currentValue.toFixed(0)}. New trades halted until tomorrow.`, { deduplicate: true, immediate: true });
+        try { journal.logEvent({ event_type: "circuit_breaker", severity: "warning", message: `Daily loss ${lossPct}%`, metadata: { layer: "daily", loss_pct: dailyLoss, openValue: circuitBreaker.marketOpenValue, current: currentValue }, portfolio_value: currentValue }); } catch (_) {}
         circuitBreaker._dailyNotified = true;
       }
       saveCircuitBreakerState();
@@ -1308,6 +1327,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   async function init() {
     try {
       addLog("Initializing trading engine...", "system");
+
+      // 0. Initialize trade journal DB
+      try {
+        const journalDbPath = path.join(__dirname, "..", "data", "journal.db");
+        journal.initDb(journalDbPath);
+        addLog("Trade journal DB initialized", "system");
+        journal.logEvent({ event_type: "service_restart", severity: "info", message: "Trading engine starting" });
+      } catch (jErr) {
+        addLog(`WARNING: Journal DB init failed: ${jErr.message}`, "error");
+      }
 
       // 1. Check health / connectivity
       const acct = await getAccount();
@@ -1494,6 +1523,27 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         }
       }
 
+      // Journal: sync positions and prices every poll cycle
+      try {
+        const priceMap = {};
+        for (const p of positionsRaw) {
+          if (p.symbol === "SPY") continue;
+          priceMap[p.symbol] = p.current_price;
+          journal.upsertPosition({
+            symbol: p.symbol,
+            qty: p.qty,
+            avg_cost: p.avg_entry_price,
+            current_price: p.current_price,
+            unrealized_pnl: p.unrealized_pl,
+            unrealized_pnl_pct: p.unrealized_plpc,
+            strategy: positionStrategy[p.symbol] || null,
+          });
+        }
+        if (Object.keys(priceMap).length > 0) journal.updatePositionPrices(priceMap);
+        // Remove journal positions that Alpaca no longer holds (sold/closed externally)
+        journal.removeStalePositions(Object.keys(priceMap));
+      } catch (_) { /* never crash trading loop */ }
+
       // Portfolio history (keep last 200)
       portfolioHist.push({ tick, value: portfolioValue, time: Date.now() });
       if (portfolioHist.length > 200) portfolioHist.splice(0, portfolioHist.length - 200);
@@ -1503,6 +1553,22 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       if (mlData && Array.isArray(mlData.signals) && !mlData.is_stale) {
         mlSignals = mlData.signals;
         mlStatus = "ok";
+        // Journal: record each ML signal
+        try {
+          for (const sig of mlSignals) {
+            const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
+            journal.recordSignal({
+              symbol: sig.symbol,
+              signal_type: sig.signal,
+              probability: sig.probability,
+              rank: sig.rank,
+              is_top_5: sig.is_top_5,
+              price_at_signal: spyPrice || null,
+              regime,
+              model_version: mlData.model_version || "v5c",
+            });
+          }
+        } catch (_) { /* never crash trading loop */ }
       } else if (mlData && Array.isArray(mlData.signals) && mlData.is_stale) {
         mlSignals = null;   // stale → don't use for trading decisions
         mlStatus = "stale";
@@ -1532,6 +1598,18 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         }
       } else {
         regime = regimeResult.regime;
+      }
+
+      // Journal: log regime changes
+      if (regime !== prevRegime) {
+        try {
+          journal.logEvent({
+            event_type: "regime_change", severity: "info",
+            message: `${prevRegime} -> ${regime}`,
+            metadata: { from: prevRegime, to: regime, sma50: regimeResult.sma50, sma200: regimeResult.sma200 },
+            portfolio_value: portfolioValue,
+          });
+        } catch (_) {}
       }
 
       // Regime diagnostic: log SPY price vs SMAs every cycle for debugging
@@ -2523,6 +2601,20 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
           liveCounts.total++;
 
+          // Journal: record order submitted with attribution
+          try {
+            journal.recordOrderSubmitted({
+              alpaca_order_id: order.id || null,
+              client_order_id: order.client_order_id || null,
+              symbol: opp.sym, side: "buy", qty: shares,
+              strategy: opp.strategy,
+              signal_prob: opp.mlConf || null,
+              ml_rank: opp.mlRank || null,
+              regime,
+              intended_price: opp.price,
+            });
+          } catch (_) { /* never crash trading loop */ }
+
           if (opp.strategy === "mega_cap") {
             addLog(`MCAP BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
             recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "mega_cap", portfolio_value: cyclePortfolioValue });
@@ -2721,6 +2813,34 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           positions_count: activePos,
           daily_pnl: dailyPnl,
         });
+
+        // Journal: richer daily snapshot
+        try {
+          const dailyPnlPct = circuitBreaker.marketOpenValue ? (dailyPnl / circuitBreaker.marketOpenValue) : 0;
+          const spyClose = priceHist.SPY?.[priceHist.SPY.length - 1] || null;
+          journal.writeDailySnapshot({
+            date: today,
+            portfolio_value: portfolioValue,
+            cash,
+            equity: portfolioValue,
+            positions_count: activePos,
+            day_pnl: dailyPnl,
+            day_pnl_pct: dailyPnlPct,
+            regime,
+            spy_close: spyClose,
+            strategy_pnl: {
+              ml: mlTradeCount.totalPnL, momentum: momTradeCount.totalPnL,
+              mean_reversion: mrTradeCount.totalPnL, mega_cap: mcTradeCount.totalPnL,
+            },
+            slot_usage: {
+              ml: mlTradeCount.buys, momentum: momTradeCount.buys,
+              mean_reversion: mrTradeCount.buys, mega_cap: mcTradeCount.buys,
+            },
+            circuit_breaker_state: circuitBreaker.peakHalted ? "peak_halt" : circuitBreaker.weeklyHalted ? "weekly_halt" : circuitBreaker.dailyHalted ? "daily_halt" : "ok",
+            peak_value: circuitBreaker.peakValue,
+            drawdown_pct: circuitBreaker.peakValue > 0 ? (1 - portfolioValue / circuitBreaker.peakValue) : 0,
+          });
+        } catch (_) {}
 
         // Send daily/weekly summary via Telegram (once per day)
         if (!dailyStats.summarySent) {
