@@ -52,6 +52,22 @@ const alpaca = new Alpaca({
 const REVERSE_SYMBOL_MAP = { "BF.B": "BF-B", "BRK.B": "BRK-B", "BRK.A": "BRK-A" };
 function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
 
+async function fetchWithRetry(fn, label, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.response?.status || err.statusCode;
+      if (status === 429 && attempt < maxRetries) {
+        log(`Rate limited on ${label}. Waiting 60s (attempt ${attempt}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, 60000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function reconcile() {
   log(`\n── Reconcile start ${DRY_RUN ? "(DRY RUN)" : ""} ──`);
 
@@ -63,12 +79,12 @@ async function reconcile() {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   let orders;
   try {
-    orders = await alpaca.getOrders({
+    orders = await fetchWithRetry(() => alpaca.getOrders({
       status: "all",
       after: since,
       limit: 500,
       direction: "desc",
-    });
+    }), "getOrders");
     log(`Fetched ${orders.length} orders from Alpaca (last 24h)`);
   } catch (err) {
     log(`ERROR fetching orders: ${err.message}`);

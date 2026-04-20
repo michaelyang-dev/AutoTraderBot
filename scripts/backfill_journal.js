@@ -41,6 +41,22 @@ const alpaca = new Alpaca({
 const REVERSE_SYMBOL_MAP = { "BF.B": "BF-B", "BRK.B": "BRK-B", "BRK.A": "BRK-A" };
 function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
 
+async function fetchWithRetry(fn, label, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.response?.status || err.statusCode;
+      if (status === 429 && attempt < maxRetries) {
+        log(`Rate limited on ${label}. Waiting 60s (attempt ${attempt}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, 60000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function backfill() {
   log(`\n══ Journal Backfill ${DRY_RUN ? "(DRY RUN)" : ""} ══\n`);
 
@@ -61,12 +77,13 @@ async function backfill() {
     };
     if (pageToken) params.page_token = pageToken;
 
-    const page = await alpaca.getAccountActivities(params);
+    const page = await fetchWithRetry(() => alpaca.getAccountActivities(params), "getAccountActivities");
     if (!Array.isArray(page) || page.length === 0) break;
 
     activities.push(...page);
     // Alpaca pagination: last item's id is the page token for next page
     pageToken = page.length === 100 ? page[page.length - 1].id : null;
+    await new Promise(r => setTimeout(r, 400));
   } while (pageToken);
 
   log(`Fetched ${activities.length} fill activities`);
@@ -78,7 +95,7 @@ async function backfill() {
 
   // ── 2. Fetch current positions for legacy tagging ──
   log("Fetching current positions...");
-  const currentPositions = await alpaca.getPositions();
+  const currentPositions = await fetchWithRetry(() => alpaca.getPositions(), "getPositions");
   const openSymbols = new Set(currentPositions.map(p => fromAlpacaSymbol(p.symbol)));
   log(`Open positions: ${[...openSymbols].join(", ") || "none"}`);
 
