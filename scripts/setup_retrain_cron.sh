@@ -16,9 +16,22 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────────────
 # Adjust these paths for your AWS deployment
 REPO_DIR="${REPO_DIR:-/home/ubuntu/AutoTraderBot}"
-VENV_PYTHON="${REPO_DIR}/.venv/bin/python"
 LOG_DIR="${REPO_DIR}/logs"
 RETRAIN_SCRIPT="${REPO_DIR}/ml_service/retrain.py"
+
+# Auto-detect Python venv
+if [[ -x "${REPO_DIR}/ml_service/venv/bin/python" ]]; then
+    VENV_PYTHON="${REPO_DIR}/ml_service/venv/bin/python"
+elif [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
+    VENV_PYTHON="${REPO_DIR}/.venv/bin/python"
+else
+    echo "ERROR: No Python venv found. Checked:"
+    echo "  ${REPO_DIR}/ml_service/venv/bin/python"
+    echo "  ${REPO_DIR}/.venv/bin/python"
+    echo ""
+    echo "Create one with: python3 -m venv ${REPO_DIR}/ml_service/venv"
+    exit 1
+fi
 
 # ── Cron entries ─────────────────────────────────────────────────────
 # Monthly production retrain: 1st of month at 2:00 AM
