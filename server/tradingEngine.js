@@ -1438,11 +1438,28 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       }
 
       // Keep SPY history (250 entries for SMA200)
+      // BUG FIX: Only append snapshot price once per calendar day to avoid
+      // polluting daily bar history with repeated intraday prices (every 15s).
+      // Multiple intraday appends distort SMA50/SMA200 and cause false regime flips.
       const spyPrev = priceHist.SPY || [];
       const spySnap = snapshots.SPY;
-      nextHist.SPY = spySnap && spySnap.price > 0
-        ? [...spyPrev.slice(-250), spySnap.price]
-        : spyPrev;
+      if (spySnap && spySnap.price > 0) {
+        const todayStr = new Date().toISOString().split("T")[0];
+        if (!priceHist._spyLastAppendDate || priceHist._spyLastAppendDate !== todayStr) {
+          // First poll of the day: append new price as today's bar
+          nextHist.SPY = [...spyPrev.slice(-250), spySnap.price];
+          nextHist._spyLastAppendDate = todayStr;
+        } else {
+          // Subsequent polls: update today's price in-place (last element)
+          nextHist.SPY = spyPrev.length > 0
+            ? [...spyPrev.slice(0, -1), spySnap.price]
+            : [spySnap.price];
+          nextHist._spyLastAppendDate = todayStr;
+        }
+      } else {
+        nextHist.SPY = spyPrev;
+        nextHist._spyLastAppendDate = priceHist._spyLastAppendDate;
+      }
 
       priceHist = nextHist;
       volHist = nextVol;
@@ -1470,6 +1487,11 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           unrealizedPlPct: p.unrealized_plpc,
           marketValue: p.market_value,
         };
+        // Tag untracked positions as "legacy" (pre-existing or from previous session)
+        if (!positionStrategy[p.symbol] && p.symbol !== "SPY") {
+          positionStrategy[p.symbol] = "legacy";
+          addLog(`[reconcile] Position ${p.symbol} (${p.qty} shares) has no strategy tag — marked as 'legacy'`, "system");
+        }
       }
 
       // Portfolio history (keep last 200)
@@ -1512,6 +1534,12 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         regime = regimeResult.regime;
       }
 
+      // Regime diagnostic: log SPY price vs SMAs every cycle for debugging
+      if (regimeResult.sma50 !== null && regimeResult.sma200 !== null) {
+        const spyNow = priceHist.SPY?.[priceHist.SPY.length - 1];
+        addLog(`[regime] SPY $${spyNow?.toFixed(2)} | SMA50 $${regimeResult.sma50.toFixed(2)} | SMA200 $${regimeResult.sma200.toFixed(2)} | bars: ${priceHist.SPY?.length || 0} | result: ${regimeResult.regime} | applied: ${regime}`, "system");
+      }
+
       // Market open transition notification
       if (marketOpen && !prevMarketOpen) {
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
@@ -1551,18 +1579,20 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       };
 
       // Count positions by strategy for slot allocation
+      // "legacy" positions (pre-existing, untagged) are tracked but excluded from slot limits
       const countByStrategy = () => {
-        let ml = 0, mom = 0, mr = 0, mc = 0;
+        let ml = 0, mom = 0, mr = 0, mc = 0, legacy = 0;
         for (const pos of currentPositions) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
           if (trendPositions[pos.symbol]) continue;
           const strat = positionStrategy[pos.symbol] || "ml";
-          if (strat === "momentum") mom++;
+          if (strat === "legacy") legacy++;
+          else if (strat === "momentum") mom++;
           else if (strat === "mean_reversion") mr++;
           else if (strat === "mega_cap") mc++;
           else ml++;
         }
-        return { ml, mom, mr, mc, total: ml + mom + mr + mc };
+        return { ml, mom, mr, mc, legacy, total: ml + mom + mr + mc };
       };
 
       // Check if a strategy has slot capacity
@@ -2088,7 +2118,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       if (mlActive) {
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
-        addLog(`ML V4 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
+        addLog(`ML V5C active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
         addLog("ML server offline -- using consensus engine (fallback mode)", "system");
       }
@@ -2199,7 +2229,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const earningsBlocked = earningsDays !== null && earningsDays >= 0 && earningsDays <= 3;
 
         if (mlActive) {
-          // ML V4: top-N cross-sectional ranking (BUY if is_top_5)
+          // ML V5C: top-N cross-sectional ranking (BUY if is_top_5)
           const mlSig = mlMap[sym];
           if (mlSig && mlSig.is_top_5) {
             if (regime === "CAUTIOUS" && mlSig.rank > 2) {
@@ -2210,7 +2240,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
                 sym,
                 score: mlSig.probability,
                 price: prices[prices.length - 1],
-                consensus: `ML V4 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
+                consensus: `ML V5C #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
                 rsiVal: analysis.indicators.rsi,
                 mlConf: mlSig.probability,
               });
@@ -2426,8 +2456,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         }
 
         // Apply volatility targeting scale to ALL strategies
+        // Cash buffer: keep 5% minimum cash reserve to prevent negative balance
+        const cashReserve = cyclePortfolioValue * 0.05;
+        const availableCash = Math.max(0, cycleCash - cashReserve);
+        if (availableCash < opp.price) {
+          addLog(`SKIP ${opp.sym} -- cash buffer: $${cycleCash.toFixed(0)} cash - $${cashReserve.toFixed(0)} reserve = $${availableCash.toFixed(0)} available, need $${opp.price.toFixed(2)}/share`, "system");
+          continue;
+        }
+
         const maxAlloc = cyclePortfolioValue * dynPositionPct * currentVolScale;
-        const allocCash = Math.min(maxAlloc, cycleCash * RISK.MAX_CASH_DEPLOY_PCT);
+        const allocCash = Math.min(maxAlloc, availableCash * RISK.MAX_CASH_DEPLOY_PCT);
         if (allocCash < opp.price) {
           addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
           continue;
@@ -2439,8 +2477,16 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           continue;
         }
 
+        const cost = shares * opp.price;
+        if (cost > cycleCash) {
+          addLog(`SKIP ${opp.sym} -- order cost $${cost.toFixed(0)} exceeds remaining cash $${cycleCash.toFixed(0)}`, "system");
+          continue;
+        }
+
         try {
           const order = await placeOrder({ symbol: opp.sym, qty: shares, side: "buy", type: "market" });
+          // Decrement cycleCash so subsequent buys in this cycle see reduced cash
+          cycleCash -= cost;
           boughtThisCycle[sector] = (boughtThisCycle[sector] || 0) + 1;
 
           // Track strategy attribution

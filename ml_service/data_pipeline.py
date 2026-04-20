@@ -177,7 +177,7 @@ FUNDAMENTAL_FEATURE_COLS = [
     "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
     "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
     "debt_to_equity", "current_ratio", "roe", "roa",
-    "days_since_earnings", "days_until_earnings", "eps_surprise_last",
+    "days_since_earnings", "eps_surprise_last",
     "eps_revision_30d", "revenue_revision_30d",
     "insider_buy_ratio_90d", "insider_net_shares_90d",
 ]
@@ -322,25 +322,44 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
     nm_arr = inc_sorted["_net_margin"].values
     mt_arr = inc_sorted["_margin_trend"].values
 
-    # Ratios arrays
-    rat_dates = rat_by_date["date"].values if len(rat_by_date) > 0 else np.array([])
-    pe_arr = rat_by_date["pe_ratio"].values if len(rat_by_date) > 0 else np.array([])
-    ps_arr = rat_by_date["ps_ratio"].values if len(rat_by_date) > 0 else np.array([])
-    dte_arr = rat_by_date["debt_to_equity"].values if len(rat_by_date) > 0 else np.array([])
-    cr_arr = rat_by_date["current_ratio"].values if len(rat_by_date) > 0 else np.array([])
+    # Ratios arrays — BUG FIX: use filing_date from income, not period end date
+    # Join ratios to income by (symbol, date) to get filing_date for each quarter
+    rat_filing_dates = np.array([])
+    pe_arr = np.array([])
+    ps_arr = np.array([])
+    dte_arr = np.array([])
+    cr_arr = np.array([])
+    if len(rat_by_date) > 0:
+        # Build filing_date lookup from income: period_end_date → filing_date
+        # Use pandas Series (not .values) so map() gets matching Timestamp types
+        inc_filing_lookup = dict(zip(inc_by_filing["date"], inc_by_filing["filing_date"]))
+        rat_with_filing = rat_by_date.copy()
+        rat_with_filing["_filing_date"] = rat_with_filing["date"].map(inc_filing_lookup)
+        # Drop rows without a matching filing date, sort by filing_date
+        rat_with_filing = rat_with_filing.dropna(subset=["_filing_date"]).sort_values("_filing_date")
+        rat_filing_dates = rat_with_filing["_filing_date"].values
+        pe_arr = rat_with_filing["pe_ratio"].values
+        ps_arr = rat_with_filing["ps_ratio"].values
+        dte_arr = rat_with_filing["debt_to_equity"].values if "debt_to_equity" in rat_with_filing.columns else np.full(len(rat_with_filing), np.nan)
+        cr_arr = rat_with_filing["current_ratio"].values if "current_ratio" in rat_with_filing.columns else np.full(len(rat_with_filing), np.nan)
 
-    # Metrics arrays
-    met_dates = met_by_date["date"].values if len(met_by_date) > 0 else np.array([])
-    roe_arr = met_by_date["roe"].values if len(met_by_date) > 0 else np.array([])
-    roa_arr = met_by_date["roa"].values if len(met_by_date) > 0 else np.array([])
+    # Metrics arrays — same fix: use filing_date from income
+    met_filing_dates = np.array([])
+    roe_arr = np.array([])
+    roa_arr = np.array([])
+    if len(met_by_date) > 0:
+        inc_filing_lookup2 = dict(zip(inc_by_filing["date"], inc_by_filing["filing_date"]))
+        met_with_filing = met_by_date.copy()
+        met_with_filing["_filing_date"] = met_with_filing["date"].map(inc_filing_lookup2)
+        met_with_filing = met_with_filing.dropna(subset=["_filing_date"]).sort_values("_filing_date")
+        met_filing_dates = met_with_filing["_filing_date"].values
+        roe_arr = met_with_filing["roe"].values
+        roa_arr = met_with_filing["roa"].values
 
     # Earnings dates
     earn_dates = reported["date"].values if len(reported) > 0 else np.array([])
     eps_actual_arr = reported["eps_actual"].values if len(reported) > 0 else np.array([])
     eps_est_arr = reported["eps_estimated"].values if len(reported) > 0 else np.array([])
-
-    # Future earnings dates (for days_until_earnings)
-    all_earn_dates = sym_earnings["date"].values if len(sym_earnings) > 0 else np.array([])
 
     # Build daily feature arrays
     n_days = len(date_index)
@@ -358,7 +377,6 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
     roe_daily = np.full(n_days, np.nan)
     roa_daily = np.full(n_days, np.nan)
     days_since = np.full(n_days, np.nan)
-    days_until = np.full(n_days, np.nan)
     eps_surprise = np.full(n_days, np.nan)
 
     date_vals = date_index.values
@@ -377,18 +395,18 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
             net_margin[d] = nm_arr[q_idx]
             margin_trend[d] = mt_arr[q_idx]
 
-        # Ratios: latest quarter date <= dt
-        if len(rat_dates) > 0:
-            r_idx = np.searchsorted(rat_dates, dt, side="right") - 1
+        # Ratios: latest quarter with filing_date <= dt (BUG 1 FIX)
+        if len(rat_filing_dates) > 0:
+            r_idx = np.searchsorted(rat_filing_dates, dt, side="right") - 1
             if r_idx >= 0:
                 pe_ratio_daily[d] = pe_arr[r_idx]
                 ps_ratio_daily[d] = ps_arr[r_idx]
                 dte_daily[d] = dte_arr[r_idx]
                 cr_daily[d] = cr_arr[r_idx]
 
-        # Metrics
-        if len(met_dates) > 0:
-            m_idx = np.searchsorted(met_dates, dt, side="right") - 1
+        # Metrics: latest quarter with filing_date <= dt (BUG 1 FIX)
+        if len(met_filing_dates) > 0:
+            m_idx = np.searchsorted(met_filing_dates, dt, side="right") - 1
             if m_idx >= 0:
                 roe_daily[d] = roe_arr[m_idx]
                 roa_daily[d] = roa_arr[m_idx]
@@ -406,12 +424,7 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
                 if not np.isnan(actual) and est is not None and not np.isnan(est) and abs(est) > 1e-9:
                     eps_surprise[d] = (actual - est) / abs(est)
 
-        # Days until next earnings
-        if len(all_earn_dates) > 0:
-            next_idx = np.searchsorted(all_earn_dates, dt, side="right")
-            if next_idx < len(all_earn_dates):
-                diff = (all_earn_dates[next_idx] - dt) / np.timedelta64(1, "D")
-                days_until[d] = diff
+        # BUG 2 FIX: days_until_earnings REMOVED (used retroactive data)
 
     feat["revenue_growth_yoy"] = rev_growth_yoy
     feat["eps_growth_yoy"] = eps_growth_yoy
@@ -427,7 +440,6 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
     feat["roe"] = roe_daily
     feat["roa"] = roa_daily
     feat["days_since_earnings"] = days_since
-    feat["days_until_earnings"] = days_until
     feat["eps_surprise_last"] = np.clip(eps_surprise, -2.0, 2.0)
 
     # ── Analyst estimate revisions ───────────────────────────────────
