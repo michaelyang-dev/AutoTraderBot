@@ -52,10 +52,20 @@ const alpaca = new Alpaca({
 const REVERSE_SYMBOL_MAP = { "BF.B": "BF-B", "BRK.B": "BRK-B", "BRK.A": "BRK-A" };
 function fromAlpacaSymbol(sym) { return REVERSE_SYMBOL_MAP[sym] || sym; }
 
+const TIMEOUT_MS = 15000;
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function fetchWithRetry(fn, label, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      return await withTimeout(fn(), TIMEOUT_MS, label);
     } catch (err) {
       const status = err.response?.status || err.statusCode;
       if (status === 429 && attempt < maxRetries) {
