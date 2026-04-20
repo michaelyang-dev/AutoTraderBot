@@ -80,6 +80,14 @@ function deriveSubject(messages) {
 
 // ── Telegram API ─────────────────────────────────────────────────
 
+/**
+ * Escape special characters for Telegram Markdown v1.
+ * Preserves intentional *bold* and _italic_ by only escaping within dynamic content.
+ */
+function escapeMarkdown(text) {
+  return text.replace(/([[\]()~`>#+\-=|{}.!])/g, '\\$1');
+}
+
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
 /**
@@ -146,8 +154,9 @@ async function flush() {
     return;
   }
 
-  const header = deriveSubject(messages);
-  const body = `*AutoTrader: ${header}*\n\n${messages.join("\n\n")}`;
+  const header = escapeMarkdown(deriveSubject(messages));
+  const escapedMessages = messages.map(m => escapeMarkdown(m));
+  const body = `*AutoTrader: ${header}*\n\n${escapedMessages.join("\n\n")}`;
 
   await sendTelegram(body);
   sendTimestamps.push(Date.now());

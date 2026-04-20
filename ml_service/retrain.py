@@ -3,7 +3,7 @@
 Monthly Retrain Pipeline — V5c LGBM+RF Ensemble
 =================================================
 Automated monthly retraining with deploy gate validation,
-model backup, atomic swap, and email notifications.
+model backup, atomic swap, and Telegram notifications.
 
 Steps:
   1. Update market data (yfinance via data_pipeline, FMP, FRED)
@@ -14,7 +14,7 @@ Steps:
   6. Backup old models → timestamped directory
   7. Atomic swap: write to tmp, verify, rename to production
   8. Reload signal server via pm2, verify /health
-  9. Notify via email
+  9. Notify via Telegram
 
 Usage:
     python3 retrain.py                 # full retrain + deploy
@@ -37,6 +37,8 @@ import traceback
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 import numpy as np
 import pandas as pd
@@ -78,29 +80,48 @@ def _close_log():
         _log_file.close()
 
 
-# ── Email notifications ─────────────────────────────────────────────────────
+# ── Telegram notifications ──────────────────────────────────────────────────
 
-def notify_email(subject: str, body: str):
-    """Send notification via the Node.js notification system."""
-    try:
-        server_dir = BASE_DIR.parent / "server"
-        # Escape quotes for JS string
-        safe_subject = subject.replace("'", "\\'").replace("\n", "\\n")
-        safe_body = body.replace("'", "\\'").replace("\n", "\\n")
-        script = (
-            f"const notify = require('{server_dir}/notifications');"
-            f"notify.send('{safe_subject}\\n\\n{safe_body}', {{ immediate: true }});"
-            f"setTimeout(() => process.exit(0), 3000);"
-        )
-        subprocess.run(
-            ["node", "-e", script],
-            cwd=str(server_dir),
-            timeout=10,
-            capture_output=True,
-        )
-        log(f"  Email notification sent: {subject}")
-    except Exception as exc:
-        log(f"  WARNING: Email notification failed: {exc}")
+from dotenv import load_dotenv
+load_dotenv(BASE_DIR.parent / ".env")
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_ENABLED   = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+
+
+def notify_telegram(message: str):
+    """Send a Telegram notification. Silent fail on error."""
+    if not TELEGRAM_ENABLED:
+        log(f"  Telegram disabled — would send: {message[:100]}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+    }
+
+    for attempt in range(1, 3):
+        try:
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.ok:
+                log("  Telegram notification sent")
+                return
+            log(f"  Telegram API error (attempt {attempt}/2): {resp.status_code} — {resp.text[:200]}")
+            # If Markdown parse failed, retry without parse_mode
+            if resp.status_code == 400 and "can't parse" in resp.text:
+                payload.pop("parse_mode", None)
+                retry = requests.post(url, json=payload, timeout=10)
+                if retry.ok:
+                    log("  Telegram notification sent (plain text fallback)")
+                    return
+        except Exception as exc:
+            log(f"  Telegram send failed (attempt {attempt}/2): {exc}")
+
+        if attempt == 1:
+            time.sleep(5)
 
 
 # ── Step 1: Update data ─────────────────────────────────────────────────────
@@ -344,7 +365,7 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
 
 # ── Step 3: Deploy gate ─────────────────────────────────────────────────────
 
-def step3_deploy_gate():
+def step3_deploy_gate(train_metrics: dict):
     """Run deploy gate validation on new predictions."""
     from deploy_gate import run_deploy_gate
 
@@ -498,17 +519,17 @@ def main():
 
         # Step 3: Deploy gate
         step_num = 3
-        passed, gate_metrics, reasons = step3_deploy_gate()
+        passed, gate_metrics, reasons = step3_deploy_gate(train_metrics)
 
         if not passed:
             log("\n  DEPLOY GATE FAILED — keeping old models")
-            notify_email(
-                "Retrain completed but failed deploy gate",
-                (f"Old model retained.\n"
-                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
-                 f"CAGR: {gate_metrics.get('cagr')}\n"
-                 f"Max DD: {gate_metrics.get('max_dd')}\n"
-                 f"Reasons: {'; '.join(reasons)}"),
+            notify_telegram(
+                f"*AutoTrader Retrain: DEPLOY GATE FAILED*\n\n"
+                f"Old model retained.\n"
+                f"Sharpe: {gate_metrics.get('sharpe')}\n"
+                f"CAGR: {gate_metrics.get('cagr')}\n"
+                f"Max DD: {gate_metrics.get('max_dd')}\n"
+                f"Reasons: {'; '.join(reasons)}"
             )
             # Clean up tmp
             if TMP_DIR.exists():
@@ -532,10 +553,10 @@ def main():
                 # Restart again with old models
                 subprocess.run(["pm2", "restart", "signal-server"],
                                capture_output=True, timeout=30)
-            notify_email(
-                "Retrain failed: verification failed after swap",
-                (f"Rolled back to backup: {backup_path}\n"
-                 f"Error: Health check failed within 2 minutes"),
+            notify_telegram(
+                f"*AutoTrader Retrain: VERIFICATION FAILED*\n\n"
+                f"Rolled back to backup: {backup_path}\n"
+                f"Error: Health check failed within 2 minutes"
             )
             _close_log()
             sys.exit(1)
@@ -556,13 +577,13 @@ def main():
         log(f"  Max DD: {gate_metrics.get('max_dd', 'N/A')}")
 
         if not args.dry_run:
-            notify_email(
-                "Retrain completed successfully",
-                (f"New model active.\n"
-                 f"Ensemble AUC: {train_metrics.get('ensemble_auc')}\n"
-                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
-                 f"CAGR: {gate_metrics.get('cagr')}\n"
-                 f"Max DD: {gate_metrics.get('max_dd')}"),
+            notify_telegram(
+                f"*AutoTrader Retrain: SUCCESS*\n\n"
+                f"New model active.\n"
+                f"Ensemble AUC: {train_metrics.get('ensemble_auc')}\n"
+                f"Sharpe: {gate_metrics.get('sharpe')}\n"
+                f"CAGR: {gate_metrics.get('cagr')}\n"
+                f"Max DD: {gate_metrics.get('max_dd')}"
             )
 
         # Clean up tmp
@@ -581,9 +602,10 @@ def main():
             subprocess.run(["pm2", "restart", "signal-server"],
                            capture_output=True, timeout=30)
 
-        notify_email(
-            f"Retrain failed at step {step_num}",
-            f"Old model still active.\nError: {exc}",
+        notify_telegram(
+            f"*AutoTrader Retrain: FAILED at step {step_num}*\n\n"
+            f"Old model still active.\n"
+            f"Error: {exc}"
         )
 
         # Clean up tmp
