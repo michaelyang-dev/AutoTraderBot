@@ -196,7 +196,10 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
-    assert "days_until_earnings" not in df.columns, "days_until_earnings still present"
+    # Drop days_until_earnings if present (retroactive date leakage)
+    if "days_until_earnings" in df.columns:
+        df = df.drop(columns=["days_until_earnings"])
+        log("  Dropped days_until_earnings column")
 
     # Add cross-sectional rank features
     for base_col, rank_col in RANK_FEATURES:
@@ -214,6 +217,7 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     df.loc[valid_df.index, "target_v5"] = valid_df["target_v5"]
 
     feature_cols = get_feature_cols(df)
+    assert len(feature_cols) == 83, f"Expected 83 features, got {len(feature_cols)}"
     non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
     df = df.dropna(subset=non_fund_cols + ["target_v5"])
 
