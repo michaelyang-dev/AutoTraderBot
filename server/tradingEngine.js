@@ -20,7 +20,7 @@ const RISK = {
   MAX_POSITION_PCT: 0.15,
   STOP_LOSS_PCT: -0.08,
   TAKE_PROFIT_PCT: 0.15,
-  MAX_OPEN_POSITIONS: 10,             // 3-strategy: ML(2)+Mom(4)+MR(2)+flex(2)
+  MAX_OPEN_POSITIONS: 11,             // 4-strategy: ML(2)+Mom(3)+MR(3)+MCAP(2)+flex(1)
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.08,
@@ -34,48 +34,76 @@ const RISK = {
 
 // ── Multi-strategy slot allocation ──
 const SLOT_CONFIG = {
-  ml_medium: 2,          // ML primary slots
-  momentum: 4,           // Momentum primary slots
-  mean_reversion: 2,     // Mean Reversion primary slots
-  flex: 2,               // Shared flex pool
-  max: 10,               // Hard cap (= RISK.MAX_OPEN_POSITIONS)
+  ml_medium: 2,          // ML primary slots (regime-adaptive)
+  momentum: 3,           // Momentum primary slots (reduced from 4)
+  mean_reversion: 3,     // Mean Reversion primary slots (reduced from 4)
+  mega_cap: 2,           // Mega-Cap Overlay slots (NEW)
+  flex: 1,               // Shared flex pool
+  max: 11,               // Hard cap (= RISK.MAX_OPEN_POSITIONS)
 };
 
 // ── Momentum strategy parameters ──
 const MOM = {
-  LOOKBACK: 63,          // 63 trading days for ranking
-  TOP_N: 5,              // top 5 signals per cycle
-  SMA_PERIOD: 200,       // trend filter
-  VOL_PERIOD: 20,        // avg volume window
-  VOL_MIN: 500000,       // minimum 20-day avg volume
+  LOOKBACK: 252,           // 12-month lookback for 12-1 momentum
+  SKIP: 21,                // skip most recent 21 days (reversal avoidance)
+  TOP_N: 5,                // top 5 signals per cycle
+  SMA_PERIOD: 200,         // trend filter
+  VOL_PERIOD: 20,          // avg volume window
+  VOL_MIN: 500000,         // minimum 20-day avg volume
   ATR_PERIOD: 14,
-  STOP_LOSS: -0.08,      // -8% from entry
-  TAKE_PROFIT: 0.20,     // +20% from entry
-  TRAIL_STOP: -0.08,     // -8% from peak
-  RANK_BREAK: 20,        // exit if rank > 20
-  MAX_HOLD_DAYS: 60,     // trading days (approx 60 cycles at 1/day)
-  BASE_PCT: 0.12,        // 12% position size
-  HIGH_ATR_PCT: 0.08,    // 8% for volatile stocks
-  HIGH_ATR_THRESH: 0.03, // ATR/price > 3% = volatile
-  COOLDOWN_CYCLES: 5,    // 5-cycle cooldown after momentum sell
+  STOP_LOSS: -0.08,
+  TAKE_PROFIT: 0.20,
+  TRAIL_STOP: -0.08,
+  RANK_BREAK: 20,
+  MAX_HOLD_DAYS: 60,
+  BASE_PCT: 0.12,
+  HIGH_ATR_PCT: 0.08,
+  HIGH_ATR_THRESH: 0.03,
+  COOLDOWN_CYCLES: 5,
+  HIGH_52WK_THRESHOLD: 0.92,  // within 8% of 52-week high
+  CONSISTENCY_THRESHOLD: 0.55, // 55%+ positive days
+  CONSISTENCY_BOOST: 0.10,     // +10% rank boost
 };
 
 // ── Mean Reversion strategy parameters ──
 const MR = {
-  DROP_PERIOD: 30,          // 30 trading days to measure drop
-  DROP_THRESHOLD: -0.15,    // minimum drop to trigger signal (-15%)
-  DROP_MAX: -0.30,          // drop level for maximum confidence (-30%)
   SMA_PERIOD: 200,          // trend filter (above 200-SMA)
-  SMA_SHORT: 20,            // take-profit target (20-day SMA recovery)
+  RSI_PERIOD: 14,           // RSI lookback
+  RSI_ENTRY: 30,            // RSI < 30 entry
+  RSI_EXIT: 50,             // RSI > 50 exit (mean reversion complete)
+  BB_PERIOD: 20,            // Bollinger Band period
+  BB_STD: 2.0,              // Bollinger Band std devs
+  VOL_SPIKE: 1.5,           // volume >= 1.5x 20-day avg
   VOL_PERIOD: 20,           // avg volume window
   VOL_MIN: 500000,          // minimum 20-day avg volume
   ATR_PERIOD: 14,
-  STOP_LOSS: -0.10,         // -10% from entry
-  MAX_HOLD_DAYS: 10,        // trading days (approx 10 cycles at 1/day)
-  BASE_PCT: 0.12,           // 12% position size
-  HIGH_ATR_PCT: 0.08,       // 8% for volatile stocks
-  HIGH_ATR_THRESH: 0.04,    // ATR/price > 4% = volatile (higher than momentum's 3%)
-  COOLDOWN_CYCLES: 5,       // 5-cycle cooldown after MR sell
+  ATR_STOP_MULT: 2.0,       // stop = entry - 2xATR
+  ATR_TP_MULT: 3.0,         // TP = entry + 3xATR
+  MAX_HOLD_DAYS: 15,        // max hold days
+  BASE_PCT: 0.12,
+  HIGH_ATR_PCT: 0.08,
+  HIGH_ATR_THRESH: 0.04,
+  COOLDOWN_CYCLES: 5,
+};
+
+// ── Mega-Cap Overlay strategy parameters ──
+const MEGACAP = {
+  TOP_N_UNIVERSE: 15,
+  PICKS: 3,
+  LOOKBACK: 252,          // 12-month lookback (was 60)
+  SKIP: 21,               // skip most recent month
+  SMA_PERIOD: 200,
+  SMA_EXIT_PERIOD: 50,    // 50-day SMA trend break exit
+  STOP_LOSS: -0.05,
+  TAKE_PROFIT: 0.20,
+  MAX_HOLD_DAYS: 90,
+  BASE_PCT: 0.12,
+  COOLDOWN_CYCLES: 2,
+  HIGH_52WK_THRESHOLD: 0.95,  // within 5% of 52-week high
+  UNIVERSE: [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "LLY",
+    "AVGO", "JPM", "TSLA", "UNH", "V", "MA", "COST",
+  ],
 };
 
 const MARKET_HOURS = { OPEN_BUFFER_MINS: 15, CLOSE_BUFFER_MINS: 30 };
@@ -450,79 +478,74 @@ function getSignals(prices) {
  */
 function computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap) {
   const symbols = UNIVERSE_SYMBOLS.filter(s => !NEVER_BUY.has(s) && s !== "SPY");
-  const rankings = {};
-  const returns63 = {};
+  const candidates = [];
 
-  // 1. Compute 63-day returns for all symbols with enough data
   for (const sym of symbols) {
     const prices = priceHist[sym];
     if (!prices || prices.length < MOM.LOOKBACK + 1) continue;
-    const current = prices[prices.length - 1];
-    const past = prices[prices.length - 1 - MOM.LOOKBACK];
-    if (past > 0) {
-      returns63[sym] = (current - past) / past;
-    }
-  }
-
-  // 2. Rank by return (1 = best momentum)
-  const sorted = Object.entries(returns63).sort((a, b) => b[1] - a[1]);
-  sorted.forEach(([sym], idx) => {
-    rankings[sym] = idx + 1;
-  });
-
-  // 3. Generate signals for top N that pass filters
-  const signals = [];
-  let signalCount = 0;
-
-  for (const [sym, ret] of sorted) {
-    if (signalCount >= MOM.TOP_N) break;
-    const rank = rankings[sym];
-
-    // Already held
     if (heldSymbols.has(sym)) continue;
 
-    const prices = priceHist[sym];
     const currentPrice = prices[prices.length - 1];
+    if (currentPrice <= 0) continue;
 
-    // SMA200 filter: price must be above 200-day SMA
+    // 12-1 momentum: skip recent month
+    const priceSkip = prices[prices.length - 1 - MOM.SKIP];
+    const price12m = prices[prices.length - 1 - MOM.LOOKBACK];
+    if (price12m <= 0) continue;
+    const mom12_1 = (priceSkip / price12m) - 1.0;
+
+    // SMA200 filter
     const sma200 = sma(prices, MOM.SMA_PERIOD);
     if (sma200 === null || currentPrice <= sma200) continue;
 
-    // Volume filter: 20-day avg volume > 500K
+    // 52-week high filter
+    if (prices.length >= 252) {
+      const high52 = Math.max(...prices.slice(-252));
+      if (currentPrice / high52 < MOM.HIGH_52WK_THRESHOLD) continue;
+    } else continue;
+
+    // Volume filter
     const vols = volHist[sym];
     const avg = avgVolume(vols, MOM.VOL_PERIOD);
     if (avg !== null && avg < MOM.VOL_MIN) continue;
 
-    // Earnings proximity check
+    // Earnings proximity
     const earningsDate = earningsMap ? earningsMap[sym] : null;
     if (earningsDate) {
       const days = daysUntilEarnings(earningsDate);
       if (days >= 0 && days <= 3) continue;
     }
 
-    // Confidence = (100 - rank) / 100
-    const confidence = (100 - rank) / 100;
+    // Consistency score: % positive days in last 252 days
+    const recentPrices = prices.slice(-252);
+    let positiveDays = 0;
+    for (let i = 1; i < recentPrices.length; i++) {
+      if (recentPrices[i] > recentPrices[i-1]) positiveDays++;
+    }
+    const pctPositive = positiveDays / (recentPrices.length - 1);
+    const consistencyBoost = pctPositive > MOM.CONSISTENCY_THRESHOLD ? MOM.CONSISTENCY_BOOST : 0.0;
+    const score = mom12_1 + consistencyBoost;
 
     // ATR-based position sizing
     const stockAtr = atr(prices, MOM.ATR_PERIOD);
     const atrPct = stockAtr ? stockAtr / currentPrice : 0.02;
     const positionPct = atrPct > MOM.HIGH_ATR_THRESH ? MOM.HIGH_ATR_PCT : MOM.BASE_PCT;
 
-    signals.push({
-      sym,
-      score: confidence,
-      price: currentPrice,
-      consensus: `MOM RANK #${rank} (${(ret * 100).toFixed(1)}%)`,
-      rsiVal: null,
-      mlConf: null,
-      strategy: "momentum",
-      positionPct,
-      rank,
+    candidates.push({
+      sym, score, price: currentPrice, mom12_1, positionPct,
+      consensus: `MOM 12-1 ${(mom12_1 * 100).toFixed(1)}% (cons ${(pctPositive*100).toFixed(0)}%)`,
+      rsiVal: null, mlConf: null, strategy: "momentum",
     });
-    signalCount++;
   }
 
-  return { signals, rankings };
+  // Sort by score descending, take top N
+  candidates.sort((a, b) => b.score - a.score);
+
+  // Build rankings for exit logic
+  const rankings = {};
+  candidates.forEach(({sym}, idx) => { rankings[sym] = idx + 1; });
+
+  return { signals: candidates.slice(0, MOM.TOP_N), rankings };
 }
 
 // ══════════════════════════════════════════
@@ -545,68 +568,121 @@ function computeMeanReversionSignals(priceHist, volHist, heldSymbols, earningsMa
 
   for (const sym of symbols) {
     const prices = priceHist[sym];
-    if (!prices || prices.length < Math.max(MR.SMA_PERIOD, MR.DROP_PERIOD) + 1) continue;
-
-    // Already held
+    if (!prices || prices.length < Math.max(MR.SMA_PERIOD, MR.BB_PERIOD, MR.RSI_PERIOD + 1) + 1) continue;
     if (heldSymbols.has(sym)) continue;
 
     const currentPrice = prices[prices.length - 1];
     if (currentPrice <= 0) continue;
 
-    // 30-day return
-    const pastPrice = prices[prices.length - 1 - MR.DROP_PERIOD];
-    if (!pastPrice || pastPrice <= 0) continue;
-    const drop30d = (currentPrice - pastPrice) / pastPrice;
-
-    // Must have dropped > 15% (drop30d is negative)
-    if (drop30d > MR.DROP_THRESHOLD) continue;
-
-    // Filter: above 200-day SMA (not in structural downtrend)
+    // 1. Above 200-day SMA (trend filter)
     const sma200 = sma(prices, MR.SMA_PERIOD);
     if (sma200 === null || currentPrice < sma200) continue;
 
-    // Filter: NOT at 30-day low (want early bounce, not falling knife)
-    const recentPrices = prices.slice(-MR.DROP_PERIOD);
-    const low30d = Math.min(...recentPrices);
-    if (currentPrice <= low30d * 1.001) continue;  // within 0.1% of low
+    // 2. RSI < 30
+    const rsiVal = rsi(prices, MR.RSI_PERIOD);
+    if (rsiVal >= MR.RSI_ENTRY) continue;
 
-    // Filter: volume
+    // 3. Below lower Bollinger Band
+    const bb = bollinger(prices, MR.BB_PERIOD);
+    if (!bb || currentPrice >= bb.lower) continue;
+
+    // 4. Volume spike >= 1.5x 20-day avg
     const vols = volHist[sym];
+    if (!vols || vols.length < MR.VOL_PERIOD + 1) continue;
     const avgVol20 = avgVolume(vols, MR.VOL_PERIOD);
-    if (avgVol20 !== null && avgVol20 < MR.VOL_MIN) continue;
+    if (avgVol20 === null || avgVol20 < MR.VOL_MIN) continue;
+    const currVol = vols[vols.length - 1];
+    if (currVol < avgVol20 * MR.VOL_SPIKE) continue;
 
-    // Earnings proximity check (7 days for MR)
+    // Earnings proximity (7 days for MR)
     const earningsDate = earningsMap ? earningsMap[sym] : null;
     if (earningsDate) {
       const days = daysUntilEarnings(earningsDate);
       if (days >= 0 && days <= 7) continue;
     }
 
-    // Confidence: linear scale from 0.50 at -15% to 0.95 at -30%
-    const dropRange = MR.DROP_MAX - MR.DROP_THRESHOLD;  // -0.15
-    const dropPct = Math.min(1.0, Math.max(0.0, (drop30d - MR.DROP_THRESHOLD) / dropRange));
-    const confidence = 0.50 + dropPct * 0.45;
-
-    // ATR-based position sizing
+    // ATR for dynamic stops
     const stockAtr = atr(prices, MR.ATR_PERIOD);
+    const atrVal = stockAtr || currentPrice * 0.02;
+    const atrStop = currentPrice - MR.ATR_STOP_MULT * atrVal;
+    const atrTp = currentPrice + MR.ATR_TP_MULT * atrVal;
+
+    const confidence = (MR.RSI_ENTRY - rsiVal) / MR.RSI_ENTRY;
     const atrPct = stockAtr ? stockAtr / currentPrice : 0.02;
     const positionPct = atrPct > MR.HIGH_ATR_THRESH ? MR.HIGH_ATR_PCT : MR.BASE_PCT;
 
     signals.push({
-      sym,
-      score: confidence,
-      price: currentPrice,
-      consensus: `MR DROP ${(drop30d * 100).toFixed(1)}% (30d)`,
-      rsiVal: null,
-      mlConf: null,
-      strategy: "mean_reversion",
-      positionPct,
-      drop30d,
+      sym, score: confidence, price: currentPrice,
+      consensus: `MR DUAL RSI=${rsiVal.toFixed(0)} BB<lower VOL=${(currVol/avgVol20).toFixed(1)}x`,
+      rsiVal, mlConf: null, strategy: "mean_reversion",
+      positionPct, atrStop, atrTp,
     });
   }
 
-  // Sort by confidence descending (biggest drops first)
   signals.sort((a, b) => b.score - a.score);
+  return signals;
+}
+
+// ══════════════════════════════════════════
+//  MEGA-CAP OVERLAY SIGNAL ENGINE
+// ══════════════════════════════════════════
+
+/**
+ * Compute mega-cap overlay signals: top 3 of the 15 largest S&P 500 stocks
+ * by 60-day momentum. Always active regardless of regime.
+ *
+ * @param {Object} priceHist   - { symbol → [close1, close2, ...] }
+ * @param {Set}    heldSymbols - symbols currently held
+ * @returns {Array} mega-cap overlay buy signals
+ */
+function computeMegaCapSignals(priceHist, heldSymbols) {
+  const signals = [];
+  const candidates = [];
+
+  for (const sym of MEGACAP.UNIVERSE) {
+    const prices = priceHist[sym];
+    if (!prices || prices.length < MEGACAP.LOOKBACK + 1) continue;
+    if (heldSymbols.has(sym)) continue;
+
+    const currentPrice = prices[prices.length - 1];
+
+    // SMA200 filter
+    const sma200 = sma(prices, MEGACAP.SMA_PERIOD);
+    if (sma200 === null || currentPrice <= sma200) continue;
+
+    // 12-1 momentum
+    const priceSkip = prices[prices.length - 1 - MEGACAP.SKIP];
+    const price12m = prices[prices.length - 1 - MEGACAP.LOOKBACK];
+    if (price12m <= 0) continue;
+    const mom12_1 = (priceSkip / price12m) - 1.0;
+
+    // 52-week high filter (within 5%)
+    if (prices.length >= 252) {
+      const high52 = Math.max(...prices.slice(-252));
+      if (currentPrice / high52 < MEGACAP.HIGH_52WK_THRESHOLD) continue;
+    }
+
+    candidates.push({ sym, mom12_1, price: currentPrice });
+  }
+
+  // Sort by 12-1 momentum, take top PICKS
+  candidates.sort((a, b) => b.mom12_1 - a.mom12_1);
+  let signalCount = 0;
+
+  for (const { sym, mom12_1, price } of candidates) {
+    if (signalCount >= MEGACAP.PICKS) break;
+    const rank = candidates.findIndex(c => c.sym === sym) + 1;
+    const confidence = (MEGACAP.UNIVERSE.length - rank + 1) / MEGACAP.UNIVERSE.length;
+
+    signals.push({
+      sym, score: confidence, price,
+      consensus: `MCAP 12-1 #${rank} (${(mom12_1 * 100).toFixed(1)}%)`,
+      rsiVal: null, mlConf: null, strategy: "mega_cap",
+      positionPct: MEGACAP.BASE_PCT, rank,
+    });
+    signalCount++;
+  }
+
   return signals;
 }
 
@@ -992,7 +1068,15 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
   // ── Mean Reversion strategy state ──
   let mrEntryPrices = {};          // { symbol → entry price }
   let mrEntryDates = {};           // { symbol → cycleNumber at entry }
+  let mrAtrStops = {};             // { symbol → ATR stop price }
+  let mrAtrTps = {};               // { symbol → ATR take-profit price }
   let mrTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
+
+  // ── Mega-Cap Overlay strategy state ──
+  let mcEntryPrices = {};          // { symbol → entry price }
+  let mcPeakPrices = {};           // { symbol → peak since entry }
+  let mcEntryDates = {};           // { symbol → cycleNumber at entry }
+  let mcTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
   let pricePollInterval = null;
   let tradeCycleInterval = null;
   let prevMlStatus = "down";
@@ -1458,6 +1542,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const lossAt = cooldowns[key];
         const cooldownLen = strategy === "momentum" ? MOM.COOLDOWN_CYCLES
           : strategy === "mean_reversion" ? MR.COOLDOWN_CYCLES
+          : strategy === "mega_cap" ? MEGACAP.COOLDOWN_CYCLES
           : RISK.LOSS_COOLDOWN_CYCLES;
         return lossAt !== undefined && (cycleNumber - lossAt) < cooldownLen;
       };
@@ -1467,23 +1552,24 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       // Count positions by strategy for slot allocation
       const countByStrategy = () => {
-        let ml = 0, mom = 0, mr = 0;
+        let ml = 0, mom = 0, mr = 0, mc = 0;
         for (const pos of currentPositions) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
           if (trendPositions[pos.symbol]) continue;
           const strat = positionStrategy[pos.symbol] || "ml";
           if (strat === "momentum") mom++;
           else if (strat === "mean_reversion") mr++;
+          else if (strat === "mega_cap") mc++;
           else ml++;
         }
-        return { ml, mom, mr, total: ml + mom + mr };
+        return { ml, mom, mr, mc, total: ml + mom + mr + mc };
       };
 
       // Check if a strategy has slot capacity
       const hasSlotCapacity = (strategy, counts) => {
         if (counts.total >= SLOT_CONFIG.max) return false;
-        const stratMap = { momentum: "momentum", mean_reversion: "mean_reversion", ml: "ml_medium" };
-        const countMap = { momentum: counts.mom, mean_reversion: counts.mr, ml: counts.ml };
+        const stratMap = { momentum: "momentum", mean_reversion: "mean_reversion", ml: "ml_medium", mega_cap: "mega_cap" };
+        const countMap = { momentum: counts.mom, mean_reversion: counts.mr, ml: counts.ml, mega_cap: counts.mc };
         const primaryKey = stratMap[strategy] || "ml_medium";
         const primaryUsed = countMap[strategy] || counts.ml;
         const primaryLimit = SLOT_CONFIG[primaryKey] || 0;
@@ -1493,7 +1579,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         const flexUsed = counts.total
           - Math.min(counts.ml, SLOT_CONFIG.ml_medium)
           - Math.min(counts.mom, SLOT_CONFIG.momentum)
-          - Math.min(counts.mr, SLOT_CONFIG.mean_reversion);
+          - Math.min(counts.mr, SLOT_CONFIG.mean_reversion)
+          - Math.min(counts.mc, SLOT_CONFIG.mega_cap);
         return flexUsed < SLOT_CONFIG.flex;
       };
 
@@ -1632,10 +1719,14 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             } else if (strat === "mean_reversion") {
               delete mrEntryPrices[symbol];
               delete mrEntryDates[symbol];
+            } else if (strat === "mega_cap") {
+              delete mcEntryPrices[symbol];
+              delete mcPeakPrices[symbol];
+              delete mcEntryDates[symbol];
             }
             delete positionStrategy[symbol];
             addLog(stopMsg, "sell");
-            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : mlTradeCount;
+            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : strat === "mega_cap" ? mcTradeCount : mlTradeCount;
             tradeCount.sells++; stratTracker.sells++;
             if (unrealized_pl >= 0) { tradeCount.wins++; stratTracker.wins++; }
             else { tradeCount.losses++; stratTracker.losses++; }
@@ -1661,10 +1752,14 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             } else if (strat === "mean_reversion") {
               delete mrEntryPrices[symbol];
               delete mrEntryDates[symbol];
+            } else if (strat === "mega_cap") {
+              delete mcEntryPrices[symbol];
+              delete mcPeakPrices[symbol];
+              delete mcEntryDates[symbol];
             }
             delete positionStrategy[symbol];
             addLog(`TAKE-PROFIT ${symbol}: ${qty} shares @ $${curr.toFixed(2)} | P&L: +$${unrealized_pl.toFixed(2)}`, "profit");
-            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : mlTradeCount;
+            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : strat === "mega_cap" ? mcTradeCount : mlTradeCount;
             tradeCount.sells++; stratTracker.sells++;
             tradeCount.wins++; stratTracker.wins++;
             tradeCount.totalPnL += unrealized_pl;
@@ -1702,7 +1797,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             }
             delete positionStrategy[pos.symbol];
             addLog(`EARNINGS SELL ${pos.symbol}: earnings tomorrow (${earningsDate}) -- exiting to avoid overnight announcement risk`, "sell");
-            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : mlTradeCount;
+            const stratTracker = strat === "momentum" ? momTradeCount : strat === "mean_reversion" ? mrTradeCount : strat === "mega_cap" ? mcTradeCount : mlTradeCount;
             tradeCount.sells++; stratTracker.sells++;
             if (pos.unrealized_pl >= 0) { tradeCount.wins++; stratTracker.wins++; }
             else { tradeCount.losses++; stratTracker.losses++; }
@@ -1829,28 +1924,31 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         let exitReason = "";
         let exitMsg = "";
 
-        // 1. Stop-loss: -10% from entry
-        const entryReturn = (curr - entryPrice) / entryPrice;
-        if (entryReturn <= MR.STOP_LOSS) {
+        // 1. ATR-based stop
+        if (curr <= (mrAtrStops[sym] || 0)) {
           exitTriggered = true;
-          exitReason = "mr-stop-loss";
-          exitMsg = `MR STOP-LOSS ${sym}: ${(entryReturn * 100).toFixed(1)}% from entry $${entryPrice.toFixed(2)}`;
+          exitReason = "mr-atr-stop";
+          exitMsg = `MR ATR-STOP ${sym}: price $${curr.toFixed(2)} <= stop $${(mrAtrStops[sym] || 0).toFixed(2)}`;
         }
 
-        // 2. Take-profit: price recovers to 20-day SMA
+        // 2. ATR-based take-profit
+        if (!exitTriggered && curr >= (mrAtrTps[sym] || Infinity)) {
+          exitTriggered = true;
+          exitReason = "mr-atr-tp";
+          exitMsg = `MR ATR-TP ${sym}: price $${curr.toFixed(2)} >= target $${(mrAtrTps[sym] || 0).toFixed(2)}`;
+        }
+
+        // 3. RSI > 50 exit (mean reversion complete)
         if (!exitTriggered) {
-          const prices = priceHist[sym];
-          if (prices && prices.length >= MR.SMA_SHORT) {
-            const sma20 = sma(prices, MR.SMA_SHORT);
-            if (sma20 !== null && curr >= sma20) {
-              exitTriggered = true;
-              exitReason = "mr-take-profit-sma20";
-              exitMsg = `MR TAKE-PROFIT ${sym}: price $${curr.toFixed(2)} recovered to 20-SMA $${sma20.toFixed(2)}`;
-            }
+          const rsiVal = rsi(priceHist[sym] || [], MR.RSI_PERIOD);
+          if (rsiVal > MR.RSI_EXIT) {
+            exitTriggered = true;
+            exitReason = "mr-rsi-exit";
+            exitMsg = `MR RSI-EXIT ${sym}: RSI ${rsiVal.toFixed(0)} > ${MR.RSI_EXIT} (mean reversion complete)`;
           }
         }
 
-        // 3. Max hold: 10 trading days (~10 cycles at 1/day equivalent)
+        // 4. Max hold: 15 trading days
         if (!exitTriggered) {
           const cyclesHeld = cycleNumber - entryCycle;
           const approxDaysHeld = cyclesHeld / 390;
@@ -1867,6 +1965,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             closedSymbols.add(sym);
             delete mrEntryPrices[sym];
             delete mrEntryDates[sym];
+            delete mrAtrStops[sym];
+            delete mrAtrTps[sym];
             delete positionStrategy[sym];
             if (unrealized_pl < 0) setCooldown(sym, "mean_reversion");
             addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
@@ -1883,6 +1983,92 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             notify.send(`🔄 MR ${exitReason.replace("mr-", "").toUpperCase()} ${sym} | ${qty} shares @ $${curr.toFixed(2)} | P&L: ${pnlSign}$${unrealized_pl.toFixed(2)}`);
           } catch (err) {
             addLog(`Mean reversion exit failed ${sym}: ${err.message}`, "error");
+          }
+        }
+      }
+
+      // ── STEP 1e: Mega-Cap Overlay exits ──
+      for (const pos of currentPositions) {
+        const sym = pos.symbol;
+        if (closedSymbols.has(sym)) continue;
+        if (sym === "SPY" && idleSpyShares > 0) continue;
+        if (trendPositions[sym]) continue;
+        if (positionStrategy[sym] !== "mega_cap") continue;
+
+        const { qty, current_price: curr, unrealized_pl } = pos;
+        const entryPrice = mcEntryPrices[sym] || pos.avg_entry_price;
+        const peak = mcPeakPrices[sym] || curr;
+        const entryCycle = mcEntryDates[sym] || cycleNumber;
+
+        // Update peak price tracking
+        if (curr > peak) mcPeakPrices[sym] = curr;
+
+        let exitTriggered = false;
+        let exitReason = "";
+        let exitMsg = "";
+
+        // 1. Stop-loss: -5% from entry
+        const entryReturn = (curr - entryPrice) / entryPrice;
+        if (entryReturn <= MEGACAP.STOP_LOSS) {
+          exitTriggered = true;
+          exitReason = "mcap-stop-loss";
+          exitMsg = `MCAP STOP-LOSS ${sym}: ${(entryReturn * 100).toFixed(1)}% from entry $${entryPrice.toFixed(2)}`;
+        }
+
+        // 2. Take-profit: +20% from entry
+        if (!exitTriggered && entryReturn >= MEGACAP.TAKE_PROFIT) {
+          exitTriggered = true;
+          exitReason = "mcap-take-profit";
+          exitMsg = `MCAP TAKE-PROFIT ${sym}: +${(entryReturn * 100).toFixed(1)}% from entry $${entryPrice.toFixed(2)}`;
+        }
+
+        // 3. Max hold: 90 trading days
+        if (!exitTriggered) {
+          const cyclesHeld = cycleNumber - entryCycle;
+          const approxDaysHeld = cyclesHeld / 390;
+          if (approxDaysHeld >= MEGACAP.MAX_HOLD_DAYS) {
+            exitTriggered = true;
+            exitReason = "mcap-max-hold";
+            exitMsg = `MCAP MAX-HOLD ${sym}: held ~${approxDaysHeld.toFixed(0)} trading days (max: ${MEGACAP.MAX_HOLD_DAYS})`;
+          }
+        }
+
+        // 4. SMA50 trend break
+        if (!exitTriggered) {
+          const prices = priceHist[sym];
+          if (prices && prices.length >= MEGACAP.SMA_EXIT_PERIOD) {
+            const sma50 = sma(prices, MEGACAP.SMA_EXIT_PERIOD);
+            if (sma50 !== null && curr < sma50) {
+              exitTriggered = true;
+              exitReason = "mcap-sma50-break";
+              exitMsg = `MCAP SMA50-BREAK ${sym}: price $${curr.toFixed(2)} < SMA50 $${sma50.toFixed(2)}`;
+            }
+          }
+        }
+
+        if (exitTriggered) {
+          try {
+            await closePosition(sym);
+            closedSymbols.add(sym);
+            delete mcEntryPrices[sym];
+            delete mcPeakPrices[sym];
+            delete mcEntryDates[sym];
+            delete positionStrategy[sym];
+            if (unrealized_pl < 0) setCooldown(sym, "mega_cap");
+            addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
+            tradeCount.sells++;
+            mcTradeCount.sells++;
+            if (unrealized_pl >= 0) { tradeCount.wins++; mcTradeCount.wins++; }
+            else { tradeCount.losses++; mcTradeCount.losses++; }
+            tradeCount.totalPnL += unrealized_pl;
+            mcTradeCount.totalPnL += unrealized_pl;
+            recordTrade({ symbol: sym, action: "sell", shares: qty, price: curr, strategy: exitReason, portfolio_value: cyclePortfolioValue, pnl: unrealized_pl });
+            dailyStats.sells++;
+            if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+            const pnlSign = unrealized_pl >= 0 ? "+" : "";
+            notify.send(`🏛️ MCAP ${exitReason.replace("mcap-", "").toUpperCase()} ${sym} | ${qty} shares @ $${curr.toFixed(2)} | P&L: ${pnlSign}$${unrealized_pl.toFixed(2)}`);
+          } catch (err) {
+            addLog(`Mega-cap exit failed ${sym}: ${err.message}`, "error");
           }
         }
       }
@@ -1933,10 +2119,11 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
               if (posData && posData.unrealized_plpc < 0) setCooldown(sym, blStrat);
               if (blStrat === "momentum") { delete momEntryPrices[sym]; delete momPeakPrices[sym]; delete momEntryDates[sym]; }
               else if (blStrat === "mean_reversion") { delete mrEntryPrices[sym]; delete mrEntryDates[sym]; }
+              else if (blStrat === "mega_cap") { delete mcEntryPrices[sym]; delete mcPeakPrices[sym]; delete mcEntryDates[sym]; }
               delete positionStrategy[sym];
               addLog(`SELL ${sym}: ${analysis.consensus} -- closing blacklisted position`, "sell");
               if (posData) {
-                const blTracker = blStrat === "momentum" ? momTradeCount : blStrat === "mean_reversion" ? mrTradeCount : mlTradeCount;
+                const blTracker = blStrat === "momentum" ? momTradeCount : blStrat === "mean_reversion" ? mrTradeCount : blStrat === "mega_cap" ? mcTradeCount : mlTradeCount;
                 tradeCount.sells++; blTracker.sells++;
                 if (posData.unrealized_pl >= 0) { tradeCount.wins++; blTracker.wins++; }
                 else { tradeCount.losses++; blTracker.losses++; }
@@ -2089,16 +2276,34 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
         addLog(`MR signals: ${mrOpportunities.length} candidate${mrOpportunities.length !== 1 ? "s" : ""} (${mrOpportunities.map(o => `${o.sym} ${(o.drop30d * 100).toFixed(1)}%`).join(", ")})`, "system");
       }
 
+      // ── STEP 2d: Compute mega-cap overlay signals (ALWAYS active) ──
+      const mcRawSignals = computeMegaCapSignals(priceHist, heldSymbols);
+
+      // Filter mega-cap signals: check cooldowns, first-to-fire overlap
+      const mcOpportunities = [];
+      for (const sig of mcRawSignals) {
+        if (isOnCooldown(sig.sym, "mega_cap")) continue;
+        // First-to-fire: skip if other strategies already claimed this symbol
+        if (opportunities.some(o => o.sym === sig.sym)) continue;
+        if (momOpportunities.some(o => o.sym === sig.sym)) continue;
+        if (mrOpportunities.some(o => o.sym === sig.sym)) continue;
+        mcOpportunities.push(sig);
+      }
+
+      if (mcOpportunities.length > 0) {
+        addLog(`MCAP signals: ${mcOpportunities.length} candidate${mcOpportunities.length !== 1 ? "s" : ""} (${mcOpportunities.map(o => `${o.sym} #${o.rank}`).join(", ")})`, "system");
+      }
+
       // ── STEP 3: Rank & execute buys (strategy-aware slot allocation) ──
       // Tag ML opportunities with strategy
       for (const opp of opportunities) {
         if (!opp.strategy) opp.strategy = "ml";
       }
 
-      // Merge: ML first (highest priority), then momentum, then mean reversion
-      const allOpportunities = [...opportunities, ...momOpportunities, ...mrOpportunities];
-      // Sort within each strategy group by score, ML > momentum > MR
-      const stratPriority = { ml: 0, momentum: 1, mean_reversion: 2 };
+      // Merge: ML first (highest priority), then momentum, then mean reversion, then mega-cap
+      const allOpportunities = [...opportunities, ...momOpportunities, ...mrOpportunities, ...mcOpportunities];
+      // Sort within each strategy group by score, ML > momentum > MR > mega-cap
+      const stratPriority = { ml: 0, momentum: 1, mean_reversion: 2, mega_cap: 3 };
       allOpportunities.sort((a, b) => {
         const pa = stratPriority[a.strategy] ?? 9;
         const pb = stratPriority[b.strategy] ?? 9;
@@ -2111,7 +2316,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
       // Pre-execution diagnostic summary
       if (allOpportunities.length > 0) {
-        addLog(`BUY FILTER CHECK -- ${allOpportunities.length} candidate${allOpportunities.length !== 1 ? "s" : ""} (${opportunities.length} ML + ${momOpportunities.length} MOM + ${mrOpportunities.length} MR) | positions: ${counts.total}/${SLOT_CONFIG.max} (ML ${counts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${counts.mom}/${SLOT_CONFIG.momentum}, MR ${counts.mr}/${SLOT_CONFIG.mean_reversion}) | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
+        addLog(`BUY FILTER CHECK -- ${allOpportunities.length} candidate${allOpportunities.length !== 1 ? "s" : ""} (${opportunities.length} ML + ${momOpportunities.length} MOM + ${mrOpportunities.length} MR + ${mcOpportunities.length} MCAP) | positions: ${counts.total}/${SLOT_CONFIG.max} (ML ${counts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${counts.mom}/${SLOT_CONFIG.momentum}, MR ${counts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${counts.mc}/${SLOT_CONFIG.mega_cap}) | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
       }
 
       if (skipNewBuys) {
@@ -2158,7 +2363,7 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
       for (const opp of allOpportunities) {
         // Check strategy-specific slot capacity
         if (!hasSlotCapacity(opp.strategy, liveCounts)) {
-          addLog(`SKIP ${opp.sym} -- no ${opp.strategy} slot available (ML ${liveCounts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${liveCounts.mom}/${SLOT_CONFIG.momentum}, MR ${liveCounts.mr}/${SLOT_CONFIG.mean_reversion}, total ${liveCounts.total}/${SLOT_CONFIG.max})`, "system");
+          addLog(`SKIP ${opp.sym} -- no ${opp.strategy} slot available (ML ${liveCounts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${liveCounts.mom}/${SLOT_CONFIG.momentum}, MR ${liveCounts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${liveCounts.mc}/${SLOT_CONFIG.mega_cap}, total ${liveCounts.total}/${SLOT_CONFIG.max})`, "system");
           continue;
         }
 
@@ -2174,8 +2379,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
           }
         }
 
-        // Volume confirmation check -- skip for ML-driven, momentum, and MR trades
-        if (opp.strategy !== "ml" && opp.strategy !== "momentum" && opp.strategy !== "mean_reversion") {
+        // Volume confirmation check -- skip for ML-driven, momentum, MR, and mega-cap trades
+        if (opp.strategy !== "ml" && opp.strategy !== "momentum" && opp.strategy !== "mean_reversion" && opp.strategy !== "mega_cap") {
           const vols = volHist[opp.sym];
           const avg = avgVolume(vols, 20);
           if (avg !== null) {
@@ -2202,8 +2407,8 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
         // Position sizing — strategy-specific, with vol targeting
         let dynPositionPct;
-        if (opp.strategy === "momentum" || opp.strategy === "mean_reversion") {
-          // Momentum/MR: fixed 12% or 8% based on ATR (already computed in signal)
+        if (opp.strategy === "momentum" || opp.strategy === "mean_reversion" || opp.strategy === "mega_cap") {
+          // Momentum/MR/Mega-cap: fixed % (already computed in signal)
           dynPositionPct = opp.positionPct;
         } else {
           // ML: ATR-based dynamic sizing with regime and confidence multipliers
@@ -2240,7 +2445,10 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
 
           // Track strategy attribution
           positionStrategy[opp.sym] = opp.strategy;
-          const stratTracker = opp.strategy === "momentum" ? momTradeCount : opp.strategy === "mean_reversion" ? mrTradeCount : mlTradeCount;
+          const stratTracker = opp.strategy === "momentum" ? momTradeCount
+            : opp.strategy === "mean_reversion" ? mrTradeCount
+            : opp.strategy === "mega_cap" ? mcTradeCount
+            : mlTradeCount;
           tradeCount.buys++; stratTracker.buys++;
           dailyStats.buys++;
 
@@ -2256,12 +2464,24 @@ module.exports = function createTradingEngine({ alpaca, insertTrade, insertSnaps
             // Track MR entry state
             mrEntryPrices[opp.sym] = opp.price;
             mrEntryDates[opp.sym] = cycleNumber;
+            mrAtrStops[opp.sym] = opp.atrStop;
+            mrAtrTps[opp.sym] = opp.atrTp;
+          } else if (opp.strategy === "mega_cap") {
+            liveCounts.mc++;
+            // Track mega-cap entry state
+            mcEntryPrices[opp.sym] = opp.price;
+            mcPeakPrices[opp.sym] = opp.price;
+            mcEntryDates[opp.sym] = cycleNumber;
           } else {
             liveCounts.ml++;
           }
           liveCounts.total++;
 
-          if (opp.strategy === "momentum") {
+          if (opp.strategy === "mega_cap") {
+            addLog(`MCAP BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
+            recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "mega_cap", portfolio_value: cyclePortfolioValue });
+            notify.send(`🏛️ MCAP BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);
+          } else if (opp.strategy === "momentum") {
             addLog(`MOM BUY ${opp.sym}: ${shares} shares | ${opp.consensus} | alloc ${(dynPositionPct * 100).toFixed(1)}% | Order: ${order.status}`, "buy");
             recordTrade({ symbol: opp.sym, action: "buy", shares, price: opp.price, strategy: "momentum", portfolio_value: cyclePortfolioValue });
             notify.send(`📊 MOM BUY ${opp.sym} | ${shares} shares @ $${opp.price.toFixed(2)} | ${opp.consensus} | Portfolio: $${cyclePortfolioValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}`);

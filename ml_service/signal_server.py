@@ -1,7 +1,7 @@
 """
-ML Signal Server (v4 — Cross-Sectional Ranking)
+ML Signal Server (v5c — LGBM+RF Ensemble)
 =================================================
-FastAPI service that loads the V4 calibrated LightGBM model (84 features)
+FastAPI service that loads the V5c calibrated LGBM+RF ensemble (83 features)
 and serves trading signals to the JS trading bot.
 
 V4 changes from v2:
@@ -86,7 +86,7 @@ UNIVERSE = get_full_universe()
 CROSS_ASSET = get_cross_asset()
 ALL_SYMBOLS = get_all_symbols()
 
-# Feature columns in exact training order (84 features for V4)
+# Feature columns in exact training order (83 features for V5c)
 FEATURE_COLS = [
     "ret_5d","ret_10d","ret_20d","ret_60d","ret_120d",
     "vol_10d","vol_20d","vol_60d",
@@ -101,7 +101,7 @@ FEATURE_COLS = [
     "revenue_growth_yoy","eps_growth_yoy","revenue_growth_qoq",
     "gross_margin","operating_margin","net_margin","margin_trend_4q",
     "pe_ratio","ps_ratio","debt_to_equity","current_ratio","roe","roa",
-    "days_since_earnings","days_until_earnings","eps_surprise_last",
+    "days_since_earnings","eps_surprise_last",
     "eps_revision_30d","revenue_revision_30d",
     "insider_buy_ratio_90d","insider_net_shares_90d",
     # Cross-asset
@@ -130,7 +130,7 @@ FUNDAMENTAL_FEATURE_COLS = [
     "revenue_growth_yoy","eps_growth_yoy","revenue_growth_qoq",
     "gross_margin","operating_margin","net_margin","margin_trend_4q",
     "pe_ratio","ps_ratio","debt_to_equity","current_ratio","roe","roa",
-    "days_since_earnings","days_until_earnings","eps_surprise_last",
+    "days_since_earnings","eps_surprise_last",
     "eps_revision_30d","revenue_revision_30d",
     "insider_buy_ratio_90d","insider_net_shares_90d",
 ]
@@ -264,7 +264,8 @@ def _load_fred_macro() -> pd.DataFrame:
 # ── Server state ──────────────────────────────────────────────────────────────
 class State:
     model:          object                 = None
-    model_type:     str                    = "booster"
+    model_rf:       object                 = None
+    imputer:        object                 = None
     cache:          list                   = []
     last_update:    Optional[datetime]     = None
     is_stale:       bool                   = True
@@ -272,6 +273,10 @@ class State:
     earnings_cache: dict                   = {}
     fund_data:      dict                   = {}
     macro_data:     pd.DataFrame           = None
+    # Breadth & regime
+    current_breadth: float                 = 50.0
+    current_breadth_regime: str            = "BROAD"
+    ml_mode:        str                    = "A"   # A=BROAD, B=NARROW, C=TRANSITION
 
 state = State()
 
@@ -325,6 +330,58 @@ def _consec_streak(returns: pd.Series, positive: bool = True) -> pd.Series:
             streak = 0
         result.iloc[i] = streak
     return result
+
+
+# ── Market breadth & regime ──────────────────────────────────────────────────
+
+BREADTH_LOOKBACK = 60  # trading days
+
+def compute_market_breadth(raw: dict, spy_close: pd.Series, lookback_days: int = BREADTH_LOOKBACK) -> float:
+    """
+    Returns % of S&P 500 stocks that beat SPY over lookback period.
+    Uses close prices only through D-1 (no lookahead).
+    """
+    if len(spy_close) < lookback_days + 1:
+        return 50.0  # default neutral
+
+    spy_ret = (spy_close.iloc[-1] / spy_close.iloc[-lookback_days - 1]) - 1.0
+    beat_count = 0
+    total_count = 0
+
+    for sym in STOCK_SYMBOLS:
+        df = raw.get(sym, pd.DataFrame())
+        if df.empty or "close" not in df.columns:
+            continue
+        c = df["close"].dropna()
+        if len(c) < lookback_days + 1:
+            continue
+        stock_ret = (c.iloc[-1] / c.iloc[-lookback_days - 1]) - 1.0
+        total_count += 1
+        if stock_ret > spy_ret:
+            beat_count += 1
+
+    if total_count == 0:
+        return 50.0
+    return (beat_count / total_count) * 100.0
+
+
+def classify_breadth_regime(breadth: float) -> str:
+    """
+    Classify market breadth into regime using historical tercile boundaries.
+    breadth < 40: NARROW (concentrated market)
+    breadth 40-55: TRANSITION
+    breadth > 55: BROAD (diversified market)
+    """
+    if breadth < 40:
+        return "NARROW"
+    elif breadth <= 55:
+        return "TRANSITION"
+    return "BROAD"
+
+
+def get_ml_mode(breadth_regime: str) -> str:
+    """Map breadth regime to ML mode: A=BROAD, B=NARROW, C=TRANSITION."""
+    return {"BROAD": "A", "NARROW": "B", "TRANSITION": "C"}.get(breadth_regime, "A")
 
 
 def _symbol_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -486,11 +543,6 @@ def _compute_fundamental_features_for_symbol(symbol: str, today: pd.Timestamp) -
             est = last_earn.get("eps_estimated")
             if actual is not None and est is not None and abs(est) > 1e-9:
                 result["eps_surprise_last"] = np.clip((actual - est) / abs(est), -2.0, 2.0)
-
-        # Days until next earnings
-        future = earnings[earnings["date"] > today].sort_values("date")
-        if len(future) > 0:
-            result["days_until_earnings"] = (future.iloc[0]["date"] - today).days
 
     # Always NaN (no daily estimate snapshots)
     result["eps_revision_30d"] = np.nan
@@ -687,6 +739,16 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     if not sym_features:
         raise RuntimeError("No valid feature rows produced")
 
+    # ── Market breadth computation ────────────────────────────────────────
+    breadth = compute_market_breadth(raw, spy_c)
+    breadth_regime = classify_breadth_regime(breadth)
+    ml_mode = get_ml_mode(breadth_regime)
+    state.current_breadth = breadth
+    state.current_breadth_regime = breadth_regime
+    state.ml_mode = ml_mode
+    log.info("Market breadth: %.1f%% → %s regime → ML mode %s",
+             breadth, breadth_regime, ml_mode)
+
     # ── Cross-sectional rank features ──────────────────────────────────────
     symbols = list(sym_features.keys())
 
@@ -745,27 +807,83 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     X = np.array(rows, dtype=np.float64)
     log.info("Feature matrix: %d symbols × %d features", X.shape[0], X.shape[1])
 
-    if state.model_type == "calibrated":
-        probs = state.model.predict_proba(X)[:, 1]
+    lgbm_probs = state.model.predict_proba(X)[:, 1]
+    X_imp = state.imputer.transform(X) if state.imputer is not None else X
+    rf_probs = state.model_rf.predict_proba(X_imp)[:, 1]
+    probs = 0.5 * lgbm_probs + 0.5 * rf_probs
+
+    # ── Regime-adaptive signal generation ─────────────────────────────────
+    ml_mode = state.ml_mode
+
+    # Mode A (BROAD): standard ML ensemble ranking over full universe
+    ml_scores = {sym: float(prob) for sym, prob in zip(sym_order, probs)}
+
+    # Mode B (NARROW): top 30 by market cap, rank by 3-month momentum
+    # Use ret_60d as proxy for 3-month momentum (63 trading days ≈ 60d feature)
+    mega_cap_30 = sorted(sym_order, key=lambda s: sym_ret_252d.get(s, 0), reverse=True)[:30]
+    # Actually rank by market cap proxy: use 252d volume × price as rough cap proxy
+    # Better: just use the top 30 by absolute price level × volume as rough cap
+    # For live: we use ret_60d (3-month momentum) to rank within top 30
+    mom_scores = {}
+    for sym in mega_cap_30:
+        mom_scores[sym] = sym_ret_60d.get(sym, 0.0) if pd.notna(sym_ret_60d.get(sym)) else 0.0
+
+    if ml_mode == "A":
+        # BROAD: pure ML ranking
+        final_scores = ml_scores
+        log.info("ML Mode A (BROAD): ranking %d stocks by ML probability", len(final_scores))
+    elif ml_mode == "B":
+        # NARROW: mega-cap momentum only (top 30 by cap, rank by 3m momentum)
+        final_scores = {}
+        # Normalize momentum scores to [0, 1]
+        mom_vals = list(mom_scores.values())
+        mom_min, mom_max = min(mom_vals) if mom_vals else 0, max(mom_vals) if mom_vals else 1
+        mom_range = mom_max - mom_min if mom_max > mom_min else 1.0
+        for sym in mega_cap_30:
+            final_scores[sym] = (mom_scores[sym] - mom_min) / mom_range
+        # Include rest of universe with 0 score so they appear in signal list
+        for sym in sym_order:
+            if sym not in final_scores:
+                final_scores[sym] = 0.0
+        log.info("ML Mode B (NARROW): ranking top 30 mega-caps by 3m momentum")
     else:
-        probs = state.model.predict(X)
+        # TRANSITION: 60% Mode A + 40% Mode B blend
+        # Normalize both score sets to [0, 1]
+        ml_vals = list(ml_scores.values())
+        ml_min, ml_max = min(ml_vals), max(ml_vals)
+        ml_range = ml_max - ml_min if ml_max > ml_min else 1.0
+
+        mom_vals = list(mom_scores.values())
+        mom_min, mom_max = min(mom_vals) if mom_vals else 0, max(mom_vals) if mom_vals else 1
+        mom_range = mom_max - mom_min if mom_max > mom_min else 1.0
+
+        final_scores = {}
+        for sym in sym_order:
+            ml_norm = (ml_scores.get(sym, 0) - ml_min) / ml_range
+            if sym in mega_cap_30:
+                mom_norm = (mom_scores.get(sym, 0) - mom_min) / mom_range
+                final_scores[sym] = 0.6 * ml_norm + 0.4 * mom_norm
+            else:
+                final_scores[sym] = 0.6 * ml_norm
+        log.info("ML Mode C (TRANSITION): 60%% ML + 40%% momentum blend")
 
     # Build signals with rank and top-N classification
     signals = []
-    for sym, prob in zip(sym_order, probs):
+    for sym in sym_order:
+        score = final_scores.get(sym, 0.0)
         signals.append({
             "symbol":      sym,
-            "probability": round(float(prob), 4),
-            "confidence":  round(float(prob), 4),
+            "probability": round(score, 4),
+            "confidence":  round(float(ml_scores.get(sym, 0.0)), 4),
+            "ml_mode":     ml_mode,
         })
 
-    # Sort by probability descending and assign rank
+    # Sort by final score descending and assign rank
     signals.sort(key=lambda x: x["probability"], reverse=True)
     for i, sig in enumerate(signals):
         rank = i + 1
         sig["rank"] = rank
         sig["is_top_5"] = rank <= TOP_N_PICKS
-        # V4: BUY if in top 5 by probability (cross-sectional ranking)
         sig["signal"] = "BUY" if sig["is_top_5"] else "HOLD"
 
     return signals
@@ -797,8 +915,10 @@ async def _refresh() -> bool:
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
         log.info(
-            "Signals refreshed in %.1fs — %d BUY, %d HOLD (%d features)",
+            "Signals refreshed in %.1fs — %d BUY, %d HOLD (%d features) | "
+            "Breadth: %.1f%% (%s) → Mode %s",
             elapsed, len(buys), len(new_signals) - len(buys), len(FEATURE_COLS),
+            state.current_breadth, state.current_breadth_regime, state.ml_mode,
         )
         top5 = new_signals[:5]
         log.info(
@@ -827,21 +947,31 @@ async def _background_refresh_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    if not MODEL_FILE.exists():
-        log.error("Model file not found: %s", MODEL_FILE)
-        log.error("Run train_model.py first.")
+    # Load LGBM model
+    lgbm_file = DATA_DIR / "model.lgb"
+    if not lgbm_file.exists():
+        log.error("LGBM model not found: %s", lgbm_file)
         sys.exit(1)
+    log.info("Loading LGBM model from %s ...", lgbm_file)
+    state.model = joblib.load(str(lgbm_file))
+    n_lgbm = state.model.calibrated_classifiers_[0].estimator.n_features_in_
+    log.info("LGBM loaded (calibrated) — %d features", n_lgbm)
 
-    log.info("Loading model from %s ...", MODEL_FILE)
-    try:
-        state.model = joblib.load(str(MODEL_FILE))
-        state.model_type = "calibrated"
-        n_feat = state.model.calibrated_classifiers_[0].estimator.n_features_in_
-        log.info("Model loaded (calibrated/joblib) — %d features", n_feat)
-    except Exception:
-        state.model = lgb.Booster(model_file=str(MODEL_FILE))
-        state.model_type = "booster"
-        log.info("Model loaded (native LightGBM) — %d features", state.model.num_feature())
+    # Load RF model
+    rf_file = DATA_DIR / "model_rf.pkl"
+    if rf_file.exists():
+        log.info("Loading RF model from %s ...", rf_file)
+        state.model_rf = joblib.load(str(rf_file))
+        n_rf = state.model_rf.calibrated_classifiers_[0].estimator.n_features_in_
+        log.info("RF loaded (calibrated) — %d features", n_rf)
+    else:
+        log.warning("RF model not found: %s — using LGBM only", rf_file)
+
+    # Load imputer
+    imp_file = DATA_DIR / "imputer.pkl"
+    if imp_file.exists():
+        state.imputer = joblib.load(str(imp_file))
+        log.info("Imputer loaded")
 
     # Load fundamental data from parquets
     log.info("Loading fundamental data ...")
@@ -885,8 +1015,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "ML Trading Signal Server",
-    description = "LightGBM signals for the auto-trader bot (v4 cross-sectional ranking)",
-    version     = "4.0.0",
+    description = "LGBM+RF ensemble signals for the auto-trader bot (v5c ensemble)",
+    version     = "5.0.0",
     lifespan    = lifespan,
 )
 
@@ -905,12 +1035,15 @@ def health():
     return {
         "status":       "ok",
         "model_loaded": state.model is not None,
-        "model_version": "v4_cross_sectional_ranking",
+        "model_version": "v5c_improved_lgbm_rf_ensemble",
         "feature_count": len(FEATURE_COLS),
         "last_update":  state.last_update.isoformat() if state.last_update else None,
         "is_stale":     state.is_stale,
         "cached_signals": len(state.cache),
         "market_open":  _is_market_hours(),
+        "current_breadth": round(state.current_breadth, 1),
+        "current_regime":  state.current_breadth_regime,
+        "ml_mode":         state.ml_mode,
     }
 
 
@@ -925,6 +1058,9 @@ def get_signals():
         "count":       len(state.cache),
         "buy_count":   sum(1 for s in state.cache if s["signal"] == "BUY"),
         "top_5_count": sum(1 for s in state.cache if s.get("is_top_5")),
+        "ml_mode":     state.ml_mode,
+        "breadth":     round(state.current_breadth, 1),
+        "regime":      state.current_breadth_regime,
     }
 
 
