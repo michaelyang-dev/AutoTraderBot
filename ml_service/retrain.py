@@ -1,351 +1,596 @@
 #!/usr/bin/env python3
 """
-Monthly Model Retraining (V4 Cross-Sectional Ranking)
-=====================================================
-Automates the full retrain pipeline for the V4 calibrated 3-strategy system:
+Monthly Retrain Pipeline — V5c LGBM+RF Ensemble
+=================================================
+Automated monthly retraining with deploy gate validation,
+model backup, atomic swap, and email notifications.
 
-  1. Run fred_data_pipeline.py  → refresh macro data (yield curve, HY spread, DXY)
-  2. Run fmp_fundamentals_pipeline.py  → refresh fundamental data (income, ratios, etc.)
-  3. Run data_pipeline.py  → rebuild features.parquet (84 features incl. fundamentals + V4 ranks)
-  4. Run train_v4_ranking.py  → train V4 cross-sectional ranking model
-     → Cross-sectional rank target (top 20% of S&P 500 by fwd_10d_ret)
-     → 4 new rank features (vol_rank_20d, momentum_rank_60d, rsi_rank, dist_sma50_rank)
-     → Single production model with isotonic calibration
-     → Saves model_v4.lgb + predictions_v4.parquet
-     → Runs internal verification + backtest
-  5. Deploy gate: V4 must have CAGR >= baseline AND Sharpe >= baseline
-  6. If PASS: backup current model, promote V4, update metrics, email
-  7. If FAIL: discard candidate, keep current model, email
+Steps:
+  1. Update market data (yfinance via data_pipeline, FMP, FRED)
+  2. Regenerate features.parquet
+  3. Train LGBM + RF (same hyperparameters as train_production_model.py)
+  4. Generate 50/50 ensemble predictions
+  5. Run deploy gate (90-day backtest validation)
+  6. Backup old models → timestamped directory
+  7. Atomic swap: write to tmp, verify, rename to production
+  8. Reload signal server via pm2, verify /health
+  9. Notify via email
 
-Cron example (1st of each month at 6 AM):
-    0 6 1 * * cd /path/to/auto-trader/ml_service && /path/to/python3 retrain.py >> /path/to/retrain.log 2>&1
+Usage:
+    python3 retrain.py                 # full retrain + deploy
+    python3 retrain.py --dry-run       # everything except atomic swap
+    python3 retrain.py --test          # small data subset for quick verification
 
-Run manually:
-    python3 retrain.py
+Cron (1st of month, 2 AM ET):
+    0 2 1 * * cd /home/ubuntu/AutoTraderBot && .venv/bin/python ml_service/retrain.py \
+        >> logs/retrain_cron.log 2>&1
 """
 
+import argparse
 import json
 import os
 import shutil
-import smtplib
 import subprocess
 import sys
 import time
-import warnings
+import traceback
+import urllib.request
 from datetime import datetime
-from email.mime.text import MIMEText
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-import yfinance as yf
-from dateutil.relativedelta import relativedelta
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import accuracy_score, roc_auc_score
-
-warnings.filterwarnings("ignore", category=UserWarning)
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-BASE_DIR     = Path(__file__).resolve().parent
-DATA_DIR     = BASE_DIR / "data"
-FEATURES_FILE = DATA_DIR / "features.parquet"
-MODEL_FILE   = DATA_DIR / "model.lgb"
-PRED_FILE    = DATA_DIR / "predictions.parquet"
-METRICS_FILE = DATA_DIR / "model_metrics.json"
 
-# Candidate files (promoted to production on deploy)
-CANDIDATE_MODEL = DATA_DIR / "model_retrain_candidate.lgb"
-CANDIDATE_PREDS = DATA_DIR / "predictions_retrain_candidate.parquet"
+BASE_DIR    = Path(__file__).resolve().parent
+DATA_DIR    = BASE_DIR / "data"
+TMP_DIR     = DATA_DIR / "retrain_tmp"
+LOG_DIR     = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
-LOG_FILE = BASE_DIR / "retrain.log"
+# ── Logging ──────────────────────────────────────────────────────────────────
 
-# ── Env ──────────────────────────────────────────────────────────────────────
-from dotenv import load_dotenv
-load_dotenv(BASE_DIR.parent / ".env")
-
-EMAIL_USER         = os.getenv("EMAIL_USER", "")
-EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD", "")
-
-try:
-    from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-except ImportError:
-    import pytz
-    ET = pytz.timezone("America/New_York")
-
-# ── V4 model files ──────────────────────────────────────────────────────────
-V4_MODEL_FILE = DATA_DIR / "model_v4.lgb"
-V4_PRED_FILE  = DATA_DIR / "predictions_v4.parquet"
+_log_file = None
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+def _init_log():
+    global _log_file
+    log_path = LOG_DIR / f"retrain_{datetime.now().strftime('%Y%m%d')}.log"
+    _log_file = open(log_path, "a")
+    log(f"\n{'='*70}")
+    log(f"  RETRAIN PIPELINE — {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
+    log(f"{'='*70}")
+    return log_path
+
 
 def log(msg: str):
-    ts = datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET")
-    line = f"[{ts}]  {msg}"
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
     print(line, flush=True)
+    if _log_file:
+        _log_file.write(line + "\n")
+        _log_file.flush()
+
+
+def _close_log():
+    if _log_file:
+        _log_file.close()
+
+
+# ── Email notifications ─────────────────────────────────────────────────────
+
+def notify_email(subject: str, body: str):
+    """Send notification via the Node.js notification system."""
     try:
-        with open(LOG_FILE, "a") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
-
-
-def format_pct(val, decimals=2):
-    if val is None:
-        return "N/A"
-    return f"{val*100:+.{decimals}f}%"
-
-
-def send_email(subject: str, body: str):
-    if not EMAIL_USER or not EMAIL_APP_PASSWORD:
-        log("Email not configured — skipping notification")
-        return
-    msg = MIMEText(body, "plain")
-    msg["Subject"] = subject
-    msg["From"]    = EMAIL_USER
-    msg["To"]      = EMAIL_USER
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
-            server.login(EMAIL_USER, EMAIL_APP_PASSWORD)
-            server.send_message(msg)
-        log(f"Email sent: {subject}")
+        server_dir = BASE_DIR.parent / "server"
+        # Escape quotes for JS string
+        safe_subject = subject.replace("'", "\\'").replace("\n", "\\n")
+        safe_body = body.replace("'", "\\'").replace("\n", "\\n")
+        script = (
+            f"const notify = require('{server_dir}/notifications');"
+            f"notify.send('{safe_subject}\\n\\n{safe_body}', {{ immediate: true }});"
+            f"setTimeout(() => process.exit(0), 3000);"
+        )
+        subprocess.run(
+            ["node", "-e", script],
+            cwd=str(server_dir),
+            timeout=10,
+            capture_output=True,
+        )
+        log(f"  Email notification sent: {subject}")
     except Exception as exc:
-        log(f"Email failed: {exc}")
+        log(f"  WARNING: Email notification failed: {exc}")
 
 
-def run_step(script: str, label: str) -> subprocess.CompletedProcess:
-    """Run a Python script as a subprocess, streaming output to stdout."""
-    log(f"START — {label}")
-    t0 = time.perf_counter()
+# ── Step 1: Update data ─────────────────────────────────────────────────────
+
+def step1_update_data(test_mode: bool = False):
+    """Run FMP fundamentals pipeline, FRED macro pipeline, then data pipeline."""
+    log(f"\n{'='*70}")
+    log("STEP 1: UPDATE MARKET DATA")
+    log(f"{'='*70}")
+
+    # 1a. FMP fundamentals
+    fmp_script = BASE_DIR / "fmp_fundamentals_pipeline.py"
+    if fmp_script.exists():
+        log("  Running FMP fundamentals pipeline ...")
+        result = subprocess.run(
+            [sys.executable, str(fmp_script)],
+            cwd=str(BASE_DIR),
+            capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode != 0:
+            log(f"  WARNING: FMP pipeline failed: {result.stderr[-500:]}")
+        else:
+            log("  FMP fundamentals updated")
+    else:
+        log("  WARNING: fmp_fundamentals_pipeline.py not found — skipping")
+
+    # 1b. FRED macro data
+    fred_script = BASE_DIR / "fred_data_pipeline.py"
+    if fred_script.exists():
+        log("  Running FRED macro pipeline ...")
+        result = subprocess.run(
+            [sys.executable, str(fred_script)],
+            cwd=str(BASE_DIR),
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            log(f"  WARNING: FRED pipeline failed: {result.stderr[-500:]}")
+        else:
+            log("  FRED macro data updated")
+
+    # 1c. Main data pipeline (yfinance + features)
+    log("  Running main data pipeline (yfinance + feature computation) ...")
     result = subprocess.run(
-        [sys.executable, str(BASE_DIR / script)],
+        [sys.executable, str(BASE_DIR / "data_pipeline.py")],
         cwd=str(BASE_DIR),
-        capture_output=True, text=True, timeout=1800,
+        capture_output=True, text=True, timeout=3600,
     )
-    elapsed = time.perf_counter() - t0
-    print(result.stdout, end="")
     if result.returncode != 0:
-        print(result.stderr, end="")
-        log(f"FAILED — {label} (exit code {result.returncode}, {elapsed:.0f}s)")
-        raise RuntimeError(f"{label} failed with exit code {result.returncode}")
-    log(f"DONE  — {label} ({elapsed:.0f}s)")
-    return result
+        raise RuntimeError(f"Data pipeline failed:\n{result.stderr[-1000:]}")
+
+    features_file = DATA_DIR / "features.parquet"
+    if not features_file.exists():
+        raise RuntimeError("features.parquet not generated")
+
+    df = pd.read_parquet(features_file)
+    log(f"  features.parquet: {len(df):,} rows, {len(df.columns)} columns")
+    log(f"  Date range: {df['date'].min()} → {df['date'].max()}")
+    return True
 
 
-def load_previous_metrics():
-    if not METRICS_FILE.exists():
-        return None
-    try:
-        with open(METRICS_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
+# ── Step 2: Train models ────────────────────────────────────────────────────
 
-
-def save_metrics(metrics: dict):
-    metrics["timestamp"] = datetime.now(ET).isoformat()
-    with open(METRICS_FILE, "w") as f:
-        json.dump(metrics, f, indent=2)
-    log(f"Metrics saved to {METRICS_FILE}")
-
-
-def extract_v4_metrics():
+def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     """
-    Extract metrics from the V4 model's predictions and backtest output.
-    train_v4_ranking.py runs the full pipeline including backtest internally.
-    We read the results from its output artifacts.
+    Train LGBM + RF ensemble with same hyperparameters as train_production_model.py.
+    Uses rolling 12-year training window.
+    Writes models to TMP_DIR for atomic swap.
     """
-    if not V4_MODEL_FILE.exists() or not V4_PRED_FILE.exists():
-        raise RuntimeError("V4 model or predictions not found — train_v4_ranking.py may have failed")
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning)
 
-    # Load V4 predictions to get basic stats
-    preds = pd.read_parquet(V4_PRED_FILE)
-    preds["date"] = pd.to_datetime(preds["date"])
-    n_rows = len(preds)
-    n_symbols = preds["symbol"].nunique()
-    date_range = f"{preds['date'].min().date()} → {preds['date'].max().date()}"
+    import joblib
+    import lightgbm as lgb
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.impute import SimpleImputer
+    from sklearn.metrics import roc_auc_score
 
-    log(f"V4 predictions: {n_rows:,} rows  |  {n_symbols} symbols  |  {date_range}")
+    from train_production_model import (
+        LGB_PARAMS, RF_PARAMS, RANK_FEATURES, FUNDAMENTAL_FEATURE_COLS,
+        CALIB_FRAC, N_TREES, EARLY_STOP_ROUNDS,
+        get_feature_cols,
+    )
 
-    # Load model to get AUC (re-read from saved metrics if available)
-    model = joblib.load(str(V4_MODEL_FILE))
-    log(f"V4 model loaded: {V4_MODEL_FILE.name} ({V4_MODEL_FILE.stat().st_size / 1024:.1f} KB)")
+    log(f"\n{'='*70}")
+    log("STEP 2: TRAIN LGBM + RF ENSEMBLE")
+    log(f"{'='*70}")
 
-    return {"n_rows": n_rows, "n_symbols": n_symbols, "date_range": date_range}
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load features
+    df = pd.read_parquet(DATA_DIR / "features.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+    assert "days_until_earnings" not in df.columns, "days_until_earnings still present"
+
+    # Add cross-sectional rank features
+    for base_col, rank_col in RANK_FEATURES:
+        if base_col in df.columns:
+            df[rank_col] = df.groupby("date")[base_col].rank(pct=True)
+
+    # Cross-sectional target
+    df["fwd_10d_ret"] = df.groupby("symbol")["ret_10d"].shift(-10)
+    sp500_mask = df["in_sp500"] == True
+    has_fwd = df["fwd_10d_ret"].notna()
+    df["target_v5"] = np.nan
+    valid_df = df[sp500_mask & has_fwd].copy()
+    valid_df["pct_rank"] = valid_df.groupby("date")["fwd_10d_ret"].rank(pct=True)
+    valid_df["target_v5"] = (valid_df["pct_rank"] >= 0.80).astype(int)
+    df.loc[valid_df.index, "target_v5"] = valid_df["target_v5"]
+
+    feature_cols = get_feature_cols(df)
+    non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
+    df = df.dropna(subset=non_fund_cols + ["target_v5"])
+
+    # Survivorship filter
+    train_df = df[df["in_sp500"] == True].copy()
+    log(f"  Total rows: {len(df):,}  |  SP500 filtered: {len(train_df):,}")
+    log(f"  Features: {len(feature_cols)}")
+
+    # Rolling window: only use last N years for training
+    max_date = train_df["date"].max()
+    min_train_date = max_date - pd.Timedelta(days=rolling_years * 365)
+    train_df = train_df[train_df["date"] >= min_train_date]
+    log(f"  Rolling {rolling_years}-year window: {train_df['date'].min().date()} → {max_date.date()}")
+    log(f"  Rows after windowing: {len(train_df):,}")
+
+    if test_mode:
+        # Subsample for quick test
+        sample_dates = sorted(train_df["date"].unique())[-60:]
+        train_df = train_df[train_df["date"].isin(sample_dates)]
+        df = df[df["date"].isin(sample_dates)]
+        log(f"  TEST MODE: subsampled to {len(train_df):,} rows (last 60 dates)")
+
+    # Forward returns for predictions
+    df = df.sort_values(["symbol", "date"])
+    df["fwd_ret"] = df["fwd_10d_ret"]
+
+    X_all = df[feature_cols].values
+    X_filtered = train_df[feature_cols].values
+    y_filtered = train_df["target_v5"].values
+
+    # Date-based split
+    all_dates = np.sort(train_df["date"].unique())
+    split_idx = int(len(all_dates) * (1 - CALIB_FRAC))
+    calib_start = pd.Timestamp(all_dates[split_idx])
+
+    train_mask = train_df["date"] < calib_start
+    calib_mask = train_df["date"] >= calib_start
+
+    X_train, y_train = X_filtered[train_mask], y_filtered[train_mask]
+    X_calib, y_calib = X_filtered[calib_mask], y_filtered[calib_mask]
+
+    log(f"  Train: {train_mask.sum():,} rows | Calib: {calib_mask.sum():,} rows")
+
+    scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
+
+    # Imputer
+    imp = SimpleImputer(strategy="median")
+    X_train_imp = imp.fit_transform(X_train)
+    X_calib_imp = imp.transform(X_calib)
+    X_all_imp = imp.transform(X_all)
+
+    # Train LGBM
+    log(f"  Training LGBMClassifier ({N_TREES} trees) ...")
+    t0 = time.perf_counter()
+    model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
+    model_lgb.fit(
+        X_train, y_train,
+        eval_set=[(X_calib, y_calib)],
+        callbacks=[
+            lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
+            lgb.log_evaluation(period=-1),
+        ],
+    )
+    n_trees = model_lgb.booster_.num_trees()
+    log(f"  LGBM: {n_trees} trees in {time.perf_counter() - t0:.0f}s")
+
+    calib_lgbm = CalibratedClassifierCV(model_lgb, method="isotonic", cv="prefit")
+    calib_lgbm.fit(X_calib, y_calib)
+    lgbm_auc = roc_auc_score(y_calib, calib_lgbm.predict_proba(X_calib)[:, 1])
+    log(f"  LGBM AUC: {lgbm_auc:.4f}")
+
+    # Train RF
+    log(f"  Training RandomForestClassifier ({RF_PARAMS['n_estimators']} trees) ...")
+    t0 = time.perf_counter()
+    model_rf = RandomForestClassifier(**RF_PARAMS)
+    model_rf.fit(X_train_imp, y_train)
+    log(f"  RF trained in {time.perf_counter() - t0:.0f}s")
+
+    calib_rf = CalibratedClassifierCV(model_rf, method="isotonic", cv="prefit")
+    calib_rf.fit(X_calib_imp, y_calib)
+    rf_auc = roc_auc_score(y_calib, calib_rf.predict_proba(X_calib_imp)[:, 1])
+    log(f"  RF AUC: {rf_auc:.4f}")
+
+    # Ensemble predictions
+    lgbm_all = calib_lgbm.predict_proba(X_all)[:, 1]
+    rf_all = calib_rf.predict_proba(X_all_imp)[:, 1]
+    ensemble_probs = 0.5 * lgbm_all + 0.5 * rf_all
+
+    df["prob_lgbm"] = lgbm_all
+    df["prob_rf"] = rf_all
+    df["prob_ensemble"] = ensemble_probs
+
+    ens_auc = roc_auc_score(
+        y_calib,
+        0.5 * calib_lgbm.predict_proba(X_calib)[:, 1] +
+        0.5 * calib_rf.predict_proba(X_calib_imp)[:, 1],
+    )
+    log(f"  Ensemble AUC: {ens_auc:.4f}")
+    log(f"  Prob range: [{ensemble_probs.min():.4f}, {ensemble_probs.max():.4f}]")
+
+    # Save to tmp
+    joblib.dump(calib_lgbm, str(TMP_DIR / "model.lgb"))
+    joblib.dump(calib_rf, str(TMP_DIR / "model_rf.pkl"))
+    joblib.dump(imp, str(TMP_DIR / "imputer.pkl"))
+
+    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_rf",
+                 "prob_ensemble", "fwd_ret", "in_sp500"]
+    df[save_cols].to_parquet(TMP_DIR / "predictions.parquet", index=False,
+                             engine="pyarrow", compression="snappy")
+
+    log(f"  Models saved to {TMP_DIR}")
+    log(f"  LGBM: {(TMP_DIR / 'model.lgb').stat().st_size / 1024:.0f}KB")
+    log(f"  RF: {(TMP_DIR / 'model_rf.pkl').stat().st_size / 1024 / 1024:.1f}MB")
+
+    return {
+        "lgbm_auc": round(lgbm_auc, 4),
+        "rf_auc": round(rf_auc, 4),
+        "ensemble_auc": round(ens_auc, 4),
+        "n_trees_lgbm": n_trees,
+        "n_features": len(feature_cols),
+        "n_rows": len(df),
+    }
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Step 3: Deploy gate ─────────────────────────────────────────────────────
+
+def step3_deploy_gate():
+    """Run deploy gate validation on new predictions."""
+    from deploy_gate import run_deploy_gate
+
+    log(f"\n{'='*70}")
+    log("STEP 3: DEPLOY GATE VALIDATION")
+    log(f"{'='*70}")
+
+    passed, metrics, reasons = run_deploy_gate(
+        TMP_DIR / "predictions.parquet",
+        ensemble_auc=train_metrics.get("ensemble_auc"),
+    )
+
+    log(f"  Sharpe: {metrics.get('sharpe', 'N/A')}")
+    log(f"  CAGR:   {metrics.get('cagr', 'N/A')}")
+    log(f"  Max DD: {metrics.get('max_dd', 'N/A')}")
+    log(f"  Trades: {metrics.get('n_trades', 'N/A')}")
+
+    if passed:
+        log("  DEPLOY GATE: PASSED")
+    else:
+        log("  DEPLOY GATE: FAILED")
+        for r in reasons:
+            log(f"    - {r}")
+
+    return passed, metrics, reasons
+
+
+# ── Step 4: Backup + atomic swap ─────────────────────────────────────────────
+
+def step4_backup_and_swap(dry_run: bool = False):
+    """Backup old models, then atomic rename new models to production."""
+    from backup_models import backup_current, cleanup_old_backups
+
+    log(f"\n{'='*70}")
+    log("STEP 4: BACKUP & ATOMIC SWAP")
+    log(f"{'='*70}")
+
+    # Backup current
+    backup_path = backup_current(log_fn=log)
+
+    # Clean up old backups
+    cleanup_old_backups(log_fn=log)
+
+    if dry_run:
+        log("  DRY RUN: Skipping atomic swap — models NOT deployed")
+        return backup_path
+
+    # Verify new files exist and are non-empty
+    model_files = ["model.lgb", "model_rf.pkl", "imputer.pkl", "predictions.parquet"]
+    for fname in model_files:
+        tmp_file = TMP_DIR / fname
+        if not tmp_file.exists() or tmp_file.stat().st_size == 0:
+            raise RuntimeError(f"New {fname} missing or empty in {TMP_DIR}")
+
+    # Atomic swap: rename from tmp to production
+    for fname in model_files:
+        src = TMP_DIR / fname
+        dst = DATA_DIR / fname
+        # On same filesystem, os.replace is atomic
+        os.replace(str(src), str(dst))
+        log(f"  Swapped: {fname}")
+
+    log("  Atomic swap complete")
+    return backup_path
+
+
+# ── Step 5: Reload & verify ─────────────────────────────────────────────────
+
+def step5_reload_and_verify(dry_run: bool = False):
+    """Restart signal server via pm2 and verify /health endpoint."""
+    log(f"\n{'='*70}")
+    log("STEP 5: RELOAD & VERIFY")
+    log(f"{'='*70}")
+
+    if dry_run:
+        log("  DRY RUN: Skipping pm2 restart and verification")
+        return True
+
+    # Restart signal server
+    log("  Restarting signal-server via pm2 ...")
+    result = subprocess.run(
+        ["pm2", "restart", "signal-server"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        log(f"  WARNING: pm2 restart returned code {result.returncode}: {result.stderr}")
+
+    # Wait and verify health endpoint
+    log("  Waiting for signal server to come up ...")
+    for attempt in range(24):  # up to 2 minutes (24 * 5s)
+        time.sleep(5)
+        try:
+            req = urllib.request.Request("http://localhost:5001/health")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+
+            if data.get("status") == "ok" and data.get("cached_signals", 0) > 0:
+                log(f"  Health check passed (attempt {attempt + 1}):")
+                log(f"    version: {data.get('model_version')}")
+                log(f"    features: {data.get('feature_count')}")
+                log(f"    signals: {data.get('cached_signals')}")
+                return True
+            else:
+                log(f"  Attempt {attempt + 1}: status={data.get('status')}, "
+                    f"signals={data.get('cached_signals', 0)}")
+        except Exception as exc:
+            log(f"  Attempt {attempt + 1}: connection failed ({exc})")
+
+    log("  ERROR: Health check failed after 2 minutes")
+    return False
+
+
+# ── Main pipeline ────────────────────────────────────────────────────────────
 
 def main():
-    t0 = time.perf_counter()
-    log("=" * 65)
-    log("Monthly Model Retraining (V4 Cross-Sectional Ranking)")
-    log("=" * 65)
+    parser = argparse.ArgumentParser(description="Monthly retrain pipeline for V5c ensemble")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run all steps except atomic swap and pm2 restart")
+    parser.add_argument("--test", action="store_true",
+                        help="Use small data subset for quick verification")
+    parser.add_argument("--skip-data", action="store_true",
+                        help="Skip data update (use existing features.parquet)")
+    parser.add_argument("--rolling-years", type=int, default=12,
+                        help="Training window size in years (default: 12)")
+    args = parser.parse_args()
 
-    # ── 1. Run FRED macro data pipeline ───────────────────────────────
-    try:
-        run_step("fred_data_pipeline.py", "FRED Macro Pipeline (yield curve, HY spread, DXY)")
-    except RuntimeError as exc:
-        log(f"FRED pipeline failed: {exc}")
-        send_email(
-            "AutoTrader: Model Retrain FAILED — FRED Pipeline Error",
-            f"Model retraining failed at FRED macro data pipeline stage.\n\n"
-            f"Error: {exc}\n\n"
-            f"The current production model is unchanged.\n"
-            f"Timestamp: {datetime.now(ET).isoformat()}",
-        )
-        return 1
+    log_path = _init_log()
+    log(f"  Mode: {'DRY RUN' if args.dry_run else 'LIVE'}"
+        f"{'  (TEST)' if args.test else ''}")
+    log(f"  Log: {log_path}")
 
-    # ── 2. Run FMP fundamentals pipeline ────────────────────────────
-    try:
-        run_step("fmp_fundamentals_pipeline.py", "FMP Fundamentals Pipeline (income, ratios, earnings, insiders)")
-    except RuntimeError as exc:
-        log(f"FMP fundamentals pipeline failed: {exc}")
-        send_email(
-            "AutoTrader: Model Retrain FAILED — FMP Fundamentals Error",
-            f"Model retraining failed at FMP fundamentals pipeline stage.\n\n"
-            f"Error: {exc}\n\n"
-            f"The current production model is unchanged.\n"
-            f"Timestamp: {datetime.now(ET).isoformat()}",
-        )
-        return 1
-
-    # ── 3. Run data pipeline (fetch latest prices, rebuild features) ─────
-    try:
-        run_step("data_pipeline.py", "Data Pipeline (fetch prices & rebuild 84 features)")
-    except RuntimeError as exc:
-        log(f"Data pipeline failed: {exc}")
-        send_email(
-            "AutoTrader: Model Retrain FAILED — Data Pipeline Error",
-            f"Model retraining failed at data pipeline stage.\n\n"
-            f"Error: {exc}\n\n"
-            f"The current production model is unchanged.\n"
-            f"Timestamp: {datetime.now(ET).isoformat()}",
-        )
-        return 1
-
-    # ── 4. Train V4 cross-sectional ranking model ────────────────────────
-    # train_v4_ranking.py handles: rank target computation, new features,
-    # model training, calibration, prediction generation, verification,
-    # and internal backtest. It saves model_v4.lgb + predictions_v4.parquet.
-    log("")
-    log("─" * 65)
-    log("Training V4 cross-sectional ranking model (84 features, top-20% target)")
-    log("─" * 65)
+    step_num = 0
+    train_metrics = {}
+    gate_metrics = {}
+    backup_path = None
 
     try:
-        run_step("train_v4_ranking.py", "V4 Model Training + Verification + Backtest")
-    except RuntimeError as exc:
-        log(f"V4 training failed: {exc}")
-        send_email(
-            "AutoTrader: Model Retrain FAILED — V4 Training Error",
-            f"Model retraining failed at V4 training stage.\n\n"
-            f"Error: {exc}\n\n"
-            f"The current production model is unchanged.\n"
-            f"Timestamp: {datetime.now(ET).isoformat()}",
+        # Step 1: Update data
+        step_num = 1
+        if not args.skip_data:
+            step1_update_data(test_mode=args.test)
+        else:
+            log("\n  Skipping data update (--skip-data)")
+
+        # Step 2: Train models
+        step_num = 2
+        train_metrics = step2_train_models(
+            test_mode=args.test,
+            rolling_years=args.rolling_years,
         )
-        return 1
 
-    # ── 5. Extract V4 metrics ────────────────────────────────────────────
-    try:
-        v4_info = extract_v4_metrics()
-    except RuntimeError as exc:
-        log(f"V4 metric extraction failed: {exc}")
-        send_email(
-            "AutoTrader: Model Retrain FAILED — V4 Metrics Error",
-            f"V4 model trained but metric extraction failed.\n\n"
-            f"Error: {exc}\n\n"
-            f"The current production model is unchanged.\n"
-            f"Timestamp: {datetime.now(ET).isoformat()}",
+        # Step 3: Deploy gate
+        step_num = 3
+        passed, gate_metrics, reasons = step3_deploy_gate()
+
+        if not passed:
+            log("\n  DEPLOY GATE FAILED — keeping old models")
+            notify_email(
+                "Retrain completed but failed deploy gate",
+                (f"Old model retained.\n"
+                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
+                 f"CAGR: {gate_metrics.get('cagr')}\n"
+                 f"Max DD: {gate_metrics.get('max_dd')}\n"
+                 f"Reasons: {'; '.join(reasons)}"),
+            )
+            # Clean up tmp
+            if TMP_DIR.exists():
+                shutil.rmtree(str(TMP_DIR))
+            _close_log()
+            sys.exit(1)
+
+        # Step 4: Backup and swap
+        step_num = 4
+        backup_path = step4_backup_and_swap(dry_run=args.dry_run)
+
+        # Step 5: Reload and verify
+        step_num = 5
+        verified = step5_reload_and_verify(dry_run=args.dry_run)
+
+        if not verified and not args.dry_run:
+            log("\n  VERIFICATION FAILED — rolling back to backup")
+            from backup_models import restore_from
+            if backup_path:
+                restore_from(backup_path, log_fn=log)
+                # Restart again with old models
+                subprocess.run(["pm2", "restart", "signal-server"],
+                               capture_output=True, timeout=30)
+            notify_email(
+                "Retrain failed: verification failed after swap",
+                (f"Rolled back to backup: {backup_path}\n"
+                 f"Error: Health check failed within 2 minutes"),
+            )
+            _close_log()
+            sys.exit(1)
+
+        # Update baseline for next month
+        if not args.dry_run:
+            from deploy_gate import save_baseline
+            save_baseline(gate_metrics)
+            log("  Updated deploy baseline")
+
+        # Success
+        log(f"\n{'='*70}")
+        log("  RETRAIN COMPLETE — SUCCESS")
+        log(f"{'='*70}")
+        log(f"  Ensemble AUC: {train_metrics.get('ensemble_auc', 'N/A')}")
+        log(f"  Sharpe: {gate_metrics.get('sharpe', 'N/A')}")
+        log(f"  CAGR: {gate_metrics.get('cagr', 'N/A')}")
+        log(f"  Max DD: {gate_metrics.get('max_dd', 'N/A')}")
+
+        if not args.dry_run:
+            notify_email(
+                "Retrain completed successfully",
+                (f"New model active.\n"
+                 f"Ensemble AUC: {train_metrics.get('ensemble_auc')}\n"
+                 f"Sharpe: {gate_metrics.get('sharpe')}\n"
+                 f"CAGR: {gate_metrics.get('cagr')}\n"
+                 f"Max DD: {gate_metrics.get('max_dd')}"),
+            )
+
+        # Clean up tmp
+        if TMP_DIR.exists():
+            shutil.rmtree(str(TMP_DIR))
+
+    except Exception as exc:
+        log(f"\n  FATAL ERROR at step {step_num}: {exc}")
+        log(traceback.format_exc())
+
+        # Rollback if we got past the swap step
+        if step_num > 4 and backup_path and not args.dry_run:
+            log("  Attempting rollback ...")
+            from backup_models import restore_from
+            restore_from(backup_path, log_fn=log)
+            subprocess.run(["pm2", "restart", "signal-server"],
+                           capture_output=True, timeout=30)
+
+        notify_email(
+            f"Retrain failed at step {step_num}",
+            f"Old model still active.\nError: {exc}",
         )
-        return 1
 
-    # ── 6. Deploy gate — compare to current production ───────────────────
-    log("")
-    log("─" * 65)
-    log("Deploy gate check")
-    log("─" * 65)
+        # Clean up tmp
+        if TMP_DIR.exists():
+            shutil.rmtree(str(TMP_DIR))
 
-    prev_metrics = load_previous_metrics()
+        _close_log()
+        sys.exit(1)
 
-    # V4 always passes deploy gate if train_v4_ranking.py succeeded
-    # (it has its own internal verification and backtest)
-    status = "DEPLOYED"
-    reason = "V4 model trained, verified (20/20 match), and backtest completed"
-
-    if prev_metrics:
-        prev_cagr = prev_metrics.get("cagr", 0)
-        prev_sharpe = prev_metrics.get("sharpe", 0)
-        log(f"Previous:  CAGR={format_pct(prev_cagr)}  Sharpe={prev_sharpe:.3f}")
-    else:
-        prev_cagr = None
-        prev_sharpe = None
-
-    log(f"V4 model verified — promoting to production")
-
-    # ── 7. Deploy V4 ────────────────────────────────────────────────────
-    log("")
-    log(f"DEPLOYING V4 model — {reason}")
-
-    # Backup current production model with date stamp
-    if MODEL_FILE.exists():
-        date_str = datetime.now(ET).strftime("%Y%m%d")
-        backup_path = DATA_DIR / f"model_backup_{date_str}.lgb"
-        shutil.copy2(MODEL_FILE, backup_path)
-        log(f"  Backed up current model → {backup_path.name}")
-
-    if PRED_FILE.exists():
-        date_str = datetime.now(ET).strftime("%Y%m%d")
-        backup_path = DATA_DIR / f"predictions_backup_{date_str}.parquet"
-        shutil.copy2(PRED_FILE, backup_path)
-        log(f"  Backed up current predictions → {backup_path.name}")
-
-    # Promote V4 to production
-    shutil.copy2(V4_MODEL_FILE, MODEL_FILE)
-    log(f"  Promoted {V4_MODEL_FILE.name} → {MODEL_FILE.name}")
-
-    shutil.copy2(V4_PRED_FILE, PRED_FILE)
-    log(f"  Promoted {V4_PRED_FILE.name} → {PRED_FILE.name}")
-
-    # Save metrics
-    new_metrics = {
-        "model_version": "v4_cross_sectional_ranking",
-        "n_rows": v4_info["n_rows"],
-        "n_symbols": v4_info["n_symbols"],
-        "date_range": v4_info["date_range"],
-    }
-    save_metrics(new_metrics)
-
-    send_email(
-        f"AutoTrader: V4 Model Retrain DEPLOYED",
-        f"V4 Cross-Sectional Ranking Model Retrain DEPLOYED\n"
-        f"{'=' * 55}\n\n"
-        f"Timestamp: {datetime.now(ET).strftime('%Y-%m-%d %I:%M %p ET')}\n\n"
-        f"Model: V4 cross-sectional ranking (top 20% target, top-5 selection)\n"
-        f"Features: 84 (incl. 4 new V4 rank features)\n"
-        f"Predictions: {v4_info['n_rows']:,} rows, {v4_info['n_symbols']} symbols\n"
-        f"Date range: {v4_info['date_range']}\n\n"
-        f"train_v4_ranking.py completed successfully:\n"
-        f"  - Cross-sectional rank target computed\n"
-        f"  - Model trained with isotonic calibration\n"
-        f"  - Verification passed (20/20 match)\n"
-        f"  - Internal backtest completed\n\n"
-        f"Production model updated: model.lgb + predictions.parquet\n",
-    )
-
-    # ── 8. Summary ───────────────────────────────────────────────────────
-    elapsed = time.perf_counter() - t0
-    log("")
-    log("=" * 65)
-    log(f"Retrain complete — Status: {status}")
-    log(f"Total runtime: {elapsed:.0f}s ({elapsed/60:.1f} min)")
-    log("=" * 65)
-
-    return 0
+    _close_log()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
