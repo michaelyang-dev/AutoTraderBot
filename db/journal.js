@@ -15,12 +15,43 @@ const fs = require("fs");
 const path = require("path");
 
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
+const MIGRATIONS_DIR = path.join(__dirname, "migrations");
 const DEFAULT_DB_PATH = path.join(__dirname, "..", "data", "journal.db");
 
 let db = null;
 
 // ── Prepared statements (populated by initDb) ───────────────────────
 let stmts = {};
+
+// ══════════════════════════════════════════
+//  MIGRATIONS
+// ══════════════════════════════════════════
+
+function runMigrations() {
+  try {
+    if (!fs.existsSync(MIGRATIONS_DIR)) return;
+
+    // Get current schema version
+    const row = db.prepare("SELECT MAX(version) as v FROM schema_version").get();
+    const currentVersion = row?.v || 1;
+
+    // Find migration files: NNN_name.sql, sorted by version number
+    const files = fs.readdirSync(MIGRATIONS_DIR)
+      .filter(f => f.endsWith(".sql"))
+      .map(f => ({ file: f, version: parseInt(f.split("_")[0], 10) }))
+      .filter(m => !isNaN(m.version) && m.version > currentVersion)
+      .sort((a, b) => a.version - b.version);
+
+    for (const m of files) {
+      const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, m.file), "utf8");
+      db.exec(sql);
+      console.log(`journal: applied migration ${m.file} (v${m.version})`);
+    }
+  } catch (err) {
+    console.error("journal: migration failed:", err.message);
+    throw err; // migrations are critical — don't swallow
+  }
+}
 
 // ══════════════════════════════════════════
 //  INIT
@@ -40,6 +71,9 @@ function initDb(dbPath) {
   // Apply schema
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
   db.exec(schema);
+
+  // Run pending migrations
+  runMigrations();
 
   // Prepare all statements once
   stmts = {

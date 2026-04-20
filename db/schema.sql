@@ -144,7 +144,10 @@ CREATE TABLE IF NOT EXISTS events (
   id                      INTEGER PRIMARY KEY AUTOINCREMENT,
   event_type              TEXT NOT NULL CHECK (event_type IN (
     'circuit_breaker', 'regime_change', 'retrain', 'error',
-    'manual_override', 'service_restart'
+    'manual_override', 'service_restart', 'journal_seeded',
+    'trade_submitted', 'trade_filled', 'position_opened',
+    'position_closed', 'daily_snapshot', 'reconcile_run',
+    'startup', 'shutdown'
   )),
   severity                TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'error', 'critical')),
   message                 TEXT NOT NULL,
