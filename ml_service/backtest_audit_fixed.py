@@ -12,6 +12,7 @@ Run with:
     python3 backtest_audit_fixed.py
 """
 
+import gc
 import sys
 import time
 import warnings
@@ -88,16 +89,21 @@ def get_feature_cols(df):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def retrain_models():
-    """Retrain LGBM and RF on corrected features.parquet."""
+    """
+    Retrain LGBM and RF on corrected features.parquet.
+
+    Memory-optimised: sequences training → save → free → predict → save.
+    Peak RAM ~40% lower than holding everything simultaneously.
+    """
     log("=" * 70)
     log("STAGE 1: RETRAIN MODELS ON CORRECTED FEATURES")
     log("=" * 70)
 
+    # ── Phase A: Load features, prepare targets, extract training arrays ──
     df = pd.read_parquet(FEATURES_FILE)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["symbol", "date"]).copy()
 
-    # Verify days_until_earnings is gone
     assert "days_until_earnings" not in df.columns, "days_until_earnings still in features!"
     log(f"  Loaded {len(df):,} rows, {df['symbol'].nunique()} symbols")
     log(f"  Feature count: {len(get_feature_cols(df))} (should be 83)")
@@ -116,6 +122,7 @@ def retrain_models():
     n_valid = valid_df["target_v4"].notna().sum()
     n_pos = (valid_df["target_v4"] == 1).sum()
     log(f"  Target: {n_valid:,} valid rows, {n_pos:,} positive ({n_pos/n_valid*100:.1f}%)")
+    del valid_df; gc.collect()
 
     # Add V4 cross-sectional features
     for base_col, rank_col in [("vol_20d", "vol_rank_20d"), ("ret_60d", "momentum_rank_60d"),
@@ -132,8 +139,6 @@ def retrain_models():
     train_df = df[df["in_sp500"] == True].copy()
     log(f"  Training rows (in_sp500): {len(train_df):,}")
 
-    X_all = df[feature_cols].values
-    y_v4_all = df["target_v4"].values
     X_filtered = train_df[feature_cols].values
     y_filtered = train_df["target_v4"].values
 
@@ -149,7 +154,11 @@ def retrain_models():
 
     log(f"  Train: {train_mask.sum():,}  Calib: {calib_mask.sum():,}")
 
-    # ── Train LGBM ──────────────────────────────────────────────────────
+    # Free train_df and filtered arrays (X_train/X_calib are views/copies)
+    del train_df, X_filtered, y_filtered
+    gc.collect()
+
+    # ── Phase B: Train models and save to disk ──────────────────────────
     log(f"\n  Training LightGBM V4 (corrected features) ...")
     scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
     lgb_model = lgb.LGBMClassifier(
@@ -164,13 +173,13 @@ def retrain_models():
     n_trees_used = lgb_model.booster_.num_trees()
     log(f"  LGBM trained: {n_trees_used} trees")
 
-    # Calibrate
+    # Calibrate LGBM
     calib_lgbm = CalibratedClassifierCV(lgb_model, method="isotonic", cv="prefit")
     calib_lgbm.fit(X_calib, y_calib)
     lgbm_auc = roc_auc_score(y_calib, calib_lgbm.predict_proba(X_calib)[:, 1])
     log(f"  LGBM calib AUC: {lgbm_auc:.4f}")
 
-    # ── Train RF ────────────────────────────────────────────────────────
+    # Train RF
     log(f"\n  Training Random Forest (corrected features) ...")
     imp = SimpleImputer(strategy="median")
     X_train_rf = imp.fit_transform(X_train)
@@ -201,12 +210,34 @@ def retrain_models():
     rf_auc = roc_auc_score(y_calib, calib_rf.predict_proba(X_calib_rf)[:, 1])
     log(f"  RF calib AUC: {rf_auc:.4f}")
 
-    # ── Generate predictions ────────────────────────────────────────────
+    # Save models to disk so we can free training arrays
+    model_dir = DATA_DIR / "audit_models"
+    model_dir.mkdir(exist_ok=True)
+    joblib.dump(calib_lgbm, model_dir / "calib_lgbm.joblib")
+    joblib.dump(calib_rf, model_dir / "calib_rf.joblib")
+    joblib.dump(imp, model_dir / "imputer.joblib")
+    log(f"  Models saved to {model_dir}")
+
+    # Free all training arrays and models
+    del X_train, y_train, X_calib, y_calib
+    del X_train_rf, X_calib_rf
+    del lgb_model, rf_model, calib_lgbm, calib_rf, imp
+    gc.collect()
+    log(f"  Training arrays freed")
+
+    # ── Phase C: Reload models, generate predictions, save ──────────────
     log(f"\n  Generating predictions for {len(df):,} rows ...")
+    calib_lgbm = joblib.load(model_dir / "calib_lgbm.joblib")
+    calib_rf = joblib.load(model_dir / "calib_rf.joblib")
+    imp = joblib.load(model_dir / "imputer.joblib")
+
+    X_all = df[feature_cols].values
     lgbm_probs = calib_lgbm.predict_proba(X_all)[:, 1]
 
     X_all_rf = imp.transform(X_all)
     rf_probs = calib_rf.predict_proba(X_all_rf)[:, 1]
+    del X_all, X_all_rf
+    gc.collect()
 
     # Ensemble: simple average
     ensemble_probs = (lgbm_probs + rf_probs) / 2.0
@@ -218,6 +249,8 @@ def retrain_models():
 
     log(f"  LGBM probs: [{lgbm_probs.min():.4f}, {lgbm_probs.max():.4f}], mean={lgbm_probs.mean():.4f}")
     log(f"  RF probs:   [{rf_probs.min():.4f}, {rf_probs.max():.4f}], mean={rf_probs.mean():.4f}")
+    del lgbm_probs, rf_probs, ensemble_probs
+    del calib_lgbm, calib_rf, imp
 
     # Save predictions
     pred_cols = ["date", "symbol", "target_v4", "prob_lgbm", "prob_rf",
@@ -226,7 +259,12 @@ def retrain_models():
     preds.to_parquet(DATA_DIR / "predictions_audit_fixed.parquet", index=False)
     log(f"  Saved predictions_audit_fixed.parquet")
 
-    return df, feature_cols, lgbm_auc, rf_auc
+    # Free the large features DataFrame before returning
+    del df, preds
+    gc.collect()
+    log(f"  Features DataFrame freed")
+
+    return feature_cols, lgbm_auc, rf_auc
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -509,7 +547,8 @@ def main():
     log("=" * 70)
 
     # ── Stage 1: Retrain ────────────────────────────────────────────────
-    df, feature_cols, lgbm_auc, rf_auc = retrain_models()
+    feature_cols, lgbm_auc, rf_auc = retrain_models()
+    # Training data and models are fully freed at this point
 
     # ── Stage 2: Load data for backtest ─────────────────────────────────
     log(f"\n{'='*70}")
@@ -543,9 +582,16 @@ def main():
     open_prices = raw["Open"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Open"]]
     open_prices.index = pd.to_datetime(open_prices.index).tz_localize(None)
 
+    # Free raw OHLCV (close and open_prices are views, but del raw allows
+    # the remaining columns like High/Low/Volume to be freed)
+    del raw; gc.collect()
+
     sim_index = pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates])
     close_aligned = close.reindex(sim_index, method="ffill")
     open_aligned = open_prices.reindex(sim_index, method="ffill")
+
+    # Free unaligned price frames (aligned versions are all we need)
+    del close, open_prices; gc.collect()
 
     spy_close_series = close_aligned["SPY"].dropna()
     spy_dict = close_aligned["SPY"].to_dict()

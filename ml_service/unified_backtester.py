@@ -28,8 +28,10 @@ Multi-Strategy Slot System
 
 from dataclasses import dataclass
 from pathlib import Path
-import warnings
+import hashlib
+import os
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -39,7 +41,166 @@ from strategy_base import Strategy, Signal, Position
 
 warnings.filterwarnings("ignore")
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR  = Path(__file__).resolve().parent / "data"
+CACHE_DIR = Path(__file__).resolve().parent / "cache"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Caching helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ensure_cache_dir():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _cache_path(name: str) -> Path:
+    """Return path to a cache file inside ml_service/cache/."""
+    return CACHE_DIR / f"{name}.parquet"
+
+
+def _file_mtime(path: Path) -> float:
+    """Return mtime of *path*, or 0.0 if it doesn't exist."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _cache_meta_path(name: str) -> Path:
+    return CACHE_DIR / f"{name}.meta"
+
+
+def _write_meta(name: str, key: str):
+    _ensure_cache_dir()
+    _cache_meta_path(name).write_text(key)
+
+
+def _read_meta(name: str) -> str:
+    p = _cache_meta_path(name)
+    return p.read_text().strip() if p.exists() else ""
+
+
+def _bars_cache_key(symbols: list[str], start: str, end: str) -> str:
+    sym_hash = hashlib.md5(",".join(sorted(symbols)).encode()).hexdigest()[:12]
+    return f"{start}_{end}_{sym_hash}"
+
+
+def load_bars_cached(symbols: list[str], start: str, end: str,
+                     no_cache: bool = False) -> pd.DataFrame:
+    """
+    Download close prices via yfinance, with 24-hour disk cache.
+
+    Returns a DataFrame with columns=symbols, index=dates (close prices).
+    """
+    import yfinance as yf
+
+    name = "bars"
+    key = _bars_cache_key(symbols, start, end)
+    cache_file = _cache_path(name)
+
+    if not no_cache and cache_file.exists():
+        cached_key = _read_meta(name)
+        age_hours = (time.time() - _file_mtime(cache_file)) / 3600
+        if cached_key == key and age_hours < 24:
+            return pd.read_parquet(cache_file)
+
+    syms = list(set(["SPY"] + symbols))
+    raw = yf.download(syms, start=start, end=end,
+                      auto_adjust=True, progress=False, threads=True)
+    close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
+    close.index = pd.to_datetime(close.index).tz_localize(None)
+
+    _ensure_cache_dir()
+    close.to_parquet(cache_file)
+    _write_meta(name, key)
+    return close
+
+
+def load_predictions_cached(pred_file: Path = None,
+                            no_cache: bool = False) -> pd.DataFrame:
+    """
+    Load predictions.parquet with cache keyed on model file mtime.
+    """
+    if pred_file is None:
+        pred_file = DATA_DIR / "predictions.parquet"
+
+    name = "predictions"
+    model_file = DATA_DIR / "model.lgb"
+    model_mt = str(_file_mtime(model_file))
+    pred_mt = str(_file_mtime(pred_file))
+    key = f"{model_mt}_{pred_mt}"
+
+    cache_file = _cache_path(name)
+    if not no_cache and cache_file.exists() and _read_meta(name) == key:
+        df = pd.read_parquet(cache_file)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+
+    df = pd.read_parquet(pred_file)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["fwd_ret"]).sort_values(["date", "symbol"])
+
+    _ensure_cache_dir()
+    df.to_parquet(cache_file, index=False)
+    _write_meta(name, key)
+    return df
+
+
+def load_features_cached(features_file: Path = None,
+                         no_cache: bool = False,
+                         symbols: list[str] = None,
+                         start: str = None,
+                         end: str = None) -> pd.DataFrame:
+    """
+    Load features.parquet with cache keyed on file mtime.
+
+    When *symbols*, *start*, or *end* are provided, uses pyarrow filter
+    pushdown so only matching rows are loaded from disk — drastically
+    reduces peak memory for targeted backtests.
+    """
+    import pyarrow.parquet as pq
+
+    if features_file is None:
+        features_file = DATA_DIR / "features.parquet"
+
+    # Build pyarrow filters for pushdown
+    filters = []
+    if symbols:
+        filters.append(("symbol", "in", symbols))
+    if start:
+        filters.append(("date", ">=", pd.Timestamp(start)))
+    if end:
+        filters.append(("date", "<=", pd.Timestamp(end)))
+
+    has_filters = len(filters) > 0
+
+    # Cache is only used for unfiltered reads (full file)
+    name = "features"
+    feat_mt = str(_file_mtime(features_file))
+    key = feat_mt
+
+    if not has_filters:
+        cache_file = _cache_path(name)
+        if not no_cache and cache_file.exists() and _read_meta(name) == key:
+            df = pd.read_parquet(cache_file)
+            df["date"] = pd.to_datetime(df["date"])
+            return df
+
+    # Read with optional filter pushdown
+    if has_filters:
+        df = pd.read_parquet(features_file, filters=filters)
+    else:
+        df = pd.read_parquet(features_file)
+
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Only cache unfiltered reads
+    if not has_filters:
+        _ensure_cache_dir()
+        df.to_parquet(cache_file, index=False)
+        _write_meta(name, key)
+
+    return df
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
