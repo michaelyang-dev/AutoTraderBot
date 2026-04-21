@@ -877,10 +877,10 @@ SLOT_MULTI = SlotConfig(
 
 def validate():
     """Run both engines side-by-side and print a comparison table."""
+    from backtest_utils import load_predictions, calc_metrics, calc_alpha_beta
     from backtest_ml import (
-        load_predictions, fetch_benchmarks, run_simulation,
-        make_ml_signal_fn, calc_metrics, calc_alpha_beta,
-        INITIAL_CASH as BT_CASH,
+        fetch_benchmarks, run_simulation,
+        make_ml_signal_fn, INITIAL_CASH as BT_CASH,
     )
 
     t0 = time.perf_counter()

@@ -101,7 +101,7 @@ def run_backtest_on_preds(preds_df, prob_col, label, date_filter=None):
         MomentumStrategy, MeanReversionStrategy,
         SLOT_ML_MOM_MR,
     )
-    from backtest_ml import calc_metrics, calc_alpha_beta
+    from backtest_utils import calc_metrics, calc_alpha_beta
     from backtest_v4_voltarget import instrumented_run_voltarget
 
     preds_df = preds_df.copy()
@@ -432,7 +432,7 @@ def test3_temporal():
                 MomentumStrategy, MeanReversionStrategy,
                 SLOT_ML_MOM_MR,
             )
-            from backtest_ml import calc_metrics, calc_alpha_beta
+            from backtest_utils import calc_metrics, calc_alpha_beta
             from backtest_v4_voltarget import instrumented_run_voltarget
 
             start_dt, end_dt = pd.Timestamp(start), pd.Timestamp(end)

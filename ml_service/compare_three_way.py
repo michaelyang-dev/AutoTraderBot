@@ -5,8 +5,9 @@ import warnings, time
 from pathlib import Path
 import numpy as np, pandas as pd
 
+from backtest_utils import calc_metrics, calc_alpha_beta
 from backtest_ml import (
-    INITIAL_CASH, run_simulation, calc_metrics, calc_alpha_beta,
+    INITIAL_CASH, run_simulation,
     make_ml_signal_fn, fetch_benchmarks,
 )
 

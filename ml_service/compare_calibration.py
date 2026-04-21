@@ -17,12 +17,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from backtest_utils import calc_metrics, calc_alpha_beta
 from backtest_ml import (
     INITIAL_CASH, HOLD_DAYS, SLIPPAGE,
     MAX_POSITIONS, POSITION_PCT, THRESHOLDS,
     SPY_IDLE_RESERVE_PCT, SPY_IDLE_THRESHOLD_PCT, SPY_IDLE_INVEST_PCT,
-    run_simulation, calc_metrics, calc_alpha_beta, make_ml_signal_fn,
-    fetch_benchmarks,
+    run_simulation, make_ml_signal_fn, fetch_benchmarks,
 )
 
 warnings.filterwarnings("ignore")

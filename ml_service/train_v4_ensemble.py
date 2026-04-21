@@ -494,7 +494,7 @@ def run_backtest(pred_file, prob_col, label):
         MomentumStrategy, MeanReversionStrategy,
         SLOT_ML_MOM_MR,
     )
-    from backtest_ml import calc_metrics, calc_alpha_beta
+    from backtest_utils import calc_metrics, calc_alpha_beta
 
     preds_df = pd.read_parquet(pred_file)
     preds_df["date"] = pd.to_datetime(preds_df["date"])

@@ -34,7 +34,7 @@ from unified_backtester import (
     load_bars_cached, load_predictions_cached,
     INITIAL_CASH, DATA_DIR,
 )
-from backtest_ml import calc_metrics, calc_alpha_beta
+from backtest_utils import calc_metrics, calc_alpha_beta
 
 
 # ── Strategy / slot config mapping ──────────────────────────────────────────

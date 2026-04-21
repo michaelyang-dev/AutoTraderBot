@@ -279,7 +279,7 @@ def main():
         SLOT_ML_MOM_MR,
     )
     from strategy_base import Strategy, Signal, Position
-    from backtest_ml import calc_metrics, calc_alpha_beta
+    from backtest_utils import calc_metrics, calc_alpha_beta
 
     # ── Load V4 predictions ─────────────────────────────────────────────
     preds_df = pd.read_parquet(PRED_FILE)

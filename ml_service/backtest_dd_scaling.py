@@ -270,7 +270,7 @@ def main():
         MLMediumStrategy, MomentumStrategy, MeanReversionStrategy,
         SLOT_ML_MOM_MR,
     )
-    from backtest_ml import calc_metrics, calc_alpha_beta
+    from backtest_utils import calc_metrics, calc_alpha_beta
 
     preds_df = pd.read_parquet(PRED_FILE)
     preds_df["date"] = pd.to_datetime(preds_df["date"])

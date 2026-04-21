@@ -30,9 +30,7 @@ from unified_backtester import (
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_ML_MOM,
     SLOT_MR_ONLY, SLOT_ML_MR, SLOT_ML_MOM_MR,
 )
-from backtest_ml import (
-    load_predictions, calc_metrics, calc_alpha_beta,
-)
+from backtest_utils import load_predictions, calc_metrics, calc_alpha_beta
 from diagnose_combined import instrumented_run
 
 warnings.filterwarnings("ignore")

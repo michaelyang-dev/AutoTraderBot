@@ -32,7 +32,7 @@ from unified_backtester import (
     PortfolioManager,
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_ML_MOM,
 )
-from backtest_ml import load_predictions, calc_metrics, calc_alpha_beta
+from backtest_utils import load_predictions, calc_metrics, calc_alpha_beta
 
 warnings.filterwarnings("ignore")
 DATA_DIR = Path(__file__).resolve().parent / "data"

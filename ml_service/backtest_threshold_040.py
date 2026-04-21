@@ -39,7 +39,7 @@ def main():
         MLMediumStrategy, MomentumStrategy, MeanReversionStrategy,
         SLOT_ML_MOM_MR,
     )
-    from backtest_ml import calc_metrics, calc_alpha_beta
+    from backtest_utils import calc_metrics, calc_alpha_beta
     from diagnose_combined import instrumented_run
 
     # Load predictions
