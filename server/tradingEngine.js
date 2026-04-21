@@ -816,7 +816,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           alpaca_order_id: result?.id || null,
           symbol, side: "sell",
           qty: pos ? pos.qty : 0,
-          strategy: positionStrategy[symbol] || "unknown",
+          strategy: positionStrategy[symbol] || "legacy",
           regime,
           intended_price: pos ? pos.current_price : null,
         });
@@ -1612,23 +1612,32 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Count positions by strategy for slot allocation
       // "legacy" positions (pre-existing, untagged) are tracked but excluded from slot limits
       const countByStrategy = () => {
-        let ml = 0, mom = 0, mr = 0, mc = 0, legacy = 0;
+        let ml = 0, mom = 0, mr = 0, mc = 0, trend = 0, legacy = 0;
         for (const pos of currentPositions) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
-          if (trendPositions[pos.symbol]) continue;
-          const strat = positionStrategy[pos.symbol] || "ml";
+          const strat = positionStrategy[pos.symbol] || "legacy";
           if (strat === "legacy") legacy++;
           else if (strat === "momentum") mom++;
           else if (strat === "mean_reversion") mr++;
           else if (strat === "mega_cap") mc++;
+          else if (strat === "trend" || trendPositions[pos.symbol]) trend++;
           else ml++;
         }
-        return { ml, mom, mr, mc, legacy, total: ml + mom + mr + mc };
+        return { ml, mom, mr, mc, trend, legacy, total: ml + mom + mr + mc + trend };
       };
 
       // Check if a strategy has slot capacity
       const hasSlotCapacity = (strategy, counts) => {
         if (counts.total >= SLOT_CONFIG.max) return false;
+        // Trend has no dedicated slot — competes for flex only
+        if (strategy === "trend") {
+          const flexUsed = counts.total
+            - Math.min(counts.ml, SLOT_CONFIG.ml_medium)
+            - Math.min(counts.mom, SLOT_CONFIG.momentum)
+            - Math.min(counts.mr, SLOT_CONFIG.mean_reversion)
+            - Math.min(counts.mc, SLOT_CONFIG.mega_cap);
+          return flexUsed < SLOT_CONFIG.flex;
+        }
         const stratMap = { momentum: "momentum", mean_reversion: "mean_reversion", ml: "ml_medium", mega_cap: "mega_cap" };
         const countMap = { momentum: counts.mom, mean_reversion: counts.mr, ml: counts.ml, mega_cap: counts.mc };
         const primaryKey = stratMap[strategy] || "ml_medium";
@@ -1767,7 +1776,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
         if (stopTriggered) {
           try {
-            const strat = positionStrategy[symbol] || "ml";
+            const strat = positionStrategy[symbol] || "legacy";
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
@@ -1802,7 +1811,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         } else if (unrealized_plpc >= RISK.TAKE_PROFIT_PCT) {
           try {
-            const strat = positionStrategy[symbol] || "ml";
+            const strat = positionStrategy[symbol] || "legacy";
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
@@ -1844,7 +1853,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const days = daysUntilEarnings(earningsDate);
         if (days === 1) {
           try {
-            const strat = positionStrategy[pos.symbol] || "ml";
+            const strat = positionStrategy[pos.symbol] || "legacy";
             await closePosition(pos.symbol);
             delete trailingPeaks[pos.symbol];
             closedSymbols.add(pos.symbol);
@@ -2176,7 +2185,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             try {
               await closePosition(sym);
               const posData = currentPositions.find(p => p.symbol === sym);
-              const blStrat = positionStrategy[sym] || "ml";
+              const blStrat = positionStrategy[sym] || "legacy";
               if (posData && posData.unrealized_plpc < 0) setCooldown(sym, blStrat);
               if (blStrat === "momentum") { delete momEntryPrices[sym]; delete momPeakPrices[sym]; delete momEntryDates[sym]; }
               else if (blStrat === "mean_reversion") { delete mrEntryPrices[sym]; delete mrEntryDates[sym]; }
@@ -2207,12 +2216,14 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
         const analysis = getSignals(prices);
 
-        // Sell on SELL consensus (only for ML positions — momentum has its own exit rules)
-        if (heldSymbols.has(sym) && !trendPositions[sym] && positionStrategy[sym] !== "momentum" && positionStrategy[sym] !== "mean_reversion" && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
+        // Sell on SELL consensus (only for ML positions — every other strategy has its own exit rules)
+        const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend"]);
+        if (heldSymbols.has(sym) && !trendPositions[sym] && !excludedStrategies.has(positionStrategy[sym]) && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
           try {
             await closePosition(sym);
             const posData = currentPositions.find(p => p.symbol === sym);
-            if (posData && posData.unrealized_plpc < 0) setCooldown(sym, "ml");
+            // Always set cooldown on consensus-sell to prevent buy-sell-buy churn
+            setCooldown(sym, "ml");
             delete positionStrategy[sym];
             addLog(`SELL ${sym}: ${analysis.consensus} -- closing position`, "sell");
             if (posData) {
@@ -2377,7 +2388,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       // Pre-execution diagnostic summary
       if (allOpportunities.length > 0) {
-        addLog(`BUY FILTER CHECK -- ${allOpportunities.length} candidate${allOpportunities.length !== 1 ? "s" : ""} (${opportunities.length} ML + ${momOpportunities.length} MOM + ${mrOpportunities.length} MR + ${mcOpportunities.length} MCAP) | positions: ${counts.total}/${SLOT_CONFIG.max} (ML ${counts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${counts.mom}/${SLOT_CONFIG.momentum}, MR ${counts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${counts.mc}/${SLOT_CONFIG.mega_cap}) | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
+        addLog(`BUY FILTER CHECK -- ${allOpportunities.length} candidate${allOpportunities.length !== 1 ? "s" : ""} (${opportunities.length} ML + ${momOpportunities.length} MOM + ${mrOpportunities.length} MR + ${mcOpportunities.length} MCAP) | positions: ${counts.total}/${SLOT_CONFIG.max} (ML ${counts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${counts.mom}/${SLOT_CONFIG.momentum}, MR ${counts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${counts.mc}/${SLOT_CONFIG.mega_cap}, TREND ${counts.trend}) | slots open: ${slotsAvail} | cash: $${cycleCash.toLocaleString("en-US", { maximumFractionDigits: 0 })}`, "system");
       }
 
       if (skipNewBuys) {
@@ -2424,7 +2435,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       for (const opp of allOpportunities) {
         // Check strategy-specific slot capacity
         if (!hasSlotCapacity(opp.strategy, liveCounts)) {
-          addLog(`SKIP ${opp.sym} -- no ${opp.strategy} slot available (ML ${liveCounts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${liveCounts.mom}/${SLOT_CONFIG.momentum}, MR ${liveCounts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${liveCounts.mc}/${SLOT_CONFIG.mega_cap}, total ${liveCounts.total}/${SLOT_CONFIG.max})`, "system");
+          addLog(`SKIP ${opp.sym} -- no ${opp.strategy} slot available (ML ${liveCounts.ml}/${SLOT_CONFIG.ml_medium}, MOM ${liveCounts.mom}/${SLOT_CONFIG.momentum}, MR ${liveCounts.mr}/${SLOT_CONFIG.mean_reversion}, MCAP ${liveCounts.mc}/${SLOT_CONFIG.mega_cap}, TREND ${liveCounts.trend || 0}, total ${liveCounts.total}/${SLOT_CONFIG.max})`, "system");
           continue;
         }
 
@@ -2608,6 +2619,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             closedSymbols.add(sym);
             delete trendPositions[sym];
             delete trendBreakCounts[sym];
+            delete positionStrategy[sym];
             const trendPnl = pos.unrealized_pl;
             addLog(`TREND-STOP ${sym}: @ $${curr.toFixed(2)} | Peak $${peak.toFixed(2)}, drop ${(dropFromPeak * 100).toFixed(1)}%`, "sell");
             tradeCount.sells++;
@@ -2639,6 +2651,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               closedSymbols.add(sym);
               delete trendPositions[sym];
               delete trendBreakCounts[sym];
+              delete positionStrategy[sym];
               const breakPos = currentPositions.find(p => p.symbol === sym);
               addLog(`TREND-BREAK ${sym}: 3 consecutive closes below 200-SMA -- exiting`, "sell");
               if (breakPos) {
@@ -2664,7 +2677,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // ── STEP 6: Trend new entries ──
       if (!skipNewBuys && regime !== "BEARISH") {
         const trendCount = Object.keys(trendPositions).length;
-        if (trendCount < 8) {
+        let trendCounts = countByStrategy();
+        if (trendCount < 3 && trendCounts.total < SLOT_CONFIG.max) {
           const trendPosValue = Object.values(trendPositions).reduce((sum, tp) => {
             const alpacaPos = currentPositions.find(p => p.symbol === tp.sym);
             return sum + (alpacaPos ? alpacaPos.market_value : 0);
@@ -2672,6 +2686,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           const trendPortPct = cyclePortfolioValue > 0 ? trendPosValue / cyclePortfolioValue : 0;
 
           if (trendPortPct < 0.30) {
+            let trendBuysThisCycle = 0;
             for (const sym of UNIVERSE_SYMBOLS) {
               if (NEVER_BUY.has(sym)) continue;
               if (trendPositions[sym] || heldSymbols.has(sym)) continue;
@@ -2679,6 +2694,14 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               if (!prices || prices.length < 200) continue;
               const ts = computeTrendStatus(prices);
               if (!ts?.isStrongUptrend) continue;
+
+              // Slot limit checks
+              if (trendCounts.total >= SLOT_CONFIG.max) break;
+              if (!hasSlotCapacity("trend", trendCounts)) {
+                addLog(`TREND SKIP ${sym} -- no flex slot available (total ${trendCounts.total}/${SLOT_CONFIG.max})`, "system");
+                break;
+              }
+              if (Object.keys(trendPositions).length + trendBuysThisCycle >= 3) break;
 
               const currPrice = prices[prices.length - 1];
               const allocCashTrend = cyclePortfolioValue * 0.05;
@@ -2690,12 +2713,16 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
                 const order = await placeOrder({ symbol: sym, qty: shares, side: "buy", type: "market" });
                 trendPositions[sym] = { entryPrice: currPrice, peakPrice: currPrice };
                 trendBreakCounts[sym] = 0;
+                positionStrategy[sym] = "trend";
+                trendBuysThisCycle++;
+                trendCounts.trend++;
+                trendCounts.total++;
+                cycleCash -= shares * currPrice;
                 addLog(`TREND-BUY ${sym}: ${shares} sh | ${ts.daysAbove200}/40 days above 200-SMA | Order: ${order.status}`, "buy");
                 tradeCount.buys++;
                 dailyStats.buys++;
                 try { journal.recordOrderSubmitted({ alpaca_order_id: order.id || null, symbol: sym, side: "buy", qty: shares, strategy: "trend", regime, intended_price: currPrice }); } catch (_) {}
                 notify.send(`📈 TREND BUY ${sym} | ${shares} shares @ $${currPrice.toFixed(2)} | ${ts.daysAbove200}/40 days above 200-SMA`);
-                if (Object.keys(trendPositions).length >= 8) break;
               } catch (err) {
                 addLog(`Trend buy failed ${sym}: ${err.message}`, "error");
               }
@@ -2916,13 +2943,13 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
   function getState() {
     // Count positions by strategy
-    let mlPositions = 0, momPositions = 0, mrPositions = 0;
+    let mlPositions = 0, momPositions = 0, mrPositions = 0, trendPositionCount = 0;
     for (const sym of Object.keys(positions)) {
       if (sym === "SPY" && idleSpyShares > 0) continue;
-      if (trendPositions[sym]) continue;
-      const strat = positionStrategy[sym] || "ml";
+      const strat = positionStrategy[sym] || "legacy";
       if (strat === "momentum") momPositions++;
       else if (strat === "mean_reversion") mrPositions++;
+      else if (strat === "trend" || trendPositions[sym]) trendPositionCount++;
       else mlPositions++;
     }
 
@@ -2962,7 +2989,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         ml: { positions: mlPositions, slots: SLOT_CONFIG.ml_medium, trades: { ...mlTradeCount } },
         momentum: { positions: momPositions, slots: SLOT_CONFIG.momentum, trades: { ...momTradeCount } },
         mean_reversion: { positions: mrPositions, slots: SLOT_CONFIG.mean_reversion, trades: { ...mrTradeCount } },
-        flex: { used: Math.max(0, mlPositions + momPositions + mrPositions - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum - SLOT_CONFIG.mean_reversion), total: SLOT_CONFIG.flex },
+        trend: { positions: trendPositionCount, slots: 0 },
+        flex: { used: Math.max(0, mlPositions + momPositions + mrPositions + trendPositionCount - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum - SLOT_CONFIG.mean_reversion), total: SLOT_CONFIG.flex },
       },
       momRankings: { ...momRankings },
     };
