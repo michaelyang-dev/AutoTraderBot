@@ -76,8 +76,8 @@ async function fetchWithRetry(fn, label, maxRetries = 3) {
   }
 }
 
-async function reconcile() {
-  log(`\n── Reconcile start ${DRY_RUN ? "(DRY RUN)" : ""} ──`);
+async function runReconcile({ dryRun = false } = {}) {
+  log(`\n── Reconcile start ${dryRun ? "(DRY RUN)" : ""} ──`);
 
   // Init journal DB
   const dbPath = path.join(__dirname, "..", "data", "journal.db");
@@ -101,7 +101,7 @@ async function reconcile() {
     log(`Fetched ${orders.length} orders from Alpaca`);
   } catch (err) {
     log(`ERROR fetching orders: ${err.message}`);
-    process.exit(1);
+    throw err;
   }
 
   let updated = 0, inserted = 0, skipped = 0;
@@ -134,7 +134,7 @@ async function reconcile() {
         continue;
       }
 
-      if (DRY_RUN) {
+      if (dryRun) {
         log(`  DRY RUN: Would update ${symbol} ${side} (${existing.status} → ${journalStatus})`);
         updated++;
         continue;
@@ -158,7 +158,7 @@ async function reconcile() {
       // Not in journal — engine didn't write it (bug or manual trade)
       log(`  WARNING: Unknown order ${alpacaId} — ${symbol} ${side} ${qty} (${status})`);
 
-      if (DRY_RUN) {
+      if (dryRun) {
         log(`  DRY RUN: Would insert ${symbol} ${side} with strategy='unknown'`);
         inserted++;
         continue;
@@ -189,10 +189,31 @@ async function reconcile() {
     }
   }
 
+  const result = { updated, inserted, skipped };
   log(`── Reconcile done: ${updated} updated, ${inserted} inserted, ${skipped} unchanged ──`);
+
+  // Log reconcile_run event
+  if (!dryRun) {
+    try {
+      journal.logEvent({
+        event_type: "reconcile_run",
+        severity: "info",
+        message: `Reconcile: ${updated} updated, ${inserted} inserted, ${skipped} unchanged`,
+        metadata: result,
+      });
+    } catch (_) {}
+  }
+
+  return result;
 }
 
-reconcile().catch((err) => {
-  log(`FATAL: ${err.message}`);
-  process.exit(1);
-});
+// ── CLI entry point ──────────────────────────────────────────────────
+
+if (require.main === module) {
+  runReconcile({ dryRun: DRY_RUN }).catch((err) => {
+    log(`FATAL: ${err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { runReconcile };

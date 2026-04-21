@@ -147,7 +147,9 @@ CREATE TABLE IF NOT EXISTS events (
     'manual_override', 'service_restart', 'journal_seeded',
     'trade_submitted', 'trade_filled', 'position_opened',
     'position_closed', 'daily_snapshot', 'reconcile_run',
-    'startup', 'shutdown'
+    'startup', 'shutdown',
+    'script_run', 'premarket_check', 'daily_report',
+    'hourly_heartbeat', 'weekly_report'
   )),
   severity                TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'error', 'critical')),
   message                 TEXT NOT NULL,
