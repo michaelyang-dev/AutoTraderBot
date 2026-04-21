@@ -50,12 +50,14 @@ STRATEGY_MAP = {
 
 
 def build_strategies(names, predictions_df, price_data, volume_data,
-                     threshold):
+                     threshold, selection_mode, top_n):
     """Instantiate strategy objects from name list."""
     strats = []
     for name in names:
         if name == "ml":
-            strats.append(MLMediumStrategy(predictions_df, threshold=threshold))
+            strats.append(MLMediumStrategy(
+                predictions_df, threshold=threshold,
+                top_n=top_n, selection_mode=selection_mode))
         elif name == "momentum":
             strats.append(MomentumStrategy(price_data, volume_data=volume_data))
         elif name == "mean_reversion":
@@ -77,8 +79,13 @@ def main():
     parser.add_argument("--end", default=None, help="End date YYYY-MM-DD")
     parser.add_argument("--symbols", default=None,
                         help="Comma-separated symbol list (default: full universe)")
+    parser.add_argument("--selection-mode", default="top_n",
+                        choices=["top_n", "threshold"],
+                        help="ML signal selection: top_n (live) or threshold (legacy)")
+    parser.add_argument("--top-n", type=int, default=5,
+                        help="Top-N picks per day in top_n mode (default: 5)")
     parser.add_argument("--ml-threshold", type=float, default=0.55,
-                        help="ML probability threshold (default: 0.55)")
+                        help="ML probability threshold in threshold mode (default: 0.55)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force recompute, bypass disk cache")
     parser.add_argument("--output", default=None,
@@ -144,9 +151,11 @@ def main():
     price_data = close if needs_prices else None
     volume_data = None  # volume not cached yet; strategies handle missing volume
 
-    log(f"Strategy: {args.strategy} ({', '.join(strat_names)})")
+    log(f"Strategy: {args.strategy} ({', '.join(strat_names)}) "
+        f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}]")
     strategies = build_strategies(
-        strat_names, preds, price_data, volume_data, args.ml_threshold)
+        strat_names, preds, price_data, volume_data,
+        args.ml_threshold, args.selection_mode, args.top_n)
 
     # ── 4. Run backtest ─────────────────────────────────────────────────
     log("Running backtest ...")
@@ -154,7 +163,10 @@ def main():
     vals, trades = pm.run(all_dates, spy_prices=spy_dict, price_data=price_data)
 
     # ── 5. Compute metrics ──────────────────────────────────────────────
-    label = f"{args.strategy} (>{args.ml_threshold:.2f})"
+    if args.selection_mode == "top_n":
+        label = f"{args.strategy} (top-{args.top_n})"
+    else:
+        label = f"{args.strategy} (>{args.ml_threshold:.2f})"
     metrics = calc_metrics(vals, trades, years, label)
     alpha, beta = calc_alpha_beta(vals, spy_bh.reindex(vals.index, method="ffill"))
     metrics["alpha"] = float(alpha) if not np.isnan(alpha) else None

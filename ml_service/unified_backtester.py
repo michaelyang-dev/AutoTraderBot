@@ -261,13 +261,21 @@ class SlotConfig:
 
 class MLMediumStrategy(Strategy):
     """
-    Produces BUY signals when the model's predicted probability exceeds
-    *threshold*.  Uses a fixed 10-trading-day hold period and ML confidence
-    scaling for position sizing.
+    Produces BUY signals from the LightGBM model's predicted probabilities.
+    Uses a fixed 10-trading-day hold period and ML confidence scaling for
+    position sizing.
+
+    Two selection modes:
+      - ``"top_n"``     (default): cross-sectional top-N picks per day,
+        matching the live signal_server.py behaviour.
+      - ``"threshold"``: absolute probability cutoff (legacy backtest mode).
     """
 
-    def __init__(self, predictions_df, threshold=0.55, position_pct=POSITION_PCT):
+    def __init__(self, predictions_df, threshold=0.55, top_n=5,
+                 selection_mode="top_n", position_pct=POSITION_PCT):
         self._threshold = threshold
+        self._top_n = top_n
+        self._selection_mode = selection_mode  # "top_n" or "threshold"
         self._position_pct = position_pct
         self._signals_by_date = {}
         self._build_lookup(predictions_df)
@@ -291,11 +299,17 @@ class MLMediumStrategy(Strategy):
 
     def generate_signals(self, date, universe_data):
         raw = self._signals_by_date.get(date, [])
+        if self._selection_mode == "top_n":
+            # Cross-sectional: top-N stocks by probability, regardless of
+            # absolute value.  Matches live signal_server.py behaviour.
+            selected = raw[:self._top_n]
+        else:
+            # Legacy threshold mode
+            selected = [(s, p, r) for s, p, r in raw if p > self._threshold]
         return [
             Signal(symbol=sym, confidence=prob,
                    strategy_name=self.name, fwd_ret=fwd_ret)
-            for sym, prob, fwd_ret in raw
-            if prob > self._threshold
+            for sym, prob, fwd_ret in selected
         ]
 
     def check_exit(self, position, current_data):
@@ -934,8 +948,10 @@ def validate():
     m_orig["alpha"] = a_orig
 
     # ── 2. Unified backtester ────────────────────────────────────────────
+    # NOTE: validate() uses threshold mode to match original backtest_ml.py.
+    # Production and backtest.py CLI default to top_n mode.
     print("  Running UNIFIED backtester ...", flush=True)
-    ml = MLMediumStrategy(df, threshold=0.55)
+    ml = MLMediumStrategy(df, threshold=0.55, selection_mode="threshold")
     pm = PortfolioManager(strategies=[ml], slot_config=SLOT_ML_ONLY)
     uni_vals, uni_trades = pm.run(all_dates, spy_prices=spy_dict)
     m_uni = calc_metrics(uni_vals, uni_trades, years, "Unified")
