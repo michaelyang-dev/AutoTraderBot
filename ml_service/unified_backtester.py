@@ -134,11 +134,18 @@ def load_predictions_cached(pred_file: Path = None,
     if not no_cache and cache_file.exists() and _read_meta(name) == key:
         df = pd.read_parquet(cache_file)
         df["date"] = pd.to_datetime(df["date"])
+        # Normalize column name for strategy compatibility
+        if "prob_ensemble" in df.columns and "prob" not in df.columns:
+            df = df.rename(columns={"prob_ensemble": "prob"})
         return df
 
     df = pd.read_parquet(pred_file)
     df["date"] = pd.to_datetime(df["date"])
     df = df.dropna(subset=["fwd_ret"]).sort_values(["date", "symbol"])
+
+    # Normalize column name for strategy compatibility
+    if "prob_ensemble" in df.columns and "prob" not in df.columns:
+        df = df.rename(columns={"prob_ensemble": "prob"})
 
     _ensure_cache_dir()
     df.to_parquet(cache_file, index=False)
