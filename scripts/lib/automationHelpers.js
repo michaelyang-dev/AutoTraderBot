@@ -109,6 +109,117 @@ function getPmStatus() {
   }
 }
 
+// ── Services health (PM2 continuous vs cron aware) ───────────────────
+
+const CONTINUOUS_APPS = new Set(["trading-bot", "ml-server"]);
+const CRON_APPS = new Set(["journal-reconciler", "premarket-check", "daily-report", "hourly-heartbeat", "weekly-report"]);
+
+function checkServicesHealth() {
+  const checks = [];
+  const procs = getPmStatus();
+
+  if (!procs) {
+    return [{ name: "Services", status: "FAIL", detail: "PM2 not reachable" }];
+  }
+
+  const procByName = {};
+  for (const p of procs) procByName[p.name] = p;
+
+  // Continuous apps — must be online
+  for (const name of CONTINUOUS_APPS) {
+    const p = procByName[name];
+    if (!p) {
+      checks.push({ name, status: "FAIL", detail: "missing from PM2" });
+    } else if (p.status !== "online") {
+      checks.push({ name, status: "FAIL", detail: `status: ${p.status}` });
+    } else {
+      const detail = `online (${p.restarts} restarts)`;
+      checks.push({ name, status: p.restarts > 5 ? "WARN" : "OK", detail });
+    }
+  }
+
+  // journal-reconciler — check last reconcile_run event age
+  const reconProc = procByName["journal-reconciler"];
+  if (!reconProc) {
+    checks.push({ name: "journal-reconciler", status: "FAIL", detail: "missing from PM2" });
+  } else {
+    try {
+      const db = getJournalDb();
+      const row = db.prepare(`
+        SELECT created_at FROM events
+        WHERE event_type = 'reconcile_run'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      if (row?.created_at) {
+        const ageMs = Date.now() - new Date(row.created_at + "Z").getTime();
+        const ageMin = Math.round(ageMs / 60000);
+        if (ageMin <= 10) {
+          checks.push({ name: "journal-reconciler", status: "OK", detail: `last run ${ageMin} min ago` });
+        } else if (ageMin <= 15) {
+          checks.push({ name: "journal-reconciler", status: "WARN", detail: `last run ${ageMin} min ago` });
+        } else {
+          checks.push({ name: "journal-reconciler", status: "FAIL", detail: `last run ${ageMin} min ago (stale)` });
+        }
+      } else {
+        checks.push({ name: "journal-reconciler", status: "WARN", detail: "registered, no reconcile_run events yet" });
+      }
+    } catch {
+      checks.push({ name: "journal-reconciler", status: "WARN", detail: "registered, DB check failed" });
+    }
+  }
+
+  // Other cron apps — just confirm registered in PM2
+  for (const name of CRON_APPS) {
+    if (name === "journal-reconciler") continue;
+    const p = procByName[name];
+    if (!p) {
+      checks.push({ name, status: "FAIL", detail: "missing from PM2" });
+    } else {
+      checks.push({ name, status: "OK", detail: "registered" });
+    }
+  }
+
+  return checks;
+}
+
+// ── Regime from trading engine API ───────────────────────────────────
+
+async function getRegime() {
+  try {
+    const res = await withTimeout(
+      fetch("http://localhost:3001/api/trading-state", { signal: AbortSignal.timeout(5000) }),
+      8000,
+      "trading-state"
+    );
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const data = await res.json();
+    const regime = data.regime;
+    if (!regime || regime === "unknown") {
+      return { ok: false, regime: null, error: "Regime unavailable (engine not yet initialized)" };
+    }
+    return { ok: true, regime };
+  } catch (err) {
+    return { ok: false, regime: null, error: err.message };
+  }
+}
+
+// ── SPY snapshot from Alpaca ─────────────────────────────────────────
+
+async function getSpyDayReturn() {
+  try {
+    const alpaca = getAlpacaClient();
+    const snap = await fetchWithRetry(() => alpaca.getSnapshot("SPY"), "SPY snapshot");
+    const prevClose = parseFloat(snap.prevDailyBar?.c || snap.PrevDailyBar?.c || 0);
+    const currClose = parseFloat(snap.dailyBar?.c || snap.DailyBar?.c || 0);
+    if (prevClose > 0 && currClose > 0) {
+      return { ok: true, prevClose, currClose, dayPct: (currClose - prevClose) / prevClose };
+    }
+    return { ok: false, error: "no SPY bar data" };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // ── ML signal server health ──────────────────────────────────────────
 
 async function getMlSignalsHealth() {
@@ -267,6 +378,9 @@ module.exports = {
   getAlpacaClient,
   getPortfolioState,
   getPmStatus,
+  checkServicesHealth,
+  getRegime,
+  getSpyDayReturn,
   getMlSignalsHealth,
   formatMoney,
   formatPct,

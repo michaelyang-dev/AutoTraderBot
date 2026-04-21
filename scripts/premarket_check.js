@@ -15,7 +15,8 @@ require("dotenv").config();
 
 const {
   getPortfolioState,
-  getPmStatus,
+  checkServicesHealth,
+  getRegime,
   getMlSignalsHealth,
   formatMoney,
   formatPct,
@@ -38,27 +39,12 @@ async function premkt() {
   const checks = [];
   let hasError = false;
 
-  // ── 1. PM2 services ───────────────────────────────────────────────
+  // ── 1. PM2 services (continuous vs cron aware) ────────────────────
   try {
-    const procs = getPmStatus();
-    if (!procs) {
-      checks.push({ name: "Services", status: "WARN", detail: "PM2 not reachable" });
-      hasError = true;
-    } else {
-      const down = procs.filter(p => p.status !== "online");
-      if (down.length > 0) {
-        checks.push({ name: "Services", status: "FAIL", detail: `Down: ${down.map(p => p.name).join(", ")}` });
-        hasError = true;
-      } else {
-        const highRestarts = procs.filter(p => p.restarts > 5);
-        const detail = procs.map(p => `${p.name}: ${p.status} (${p.restarts} restarts)`).join(", ");
-        checks.push({
-          name: "Services",
-          status: highRestarts.length > 0 ? "WARN" : "OK",
-          detail,
-        });
-        if (highRestarts.length > 0) hasError = true;
-      }
+    const svcChecks = checkServicesHealth();
+    for (const c of svcChecks) {
+      checks.push(c);
+      if (c.status !== "OK") hasError = true;
     }
   } catch (err) {
     checks.push({ name: "Services", status: "FAIL", detail: err.message });
@@ -108,8 +94,8 @@ async function premkt() {
         name: "Circuit Breakers",
         status: halted ? "WARN" : "OK",
         detail: halted
-          ? `HALTED — peak:${cb.peakHalted}, weekly:${cb.weeklyHalted}, daily:${cb.dailyHalted}`
-          : `Clear — peak: ${formatMoney(cb.peakValue || 0)}`,
+          ? `HALTED -- peak:${cb.peakHalted}, weekly:${cb.weeklyHalted}, daily:${cb.dailyHalted}`
+          : `Clear -- peak: ${formatMoney(cb.peakValue || 0)}`,
       });
       if (halted) hasError = true;
     } else {
@@ -119,11 +105,15 @@ async function premkt() {
     checks.push({ name: "Circuit Breakers", status: "WARN", detail: err.message });
   }
 
-  // ── 6. Regime ─────────────────────────────────────────────────────
+  // ── 6. Regime (from live trading engine API) ──────────────────────
   try {
-    const db = getJournalDb();
-    const latest = db.prepare("SELECT regime FROM daily_snapshots ORDER BY date DESC LIMIT 1").get();
-    checks.push({ name: "Regime", status: "OK", detail: latest?.regime || "unknown" });
+    const regimeResult = await getRegime();
+    if (regimeResult.ok) {
+      checks.push({ name: "Regime", status: "OK", detail: regimeResult.regime });
+    } else {
+      checks.push({ name: "Regime", status: "WARN", detail: regimeResult.error });
+      hasError = true;
+    }
   } catch (err) {
     checks.push({ name: "Regime", status: "WARN", detail: err.message });
   }
@@ -171,7 +161,7 @@ async function premkt() {
   const dd = portfolio ? ddOpen(portfolio.equity) : null;
   const ddStr = dd != null ? ` | DD: ${formatPct(dd)}` : "";
 
-  let msg = `<b>${icon} Pre-Market Check — ${nowET()}</b>\n`;
+  let msg = `<b>${icon} Pre-Market Check -- ${nowET()}</b>\n`;
   if (portfolio) {
     msg += `Equity: <b>${formatMoney(portfolio.equity)}</b>${ddStr}\n`;
   }

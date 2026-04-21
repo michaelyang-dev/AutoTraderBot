@@ -18,7 +18,7 @@ require("dotenv").config();
 
 const {
   getPortfolioState,
-  getPmStatus,
+  checkServicesHealth,
   formatMoney,
   formatPct,
   sendTelegram,
@@ -39,16 +39,15 @@ async function heartbeat() {
   log("Hourly heartbeat starting...");
   const alerts = [];
 
-  // ── 1. PM2 processes ──────────────────────────────────────────────
+  // ── 1. PM2 processes (continuous vs cron aware) ────────────────────
   try {
-    const procs = getPmStatus();
-    if (procs) {
-      const down = procs.filter(p => p.status !== "online");
-      if (down.length > 0) {
-        alerts.push(`❌ <b>Services down:</b> ${down.map(p => p.name).join(", ")}`);
+    const svcChecks = checkServicesHealth();
+    for (const c of svcChecks) {
+      if (c.status === "FAIL") {
+        alerts.push(`❌ <b>${c.name}:</b> ${c.detail}`);
+      } else if (c.status === "WARN") {
+        alerts.push(`⚠️ <b>${c.name}:</b> ${c.detail}`);
       }
-    } else {
-      alerts.push("⚠️ <b>PM2 unreachable</b>");
     }
   } catch (err) {
     alerts.push(`⚠️ <b>PM2 check failed:</b> ${err.message}`);
