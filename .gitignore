@@ -11,3 +11,23 @@ server/backtest_data/
 *.png
 ml_service/venv/
 data/journal.db*
+
+# Env backups (contain secrets)
+.env.*
+.env.backup*
+
+# Config backups (local-only)
+*.aws-backup
+*.preautomation-backup
+*.backup
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# PM2 runtime files
+.pm2/
+
+# Deployment scripts (may contain paths/secrets)
+deploy/
