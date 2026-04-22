@@ -120,6 +120,8 @@ def main():
                         help="Strategies to exclude from combined (e.g. --exclude mean_reversion)")
     parser.add_argument("--validation", action="store_true",
                         help="Use validation predictions (holdout 2024+, NOT for live)")
+    parser.add_argument("--vol-sizing", action="store_true",
+                        help="Use volatility-targeted position sizing (equal risk per position)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force recompute, bypass disk cache")
     parser.add_argument("--output", default=None,
@@ -127,6 +129,10 @@ def main():
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
     args = parser.parse_args()
+
+    # Set vol-sizing global flag before any strategy instantiation
+    import unified_backtester
+    unified_backtester.USE_VOL_SIZING = args.vol_sizing
 
     t0 = time.perf_counter()
     no_cache = args.no_cache
@@ -193,11 +199,12 @@ def main():
 
     needs_prices = any(s in strat_names for s in ["momentum", "mean_reversion", "ml_slow", "mega_cap", "tsmom"])
 
-    price_data = close if needs_prices else None
+    # Vol-sizing needs price data for ATR computation even in ML-only mode
+    price_data = close if (needs_prices or args.vol_sizing) else None
     volume_data = None  # volume not cached yet; strategies handle missing volume
 
     log(f"Strategy: {args.strategy} ({', '.join(strat_names)}) "
-        f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}]")
+        f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}, vol_sizing={args.vol_sizing}]")
     strategies = build_strategies(
         strat_names, preds, price_data, volume_data,
         args.ml_threshold, args.selection_mode, args.top_n)

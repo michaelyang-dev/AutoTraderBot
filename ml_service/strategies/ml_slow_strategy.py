@@ -155,12 +155,17 @@ class MLSlowStrategy(Strategy):
 
         return False, ""
 
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
+        from unified_backtester import USE_VOL_SIZING, _vol_targeted_size_pct
+        if USE_VOL_SIZING:
+            size_pct = _vol_targeted_size_pct(signal.symbol, date)
+            if size_pct is not None:
+                return portfolio_value * size_pct
         # ATR-based base sizing
         atr_pct = 0.0
         if self._atr_pct:
-            for date in sorted(self._atr_pct.keys(), reverse=True):
-                atr_day = self._atr_pct[date]
+            for d in sorted(self._atr_pct.keys(), reverse=True):
+                atr_day = self._atr_pct[d]
                 if signal.symbol in atr_day:
                     atr_pct = atr_day[signal.symbol]
                     break

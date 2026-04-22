@@ -233,6 +233,37 @@ OVERLAP_2X      = 1.25        # size multiplier when 2 strategies agree
 OVERLAP_3X      = 1.50        # size multiplier when 3+ agree
 COOLDOWN_DAYS   = 5           # days a symbol is blocked after a sell
 
+# ── Volatility-targeted position sizing ─────────────────────────────
+VOL_TARGET_RISK_PCT = 0.01      # Target 1% of portfolio at 1-ATR move
+VOL_MAX_POSITION_PCT = 0.20     # Cap at 20% of portfolio
+VOL_MIN_POSITION_PCT = 0.03     # Floor at 3% of portfolio
+USE_VOL_SIZING = False          # Global flag; set True by --vol-sizing CLI flag
+
+# Module-level ATR lookup (set by PortfolioManager before run)
+_global_atr_df = None
+
+
+def _get_atr_pct(symbol, date):
+    """Lookup atr_pct for (symbol, date). Returns None if unavailable."""
+    global _global_atr_df
+    if _global_atr_df is None:
+        return None
+    try:
+        v = _global_atr_df.at[date, symbol]
+        return float(v) if not np.isnan(v) else None
+    except (KeyError, IndexError):
+        return None
+
+
+def _vol_targeted_size_pct(symbol, date):
+    """Return position size as % of portfolio using volatility targeting.
+    Falls back to None if ATR unavailable — caller should use strategy BASE_PCT."""
+    atr_pct = _get_atr_pct(symbol, date)
+    if atr_pct is None or atr_pct <= 0:
+        return None
+    size_pct = VOL_TARGET_RISK_PCT / atr_pct
+    return max(VOL_MIN_POSITION_PCT, min(size_pct, VOL_MAX_POSITION_PCT))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Slot Configuration
@@ -324,7 +355,11 @@ class MLMediumStrategy(Strategy):
             return True, "hold_complete"
         return False, ""
 
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
+        if USE_VOL_SIZING:
+            size_pct = _vol_targeted_size_pct(signal.symbol, date)
+            if size_pct is not None:
+                return portfolio_value * size_pct
         ml_mult = min(1.0, max(0.60, signal.confidence * 1.6 - 0.28))
         return portfolio_value * self._position_pct * ml_mult
 
@@ -564,12 +599,16 @@ class MomentumStrategy(Strategy):
 
         return False, ""
 
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
+        if USE_VOL_SIZING:
+            size_pct = _vol_targeted_size_pct(signal.symbol, date)
+            if size_pct is not None:
+                return portfolio_value * size_pct
         # Check ATR for the signal date — use reduced size for high-vol stocks
         # (ATR data keyed by most recent date is close enough)
         atr_pct = 0.0
-        for date in sorted(self._atr_pct.keys(), reverse=True):
-            atr_day = self._atr_pct[date]
+        for d in sorted(self._atr_pct.keys(), reverse=True):
+            atr_day = self._atr_pct[d]
             if signal.symbol in atr_day:
                 atr_pct = atr_day[signal.symbol]
                 break
@@ -592,7 +631,7 @@ class MLFastStrategy(Strategy):
         return []
     def check_exit(self, position, current_data):
         return False, ""
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
         return 0.0
 
 
@@ -767,7 +806,11 @@ class MegaCapStrategy(Strategy):
 
         return False, ""
 
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
+        if USE_VOL_SIZING:
+            size_pct = _vol_targeted_size_pct(signal.symbol, date)
+            if size_pct is not None:
+                return portfolio_value * size_pct
         return portfolio_value * self.BASE_PCT
 
 
@@ -851,8 +894,12 @@ class TSMOMStrategy(Strategy):
             signals.append(sig)
         return signals
 
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
         """Inverse-volatility sizing, capped at TSMOM_MAX_POS_PCT."""
+        if USE_VOL_SIZING:
+            size_pct = _vol_targeted_size_pct(signal.symbol, date)
+            if size_pct is not None:
+                return portfolio_value * size_pct
         vol = getattr(signal, "_vol", 0.20)
         scale = TSMOM_TARGET_VOL / max(vol, 0.05)
         return portfolio_value * TSMOM_MAX_POS_PCT * min(scale, 1.0)
@@ -929,6 +976,14 @@ class PortfolioManager:
         """
         n_dates = len(all_dates)
         multi = len(self.strategies) > 1
+
+        # Compute global ATR for vol-targeted sizing (if enabled)
+        global _global_atr_df
+        if USE_VOL_SIZING and price_data is not None:
+            daily_ret_abs = price_data.pct_change().abs()
+            _global_atr_df = daily_ret_abs.rolling(14, min_periods=14).mean()
+        else:
+            _global_atr_df = None
 
         # Pre-build price lookup for price-based strategies
         # {date → {symbol → price}}
@@ -1053,7 +1108,7 @@ class PortfolioManager:
                         port_est += p.cost * (px / p.entry_price if p.entry_price > 0 else 1.0)
                     else:
                         port_est += p.cost
-                target = strat.get_position_size(sig, port_est)
+                target = strat.get_position_size(sig, port_est, date=date)
 
                 cost = min(target, cash * 0.95)
                 if cost < 50.0:

@@ -68,7 +68,7 @@ class Strategy(ABC):
         ...
 
     @abstractmethod
-    def get_position_size(self, signal, portfolio_value):
+    def get_position_size(self, signal, portfolio_value, date=None):
         """Return the target dollar amount to invest.  The PortfolioManager
         will cap it at ``available_cash * 0.95``."""
         ...
