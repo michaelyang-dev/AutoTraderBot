@@ -593,6 +593,153 @@ class MLFastStrategy(Strategy):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Mega-Cap Momentum Strategy
+# ══════════════════════════════════════════════════════════════════════════════
+
+MEGACAP_UNIVERSE = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "LLY",
+    "AVGO", "JPM", "TSLA", "UNH", "V", "MA", "COST",
+]
+
+
+class MegaCapStrategy(Strategy):
+    """
+    12-month-minus-1-month momentum on mega-cap stocks.
+
+    Signal generation:
+      - Universe: top 15 mega-caps by market cap (fixed list)
+      - Rank by 12-1 momentum (252d return skipping recent 21d)
+      - Filter: above 200-day SMA, within 5% of 52-week high
+      - Generate top-N signals
+
+    Exit rules:
+      - Stop-loss: -5% from entry
+      - Take-profit: +20% from entry
+      - Below 50-day SMA
+      - Max hold: 90 trading days
+    """
+
+    LOOKBACK    = 252
+    SKIP        = 21
+    HIGH_52WK   = 0.95   # within 5% of 52-week high
+    TOP_N       = 2
+    SMA_LONG    = 200
+    SMA_EXIT    = 50
+    STOP_LOSS   = -0.05
+    TAKE_PROFIT = 0.20
+    MAX_HOLD    = 90
+    BASE_PCT    = 0.12
+
+    def __init__(self, price_data):
+        self._price_data = price_data
+        self._symbols = [s for s in MEGACAP_UNIVERSE if s in price_data.columns]
+        self._mom = {}       # date → [(sym, mom_12_1)]
+        self._sma200 = {}    # date → {sym → sma200}
+        self._sma50 = {}     # date → {sym → sma50}
+        self._precompute()
+
+    @property
+    def name(self):
+        return "mega_cap"
+
+    def _precompute(self):
+        px = self._price_data
+        dates = px.index.tolist()
+        for date in dates:
+            loc = px.index.get_loc(date)
+            if loc < self.LOOKBACK:
+                continue
+
+            candidates = []
+            sma200_day = {}
+            sma50_day = {}
+
+            for sym in self._symbols:
+                col = px[sym]
+                curr = col.iloc[loc]
+                if np.isnan(curr) or curr <= 0:
+                    continue
+
+                # SMA200
+                if loc >= self.SMA_LONG:
+                    sma200_day[sym] = col.iloc[loc - self.SMA_LONG + 1:loc + 1].mean()
+                    if curr <= sma200_day[sym]:
+                        continue
+                else:
+                    continue
+
+                # SMA50 (for exit check)
+                if loc >= self.SMA_EXIT:
+                    sma50_day[sym] = col.iloc[loc - self.SMA_EXIT + 1:loc + 1].mean()
+
+                # 12-1 momentum
+                price_skip = col.iloc[loc - self.SKIP]
+                price_12m = col.iloc[loc - self.LOOKBACK]
+                if np.isnan(price_12m) or price_12m <= 0:
+                    continue
+                if np.isnan(price_skip) or price_skip <= 0:
+                    continue
+                mom_12_1 = (price_skip / price_12m) - 1.0
+
+                # 52-week high filter
+                if loc >= 252:
+                    high_52wk = col.iloc[loc - 251:loc + 1].max()
+                    if high_52wk > 0 and (curr / high_52wk) < self.HIGH_52WK:
+                        continue
+
+                candidates.append((sym, mom_12_1))
+
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            self._mom[date] = candidates
+            self._sma200[date] = sma200_day
+            self._sma50[date] = sma50_day
+
+    def generate_signals(self, date, universe_data):
+        candidates = self._mom.get(date, [])
+        return [
+            Signal(symbol=sym, confidence=0.7,
+                   strategy_name=self.name, fwd_ret=0.0,
+                   price_based=True)
+            for sym, _ in candidates[:self.TOP_N]
+        ]
+
+    def check_exit(self, position, current_data):
+        idx = current_data["idx"]
+        date = current_data["date"]
+        prices = current_data.get("prices", {})
+
+        days_held = idx - position.entry_idx
+        if days_held >= self.MAX_HOLD:
+            return True, "max_hold"
+
+        cur_px = prices.get(position.symbol, np.nan)
+        if np.isnan(cur_px) or cur_px <= 0:
+            return False, ""
+
+        entry_px = position.entry_price
+        if entry_px <= 0:
+            return False, ""
+
+        ret = (cur_px / entry_px) - 1.0
+
+        if ret <= self.STOP_LOSS:
+            return True, "stop_loss"
+        if ret >= self.TAKE_PROFIT:
+            return True, "take_profit"
+
+        # Below 50-SMA exit
+        sma50_day = self._sma50.get(date, {})
+        sma50 = sma50_day.get(position.symbol)
+        if sma50 is not None and cur_px < sma50:
+            return True, "below_sma50"
+
+        return False, ""
+
+    def get_position_size(self, signal, portfolio_value):
+        return portfolio_value * self.BASE_PCT
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Portfolio Manager
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -876,6 +1023,20 @@ SLOT_ML_MOM_MR_SLOW = SlotConfig(
     strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2, "ml_slow": 1},
     flex_slots=2,
     max_positions=11,
+)
+
+# Mega-cap only: 2 primary, no flex
+SLOT_MCAP_ONLY = SlotConfig(
+    strategy_slots={"mega_cap": 2},
+    flex_slots=0,
+    max_positions=2,
+)
+
+# ML + Momentum + Mean Reversion + Mega-cap: ML 2 + Mom 4 + MR 2 + MC 2 + 2 flex = max 12
+SLOT_ML_MOM_MR_MCAP = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2, "mega_cap": 2},
+    flex_slots=2,
+    max_positions=12,
 )
 
 # Multi-strategy production mode (full)

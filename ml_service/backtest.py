@@ -28,9 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from unified_backtester import (
     MLMediumStrategy, MomentumStrategy, MeanReversionStrategy, MLSlowStrategy,
-    PortfolioManager, SlotConfig,
+    MegaCapStrategy, PortfolioManager, SlotConfig,
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_MR_ONLY, SLOT_ML_SLOW_ONLY,
-    SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW,
+    SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW, SLOT_MCAP_ONLY, SLOT_ML_MOM_MR_MCAP,
     load_bars_cached, load_predictions_cached,
     INITIAL_CASH, DATA_DIR,
 )
@@ -39,14 +39,35 @@ from backtest_utils import calc_metrics, calc_alpha_beta
 
 # ── Strategy / slot config mapping ──────────────────────────────────────────
 
-STRATEGY_MAP = {
-    "ml":             (["ml"],                           SLOT_ML_ONLY),
-    "momentum":       (["momentum"],                     SLOT_MOM_ONLY),
-    "mean_reversion": (["mean_reversion"],               SLOT_MR_ONLY),
-    "ml_slow":        (["ml_slow"],                      SLOT_ML_SLOW_ONLY),
-    "combined":       (["ml", "momentum", "mean_reversion", "ml_slow"], SLOT_ML_MOM_MR_SLOW),
-    "ml_mom":         (["ml", "momentum"],               SLOT_ML_MOM_MR),
+# Per-strategy primary slot counts (used to build dynamic SlotConfig)
+_STRATEGY_SLOTS = {
+    "ml":             ("ml_medium", 2),
+    "momentum":       ("momentum", 4),
+    "mean_reversion": ("mean_reversion", 2),
+    "ml_slow":        ("ml_slow", 1),
+    "mega_cap":       ("mega_cap", 2),
 }
+
+STRATEGY_MAP = {
+    "ml":             (["ml"],                                          SLOT_ML_ONLY),
+    "momentum":       (["momentum"],                                    SLOT_MOM_ONLY),
+    "mean_reversion": (["mean_reversion"],                              SLOT_MR_ONLY),
+    "ml_slow":        (["ml_slow"],                                     SLOT_ML_SLOW_ONLY),
+    "mega_cap":       (["mega_cap"],                                    SLOT_MCAP_ONLY),
+    "combined":       (["ml", "momentum", "mean_reversion", "mega_cap"], SLOT_ML_MOM_MR_MCAP),
+    "ml_mom":         (["ml", "momentum"],                              SLOT_ML_MOM_MR),
+}
+
+
+def _build_slot_config(strat_names):
+    """Build a SlotConfig dynamically from a list of active strategy names."""
+    slots = {}
+    for name in strat_names:
+        if name in _STRATEGY_SLOTS:
+            engine_name, n = _STRATEGY_SLOTS[name]
+            slots[engine_name] = n
+    total = sum(slots.values()) + 2  # +2 flex
+    return SlotConfig(strategy_slots=slots, flex_slots=2, max_positions=total)
 
 
 def build_strategies(names, predictions_df, price_data, volume_data,
@@ -64,6 +85,8 @@ def build_strategies(names, predictions_df, price_data, volume_data,
             strats.append(MeanReversionStrategy(price_data, volume_data=volume_data))
         elif name == "ml_slow":
             strats.append(MLSlowStrategy(predictions_df, price_data))
+        elif name == "mega_cap":
+            strats.append(MegaCapStrategy(price_data))
         else:
             sys.exit(f"Unknown strategy: {name}")
     return strats
@@ -86,6 +109,9 @@ def main():
                         help="Top-N picks per day in top_n mode (default: 5)")
     parser.add_argument("--ml-threshold", type=float, default=0.55,
                         help="ML probability threshold in threshold mode (default: 0.55)")
+    parser.add_argument("--exclude", nargs="+", default=[],
+                        choices=["ml", "momentum", "mean_reversion", "mega_cap", "ml_slow"],
+                        help="Strategies to exclude from combined (e.g. --exclude mean_reversion)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force recompute, bypass disk cache")
     parser.add_argument("--output", default=None,
@@ -146,7 +172,15 @@ def main():
 
     # ── 3. Build strategies ─────────────────────────────────────────────
     strat_names, slot_config = STRATEGY_MAP[args.strategy]
-    needs_prices = any(s in strat_names for s in ["momentum", "mean_reversion", "ml_slow"])
+
+    # Apply --exclude to filter out strategies from combined presets
+    if args.exclude:
+        strat_names = [s for s in strat_names if s not in args.exclude]
+        if not strat_names:
+            sys.exit("All strategies excluded — nothing to run.")
+        slot_config = _build_slot_config(strat_names)
+
+    needs_prices = any(s in strat_names for s in ["momentum", "mean_reversion", "ml_slow", "mega_cap"])
 
     price_data = close if needs_prices else None
     volume_data = None  # volume not cached yet; strategies handle missing volume
