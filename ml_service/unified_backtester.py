@@ -117,15 +117,22 @@ def load_bars_cached(symbols: list[str], start: str, end: str,
 
 
 def load_predictions_cached(pred_file: Path = None,
-                            no_cache: bool = False) -> pd.DataFrame:
+                            no_cache: bool = False,
+                            validation: bool = False) -> pd.DataFrame:
     """
     Load predictions.parquet with cache keyed on model file mtime.
+
+    When *validation=True*, loads predictions_validation.parquet instead
+    (produced by train_validation_model.py with 2024+ holdout).
     """
     if pred_file is None:
-        pred_file = DATA_DIR / "predictions.parquet"
+        if validation:
+            pred_file = DATA_DIR / "predictions_validation.parquet"
+        else:
+            pred_file = DATA_DIR / "predictions.parquet"
 
-    name = "predictions"
-    model_file = DATA_DIR / "model.lgb"
+    name = "predictions_validation" if validation else "predictions"
+    model_file = DATA_DIR / ("model_validation.lgb" if validation else "model.lgb")
     model_mt = str(_file_mtime(model_file))
     pred_mt = str(_file_mtime(pred_file))
     key = f"{model_mt}_{pred_mt}"

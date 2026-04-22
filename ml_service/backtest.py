@@ -112,6 +112,8 @@ def main():
     parser.add_argument("--exclude", nargs="+", default=[],
                         choices=["ml", "momentum", "mean_reversion", "mega_cap", "ml_slow"],
                         help="Strategies to exclude from combined (e.g. --exclude mean_reversion)")
+    parser.add_argument("--validation", action="store_true",
+                        help="Use validation predictions (holdout 2024+, NOT for live)")
     parser.add_argument("--no-cache", action="store_true",
                         help="Force recompute, bypass disk cache")
     parser.add_argument("--output", default=None,
@@ -128,8 +130,11 @@ def main():
             print(msg, flush=True)
 
     # ── 1. Load predictions ─────────────────────────────────────────────
-    log("Loading predictions ...")
-    preds = load_predictions_cached(no_cache=no_cache)
+    if args.validation:
+        log("Loading VALIDATION predictions (holdout 2024+) ...")
+    else:
+        log("Loading predictions ...")
+    preds = load_predictions_cached(no_cache=no_cache, validation=args.validation)
     all_dates = sorted(preds["date"].unique().tolist())
     universe_syms = sorted(preds["symbol"].unique().tolist())
 
