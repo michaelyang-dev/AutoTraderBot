@@ -1239,6 +1239,13 @@ SLOT_ML_MOM_MR_MCAP = SlotConfig(
     max_positions=12,
 )
 
+# Matches live bot's SLOT_CONFIG exactly (for apples-to-apples comparison)
+SLOT_LIVE = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 3, "mean_reversion": 3, "mega_cap": 2},
+    flex_slots=1,
+    max_positions=11,
+)
+
 # TSMOM only: 2 primary, no flex
 SLOT_TSMOM_ONLY = SlotConfig(
     strategy_slots={"tsmom": 2},

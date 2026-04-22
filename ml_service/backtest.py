@@ -31,7 +31,7 @@ from unified_backtester import (
     MegaCapStrategy, TSMOMStrategy, PortfolioManager, SlotConfig,
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_MR_ONLY, SLOT_ML_SLOW_ONLY,
     SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW, SLOT_MCAP_ONLY, SLOT_ML_MOM_MR_MCAP,
-    SLOT_TSMOM_ONLY, SLOT_ML_MOM_MCAP_TSMOM,
+    SLOT_TSMOM_ONLY, SLOT_ML_MOM_MCAP_TSMOM, SLOT_LIVE,
     load_bars_cached, load_predictions_cached,
     INITIAL_CASH, DATA_DIR,
 )
@@ -60,6 +60,7 @@ STRATEGY_MAP = {
     "combined":       (["ml", "momentum", "mean_reversion", "mega_cap"], SLOT_ML_MOM_MR_MCAP),
     "combined_v2":    (["ml", "momentum", "mega_cap", "tsmom"],         SLOT_ML_MOM_MCAP_TSMOM),
     "ml_mom":         (["ml", "momentum"],                              SLOT_ML_MOM_MR),
+    "combined_live":  (["ml", "momentum", "mean_reversion", "mega_cap"], SLOT_LIVE),
 }
 
 
