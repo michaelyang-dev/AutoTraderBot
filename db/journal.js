@@ -129,28 +129,53 @@ function initDb(dbPath) {
     getTradesByStrategy: db.prepare(`SELECT * FROM trades WHERE strategy = @strategy AND submitted_at >= @since ORDER BY submitted_at DESC`),
     getTradesByDateRange: db.prepare(`SELECT * FROM trades WHERE submitted_at >= @from AND submitted_at <= @to ORDER BY submitted_at`),
 
-    // Find entry trade for FIFO matching (strategy-aware)
+    // Find entry trade for FIFO matching — only buys with remaining shares
     findEntryTrade: db.prepare(`
-      SELECT * FROM trades
+      SELECT *, (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) AS remaining
+      FROM trades
       WHERE symbol = @symbol AND side = 'buy' AND status = 'filled'
+        AND (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) > 0.001
       ORDER BY fill_time ASC
       LIMIT 1
     `),
 
+    // Strategy-aware FIFO: oldest buy with remaining shares for this symbol+strategy
     findEntryTradeByStrategy: db.prepare(`
-      SELECT * FROM trades
+      SELECT *, (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) AS remaining
+      FROM trades
       WHERE symbol = @symbol AND side = 'buy' AND status = 'filled'
         AND strategy = @strategy
+        AND (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) > 0.001
       ORDER BY fill_time ASC
       LIMIT 1
     `),
 
-    // Find all filled sells missing P&L
-    findSellsMissingPnl: db.prepare(`
+    // Consume shares from a buy trade (increment consumed_qty)
+    consumeEntryShares: db.prepare(`
+      UPDATE trades
+      SET consumed_qty = COALESCE(consumed_qty, 0) + @consumed,
+          updated_at = datetime('now')
+      WHERE id = @id
+    `),
+
+    // Reset all consumed_qty (for full P&L recompute)
+    resetConsumedQty: db.prepare(`
+      UPDATE trades SET consumed_qty = 0 WHERE side = 'buy' AND status = 'filled'
+    `),
+
+    // Reset all sell P&L fields (for full recompute)
+    resetSellPnl: db.prepare(`
+      UPDATE trades
+      SET realized_pnl = NULL, realized_pnl_pct = NULL,
+          entry_trade_id = NULL, hold_days = NULL
+      WHERE side = 'sell' AND status = 'filled'
+    `),
+
+    // Find ALL filled sells (for full recompute), chronological order
+    findAllFilledSells: db.prepare(`
       SELECT * FROM trades
       WHERE side = 'sell' AND status = 'filled'
-        AND (realized_pnl IS NULL OR (realized_pnl = 0 AND entry_trade_id IS NULL))
-      ORDER BY fill_time ASC
+      ORDER BY fill_time ASC, id ASC
     `),
 
     // ── Positions ──
@@ -628,9 +653,23 @@ function findEntryTradeByStrategy(symbol, strategy) {
   catch (err) { console.error("journal: findEntryTradeByStrategy failed:", err.message); return null; }
 }
 
-function findSellsMissingPnl() {
-  try { return stmts.findSellsMissingPnl.all(); }
-  catch (err) { console.error("journal: findSellsMissingPnl failed:", err.message); return []; }
+function findAllFilledSells() {
+  try { return stmts.findAllFilledSells.all(); }
+  catch (err) { console.error("journal: findAllFilledSells failed:", err.message); return []; }
+}
+
+function consumeEntryShares(entryId, consumed) {
+  try { stmts.consumeEntryShares.run({ id: entryId, consumed }); }
+  catch (err) { console.error("journal: consumeEntryShares failed:", err.message); }
+}
+
+function resetForRecompute() {
+  try {
+    stmts.resetConsumedQty.run();
+    stmts.resetSellPnl.run();
+  } catch (err) {
+    console.error("journal: resetForRecompute failed:", err.message);
+  }
 }
 
 function updateExitPnl({ id, realized_pnl, realized_pnl_pct, hold_days, exit_reason, entry_trade_id }) {
@@ -686,6 +725,8 @@ module.exports = {
   getPreviousSnapshot,
   findEntryTrade,
   findEntryTradeByStrategy,
-  findSellsMissingPnl,
+  findAllFilledSells,
+  consumeEntryShares,
+  resetForRecompute,
   updateExitPnl,
 };

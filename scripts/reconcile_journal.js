@@ -189,48 +189,89 @@ async function runReconcile({ dryRun = false } = {}) {
     }
   }
 
-  // ── P&L Reconciliation Pass ─────────────────────────────────────────
-  // Find all filled sell trades missing realized_pnl and match to entry buys
+  // ── P&L Reconciliation Pass (FIFO with share consumption) ───────────
+  // Full recompute: reset consumed_qty + sell P&L, then process ALL sells
+  // chronologically so consumed_qty accumulates correctly across trades.
   let pnlMatched = 0, pnlSkipped = 0;
 
   if (!dryRun) {
-    const sellsMissing = journal.findSellsMissingPnl();
-    if (sellsMissing.length > 0) {
-      log(`[pnl] Found ${sellsMissing.length} sell trades missing P&L — reconciling...`);
+    // Reset for clean recompute — order matters
+    journal.resetForRecompute();
+    log(`[pnl] Reset consumed_qty and sell P&L for full FIFO recompute`);
+
+    const allSells = journal.findAllFilledSells();
+    if (allSells.length > 0) {
+      log(`[pnl] Processing ${allSells.length} filled sell trades...`);
     }
 
-    for (const sell of sellsMissing) {
-      // Try strategy-aware FIFO match first, then fall back to any-strategy
-      let entry = null;
-      if (sell.strategy && sell.strategy !== "unknown") {
-        entry = journal.findEntryTradeByStrategy(sell.symbol, sell.strategy);
-      }
-      if (!entry) {
-        entry = journal.findEntryTrade(sell.symbol);
-      }
-
-      if (!entry || !entry.fill_price) {
-        log(`[pnl] SKIP ${sell.symbol} sell #${sell.id} — no matching buy trade found (legacy position?)`);
+    for (const sell of allSells) {
+      const sellQty = parseFloat(sell.filled_qty || sell.qty);
+      const sellPrice = parseFloat(sell.fill_price);
+      if (!sellPrice || sellQty <= 0) {
+        log(`[pnl] SKIP sell #${sell.id} ${sell.symbol} — no fill_price or zero qty`);
         pnlSkipped++;
         continue;
       }
 
-      const sellPrice = parseFloat(sell.fill_price);
-      const entryPrice = parseFloat(entry.fill_price);
-      const qty = parseFloat(sell.filled_qty || sell.qty);
-      const commission = parseFloat(sell.commission || 0) + parseFloat(entry.commission || 0);
+      let remainingQty = sellQty;
+      let weightedEntryValue = 0;
+      let totalEntryCommission = 0;
+      let primaryEntryId = null;
+      let primaryEntryConsumed = 0;
+      let earliestEntryTime = null;
 
-      const realizedPnl = (sellPrice * qty) - (entryPrice * qty) - commission;
-      const costBasis = entryPrice * qty;
+      // Consume shares from matching buys (FIFO, oldest first)
+      while (remainingQty > 0.001) {
+        // Try strategy-aware match first, then any-strategy fallback
+        let entry = null;
+        if (sell.strategy && sell.strategy !== "unknown") {
+          entry = journal.findEntryTradeByStrategy(sell.symbol, sell.strategy);
+        }
+        if (!entry) {
+          entry = journal.findEntryTrade(sell.symbol);
+        }
+        if (!entry || !entry.fill_price) break;
+
+        const available = entry.remaining; // computed column from query
+        const consumed = Math.min(available, remainingQty);
+
+        weightedEntryValue += consumed * parseFloat(entry.fill_price);
+        totalEntryCommission += (parseFloat(entry.commission || 0) * consumed / parseFloat(entry.filled_qty || entry.qty));
+        remainingQty -= consumed;
+
+        // Track primary entry (the one contributing most shares)
+        if (!primaryEntryId || consumed > primaryEntryConsumed) {
+          primaryEntryId = entry.id;
+          primaryEntryConsumed = consumed;
+        }
+        if (!earliestEntryTime || (entry.fill_time && entry.fill_time < earliestEntryTime)) {
+          earliestEntryTime = entry.fill_time;
+        }
+
+        // Mark shares as consumed on the buy trade
+        journal.consumeEntryShares(entry.id, consumed);
+      }
+
+      const matchedQty = sellQty - remainingQty;
+      if (matchedQty < 0.001) {
+        log(`[pnl] SKIP ${sell.symbol} sell #${sell.id} — no matching buy found (legacy position?)`);
+        pnlSkipped++;
+        continue;
+      }
+
+      // Compute P&L from weighted average entry price
+      const avgEntryPrice = weightedEntryValue / matchedQty;
+      const sellCommission = parseFloat(sell.commission || 0);
+      const realizedPnl = (sellPrice * matchedQty) - (avgEntryPrice * matchedQty) - sellCommission - totalEntryCommission;
+      const costBasis = avgEntryPrice * matchedQty;
       const realizedPnlPct = costBasis > 0 ? realizedPnl / costBasis : 0;
 
-      // Compute hold days from fill times
+      // Hold days from earliest entry to sell
       let holdDays = null;
-      if (sell.fill_time && entry.fill_time) {
+      if (sell.fill_time && earliestEntryTime) {
         const sellTime = new Date(sell.fill_time).getTime();
-        const entryTime = new Date(entry.fill_time).getTime();
-        holdDays = Math.round((sellTime - entryTime) / (1000 * 60 * 60 * 24));
-        if (holdDays < 0) holdDays = 0; // safety
+        const entryTime = new Date(earliestEntryTime).getTime();
+        holdDays = Math.max(0, Math.round((sellTime - entryTime) / (1000 * 60 * 60 * 24)));
       }
 
       journal.updateExitPnl({
@@ -239,17 +280,39 @@ async function runReconcile({ dryRun = false } = {}) {
         realized_pnl_pct: realizedPnlPct,
         hold_days: holdDays,
         exit_reason: sell.exit_reason || null,
-        entry_trade_id: entry.id,
+        entry_trade_id: primaryEntryId,
       });
 
-      const sign = realizedPnl >= 0 ? "+" : "";
-      log(`[pnl] ${sell.symbol} sell #${sell.id} ← buy #${entry.id}: ${sign}$${realizedPnl.toFixed(2)} (${(realizedPnlPct * 100).toFixed(2)}%) held ${holdDays ?? "?"}d`);
+      if (remainingQty > 0.001) {
+        log(`[pnl] ${sell.symbol} sell #${sell.id} ← buy #${primaryEntryId}: ${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)} (${matchedQty}/${sellQty} shares matched, ${remainingQty.toFixed(0)} unmatched)`);
+      } else {
+        log(`[pnl] ${sell.symbol} sell #${sell.id} ← buy #${primaryEntryId}: ${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)} (${(realizedPnlPct * 100).toFixed(2)}%) held ${holdDays ?? "?"}d`);
+      }
       pnlMatched++;
     }
 
-    if (sellsMissing.length > 0) {
+    if (allSells.length > 0) {
       log(`[pnl] Done: ${pnlMatched} matched, ${pnlSkipped} skipped`);
     }
+
+    // Verification: log total realized P&L
+    try {
+      const totalRow = db.prepare(`
+        SELECT COALESCE(SUM(realized_pnl), 0) AS total
+        FROM trades WHERE side = 'sell' AND status = 'filled' AND realized_pnl IS NOT NULL
+      `).get();
+      log(`[pnl] Verification: total realized = $${totalRow.total.toFixed(2)}`);
+
+      // Check for over-consumption
+      const overConsumed = db.prepare(`
+        SELECT COUNT(*) AS cnt FROM trades
+        WHERE side = 'buy' AND status = 'filled'
+          AND COALESCE(consumed_qty, 0) > COALESCE(filled_qty, qty) + 0.01
+      `).get();
+      if (overConsumed.cnt > 0) {
+        log(`[pnl] WARNING: ${overConsumed.cnt} buy trades have consumed_qty > filled_qty (over-consumption bug)`);
+      }
+    } catch (_) {}
   }
 
   const result = { updated, inserted, skipped, pnlMatched, pnlSkipped };
