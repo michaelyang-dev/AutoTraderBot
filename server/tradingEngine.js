@@ -30,6 +30,7 @@ const RISK = {
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
+  MIN_COOLDOWN_MS: 30 * 60 * 1000,    // 30 min minimum cooldown regardless of cycle count
   SECTOR_MAX_POSITIONS: { International: 2, Commodity: 2, Bond: 2, Volatility: 1 },
   VOLUME_CONFIRM_RATIO: 1.5,
 };
@@ -988,8 +989,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let connected = false;
   let error = null;
   let idleSpyShares = 0;
+  let lastIdleSpyActionAt = 0;  // Date.now() timestamp of last idle-SPY action
   let trailingPeaks = {};
-  let cooldowns = {};              // strategy-specific: { "sym:strategy" → cycleNumber }
+  let cooldowns = {};              // strategy-specific: { "sym:strategy" → { cycle, expireTime } }
   let trendPositions = {};
   let trendBreakCounts = {};
   // ── Multi-layer circuit breaker state ──
@@ -1596,17 +1598,23 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       cycleNumber++;
 
       // Strategy-specific cooldown: key = "sym:strategy"
+      // Uses BOTH cycle count AND wall-clock minimum (30 min) to prevent churn
       const isOnCooldown = (sym, strategy = "ml") => {
         const key = `${sym}:${strategy}`;
-        const lossAt = cooldowns[key];
+        const cd = cooldowns[key];
+        if (!cd) return false;
         const cooldownLen = strategy === "momentum" ? MOM.COOLDOWN_CYCLES
           : strategy === "mean_reversion" ? MR.COOLDOWN_CYCLES
           : strategy === "mega_cap" ? MEGACAP.COOLDOWN_CYCLES
           : RISK.LOSS_COOLDOWN_CYCLES;
-        return lossAt !== undefined && (cycleNumber - lossAt) < cooldownLen;
+        const cycleActive = (cycleNumber - cd.cycle) < cooldownLen;
+        const timeActive = Date.now() < cd.expireTime;
+        return cycleActive || timeActive;
       };
       const setCooldown = (sym, strategy = "ml") => {
-        cooldowns[`${sym}:${strategy}`] = cycleNumber;
+        const expireTime = Date.now() + RISK.MIN_COOLDOWN_MS;
+        cooldowns[`${sym}:${strategy}`] = { cycle: cycleNumber, expireTime };
+        addLog(`[cooldown] SET ${sym}:${strategy} until ${new Date(expireTime).toLocaleTimeString()}`, "system");
       };
 
       // Count positions by strategy for slot allocation
@@ -1780,7 +1788,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
-            if (unrealized_plpc < 0) setCooldown(symbol, strat);
+            setCooldown(symbol, strat);
             // Clean up strategy-specific state
             if (strat === "momentum") {
               delete momEntryPrices[symbol];
@@ -1815,6 +1823,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
+            setCooldown(symbol, strat);
             if (strat === "momentum") {
               delete momEntryPrices[symbol];
               delete momPeakPrices[symbol];
@@ -1857,6 +1866,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             await closePosition(pos.symbol);
             delete trailingPeaks[pos.symbol];
             closedSymbols.add(pos.symbol);
+            setCooldown(pos.symbol, strat);
             if (strat === "momentum") {
               delete momEntryPrices[pos.symbol];
               delete momPeakPrices[pos.symbol];
@@ -1959,7 +1969,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             delete momPeakPrices[sym];
             delete momEntryDates[sym];
             delete positionStrategy[sym];
-            if (unrealized_pl < 0) setCooldown(sym, "momentum");
+            setCooldown(sym, "momentum");
             addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
             tradeCount.sells++;
             momTradeCount.sells++;
@@ -2038,7 +2048,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             delete mrAtrStops[sym];
             delete mrAtrTps[sym];
             delete positionStrategy[sym];
-            if (unrealized_pl < 0) setCooldown(sym, "mean_reversion");
+            setCooldown(sym, "mean_reversion");
             addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
             tradeCount.sells++;
             mrTradeCount.sells++;
@@ -2124,7 +2134,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             delete mcPeakPrices[sym];
             delete mcEntryDates[sym];
             delete positionStrategy[sym];
-            if (unrealized_pl < 0) setCooldown(sym, "mega_cap");
+            setCooldown(sym, "mega_cap");
             addLog(exitMsg, unrealized_pl >= 0 ? "profit" : "sell");
             tradeCount.sells++;
             mcTradeCount.sells++;
@@ -2186,7 +2196,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               await closePosition(sym);
               const posData = currentPositions.find(p => p.symbol === sym);
               const blStrat = positionStrategy[sym] || "legacy";
-              if (posData && posData.unrealized_plpc < 0) setCooldown(sym, blStrat);
+              setCooldown(sym, blStrat);
               if (blStrat === "momentum") { delete momEntryPrices[sym]; delete momPeakPrices[sym]; delete momEntryDates[sym]; }
               else if (blStrat === "mean_reversion") { delete mrEntryPrices[sym]; delete mrEntryDates[sym]; }
               else if (blStrat === "mega_cap") { delete mcEntryPrices[sym]; delete mcPeakPrices[sym]; delete mcEntryDates[sym]; }
@@ -2258,9 +2268,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
         if (isOnCooldown(sym, "ml")) {
           const cdKey = `${sym}:ml`;
-          const remaining = RISK.LOSS_COOLDOWN_CYCLES - (cycleNumber - cooldowns[cdKey]);
+          const cd = cooldowns[cdKey];
+          const remainCycles = Math.max(0, RISK.LOSS_COOLDOWN_CYCLES - (cycleNumber - cd.cycle));
+          const remainMs = Math.max(0, cd.expireTime - Date.now());
+          const remainMin = Math.ceil(remainMs / 60000);
           if (isMLBuy) {
-            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: ML cooldown, ${remaining} cycle${remaining !== 1 ? "s" : ""} remaining`, "system");
+            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: ML cooldown, ${remainCycles} cycle${remainCycles !== 1 ? "s" : ""} / ${remainMin}min remaining`, "system");
           }
           continue;
         }
@@ -2413,18 +2426,42 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       const spyPos = currentPositions.find(p => p.symbol === "SPY");
       if (idleSpyShares > 0 && spyPos && allOpportunities.length > 0) {
         const spyShareCount = spyPos.qty;
-        const spyPrice = spyPos.current_price;
+        const spyPrice = spyPos.current_price || spyPos.avg_entry_price;
         const idleValue = spyPos.market_value;
-        try {
-          await closePosition("SPY");
-          idleSpyShares = 0;
-          addLog(`[idle-spy] Selling ${spyShareCount} SPY shares ($${idleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })}) to fund ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`, "system");
-          try { journal.closePosition({ symbol: "SPY", fillPrice: spyPrice, exitReason: "idle-spy-sell" }); } catch (_) {}
-          notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
-          const freshAcct = await getAccount();
-          cycleCash = freshAcct.cash;
-        } catch (err) {
-          addLog(`[idle-spy] Failed to sell SPY: ${err.message}`, "error");
+
+        // Estimate total opportunity size from position sizing
+        const estOppSize = allOpportunities.reduce((sum, opp) => {
+          const pct = opp.positionPct || RISK.MAX_POSITION_PCT;
+          return sum + cyclePortfolioValue * pct * currentVolScale;
+        }, 0);
+
+        // Only sell SPY if opportunities are meaningful relative to parked SPY
+        const minOppRatio = 0.25;
+        const meaningfulOpps = estOppSize >= idleValue * minOppRatio;
+
+        // Dead zone: don't rebalance SPY more than once per 15 min wall-clock
+        const IDLE_SPY_MIN_GAP_MS = 15 * 60 * 1000;
+        const msSinceLastAction = Date.now() - lastIdleSpyActionAt;
+        const outsideDeadZone = msSinceLastAction >= IDLE_SPY_MIN_GAP_MS;
+
+        if (meaningfulOpps && outsideDeadZone) {
+          try {
+            await closePosition("SPY");
+            idleSpyShares = 0;
+            lastIdleSpyActionAt = Date.now();
+            addLog(`[idle-spy] Selling ${spyShareCount} SPY ($${idleValue.toFixed(0)}) to fund ${allOpportunities.length} picks (est $${estOppSize.toFixed(0)})`, "system");
+            try { journal.closePosition({ symbol: "SPY", fillPrice: spyPrice, exitReason: "idle-spy-sell" }); } catch (_) {}
+            notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
+            const freshAcct = await getAccount();
+            cycleCash = freshAcct.cash;
+          } catch (err) {
+            addLog(`[idle-spy] Failed to sell SPY: ${err.message}`, "error");
+          }
+        } else if (!meaningfulOpps) {
+          addLog(`[idle-spy] Skip SPY sell -- opps $${estOppSize.toFixed(0)} < ${(minOppRatio * 100).toFixed(0)}% of idle $${idleValue.toFixed(0)}`, "system");
+        } else {
+          const minsRemaining = Math.ceil((IDLE_SPY_MIN_GAP_MS - msSinceLastAction) / 60000);
+          addLog(`[idle-spy] Skip SPY sell -- last action ${Math.floor(msSinceLastAction / 60000)}min ago, need ${minsRemaining}min more`, "system");
         }
       }
 
@@ -2741,16 +2778,25 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           const idleCash = freshCash - reservedCash;
 
           if (idleCash > freshPortVal * SPY_IDLE_THRESHOLD_PCT) {
-            const parkAmount = idleCash * SPY_IDLE_INVEST_PCT;
-            const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
-            if (spyPrice && spyPrice > 0 && parkAmount >= spyPrice) {
-              const spySharesToBuy = Math.floor(parkAmount / spyPrice);
-              if (spySharesToBuy > 0) {
-                const spyOrder = await placeOrder({ symbol: "SPY", qty: spySharesToBuy, side: "buy", type: "market" });
-                idleSpyShares += spySharesToBuy;
-                addLog(`[idle-spy] Parking $${parkAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })} -> ${spySharesToBuy} SPY @ $${spyPrice.toFixed(2)} | Total idle SPY: ${idleSpyShares} shares`, "system");
-                try { journal.recordOrderSubmitted({ alpaca_order_id: spyOrder.id || null, symbol: "SPY", side: "buy", qty: spySharesToBuy, strategy: "idle-spy", regime, intended_price: spyPrice }); } catch (_) {}
-                notify.send(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
+            // Dead zone: don't rebalance SPY more than once per 15 min
+            const IDLE_SPY_MIN_GAP_MS = 15 * 60 * 1000;
+            const msSinceLastAction = Date.now() - lastIdleSpyActionAt;
+            if (msSinceLastAction < IDLE_SPY_MIN_GAP_MS) {
+              const minsRemaining = Math.ceil((IDLE_SPY_MIN_GAP_MS - msSinceLastAction) / 60000);
+              addLog(`[idle-spy] Skip SPY park -- last action ${Math.floor(msSinceLastAction / 60000)}min ago, need ${minsRemaining}min more`, "system");
+            } else {
+              const parkAmount = idleCash * SPY_IDLE_INVEST_PCT;
+              const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
+              if (spyPrice && spyPrice > 0 && parkAmount >= spyPrice) {
+                const spySharesToBuy = Math.floor(parkAmount / spyPrice);
+                if (spySharesToBuy > 0) {
+                  const spyOrder = await placeOrder({ symbol: "SPY", qty: spySharesToBuy, side: "buy", type: "market" });
+                  idleSpyShares += spySharesToBuy;
+                  lastIdleSpyActionAt = Date.now();
+                  addLog(`[idle-spy] Parking $${parkAmount.toLocaleString("en-US", { maximumFractionDigits: 0 })} -> ${spySharesToBuy} SPY @ $${spyPrice.toFixed(2)} | Total idle SPY: ${idleSpyShares} shares`, "system");
+                  try { journal.recordOrderSubmitted({ alpaca_order_id: spyOrder.id || null, symbol: "SPY", side: "buy", qty: spySharesToBuy, strategy: "idle-spy", regime, intended_price: spyPrice }); } catch (_) {}
+                  notify.send(`🅿️ SPY IDLE BUY | ${spySharesToBuy} shares @ $${spyPrice.toFixed(2)} | Idle cash parked`);
+                }
               }
             }
           }
