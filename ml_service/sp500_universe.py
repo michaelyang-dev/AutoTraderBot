@@ -32,7 +32,7 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 # ── Infrastructure ETFs (always included, never traded with fundamentals) ────
 ETF_SYMBOLS = [
     # Broad market
-    "SPY",
+    "SPY", "QQQ", "IWM",
     # Sector ETFs
     "XLK", "XLF", "XLV", "XLE", "XLI", "XLP", "XLY", "XLB", "XLU", "XLRE", "XLC",
     # International
