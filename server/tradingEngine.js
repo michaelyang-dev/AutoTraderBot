@@ -33,6 +33,7 @@ const RISK = {
   MIN_COOLDOWN_MS: 30 * 60 * 1000,    // 30 min minimum cooldown regardless of cycle count
   SECTOR_MAX_POSITIONS: { International: 2, Commodity: 2, Bond: 2, Volatility: 1 },
   VOLUME_CONFIRM_RATIO: 1.5,
+  MIN_POSITION_DOLLARS: 5000,   // skip positions smaller than $5k
 };
 
 // ── Multi-strategy slot allocation ──
@@ -1618,11 +1619,30 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       };
 
       // Count positions by strategy for slot allocation
+      // Accounts for in-flight orders: pending SELLs reduce count, pending BUYs increase count
       // "legacy" positions (pre-existing, untagged) are tracked but excluded from slot limits
       const countByStrategy = () => {
+        // Build sets of symbols with pending sells/buys
+        const pendingSells = new Set();
+        const pendingBuySyms = new Map(); // symbol -> strategy
+        for (const o of pendingOrders) {
+          const sym = fromAlpacaSymbol(o.symbol);
+          if (o.side === "sell") {
+            pendingSells.add(sym);
+          } else if (o.side === "buy") {
+            // Only count pending buys for symbols we don't already hold
+            const alreadyHeld = currentPositions.some(p => p.symbol === sym);
+            if (!alreadyHeld) {
+              pendingBuySyms.set(sym, positionStrategy[sym] || "ml");
+            }
+          }
+        }
+
         let ml = 0, mom = 0, mr = 0, mc = 0, trend = 0, legacy = 0;
         for (const pos of currentPositions) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
+          // Skip positions with pending sell — they're on the way out
+          if (pendingSells.has(pos.symbol)) continue;
           const strat = positionStrategy[pos.symbol] || "legacy";
           if (strat === "legacy") legacy++;
           else if (strat === "momentum") mom++;
@@ -1631,6 +1651,16 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           else if (strat === "trend" || trendPositions[pos.symbol]) trend++;
           else ml++;
         }
+
+        // Add pending buys (positions on the way in)
+        for (const [, strat] of pendingBuySyms) {
+          if (strat === "momentum") mom++;
+          else if (strat === "mean_reversion") mr++;
+          else if (strat === "mega_cap") mc++;
+          else if (strat === "trend") trend++;
+          else ml++;
+        }
+
         return { ml, mom, mr, mc, trend, legacy, total: ml + mom + mr + mc + trend + legacy };
       };
 
@@ -1663,10 +1693,11 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       };
 
       // Fetch live state from Alpaca
-      const [account, currentPositions, clock] = await Promise.all([
+      const [account, currentPositions, clock, pendingOrders] = await Promise.all([
         getAccount(),
         getPositions(),
         getClock(),
+        getOrders("open", 50).catch(() => []),
       ]);
 
       if (!clock.is_open) {
@@ -2557,6 +2588,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         const cost = shares * opp.price;
+
+        // Minimum position size gate — skip tiny positions
+        if (cost < RISK.MIN_POSITION_DOLLARS) {
+          addLog(`[size] SKIP ${opp.sym} -- calculated size $${cost.toFixed(0)} < minimum $${RISK.MIN_POSITION_DOLLARS}`, "system");
+          continue;
+        }
         if (cost > cycleCash) {
           addLog(`SKIP ${opp.sym} -- order cost $${cost.toFixed(0)} exceeds remaining cash $${cycleCash.toFixed(0)}`, "system");
           continue;
@@ -2745,6 +2782,11 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               if (allocCashTrend < currPrice || allocCashTrend > cycleCash) continue;
               const shares = Math.floor(allocCashTrend / currPrice);
               if (shares <= 0) continue;
+              const trendCost = shares * currPrice;
+              if (trendCost < RISK.MIN_POSITION_DOLLARS) {
+                addLog(`[size] SKIP ${sym} (trend) -- calculated size $${trendCost.toFixed(0)} < minimum $${RISK.MIN_POSITION_DOLLARS}`, "system");
+                continue;
+              }
 
               try {
                 const order = await placeOrder({ symbol: sym, qty: shares, side: "buy", type: "market" });

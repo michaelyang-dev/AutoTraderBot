@@ -189,8 +189,71 @@ async function runReconcile({ dryRun = false } = {}) {
     }
   }
 
-  const result = { updated, inserted, skipped };
-  log(`── Reconcile done: ${updated} updated, ${inserted} inserted, ${skipped} unchanged ──`);
+  // ── P&L Reconciliation Pass ─────────────────────────────────────────
+  // Find all filled sell trades missing realized_pnl and match to entry buys
+  let pnlMatched = 0, pnlSkipped = 0;
+
+  if (!dryRun) {
+    const sellsMissing = journal.findSellsMissingPnl();
+    if (sellsMissing.length > 0) {
+      log(`[pnl] Found ${sellsMissing.length} sell trades missing P&L — reconciling...`);
+    }
+
+    for (const sell of sellsMissing) {
+      // Try strategy-aware FIFO match first, then fall back to any-strategy
+      let entry = null;
+      if (sell.strategy && sell.strategy !== "unknown") {
+        entry = journal.findEntryTradeByStrategy(sell.symbol, sell.strategy);
+      }
+      if (!entry) {
+        entry = journal.findEntryTrade(sell.symbol);
+      }
+
+      if (!entry || !entry.fill_price) {
+        log(`[pnl] SKIP ${sell.symbol} sell #${sell.id} — no matching buy trade found (legacy position?)`);
+        pnlSkipped++;
+        continue;
+      }
+
+      const sellPrice = parseFloat(sell.fill_price);
+      const entryPrice = parseFloat(entry.fill_price);
+      const qty = parseFloat(sell.filled_qty || sell.qty);
+      const commission = parseFloat(sell.commission || 0) + parseFloat(entry.commission || 0);
+
+      const realizedPnl = (sellPrice * qty) - (entryPrice * qty) - commission;
+      const costBasis = entryPrice * qty;
+      const realizedPnlPct = costBasis > 0 ? realizedPnl / costBasis : 0;
+
+      // Compute hold days from fill times
+      let holdDays = null;
+      if (sell.fill_time && entry.fill_time) {
+        const sellTime = new Date(sell.fill_time).getTime();
+        const entryTime = new Date(entry.fill_time).getTime();
+        holdDays = Math.round((sellTime - entryTime) / (1000 * 60 * 60 * 24));
+        if (holdDays < 0) holdDays = 0; // safety
+      }
+
+      journal.updateExitPnl({
+        id: sell.id,
+        realized_pnl: realizedPnl,
+        realized_pnl_pct: realizedPnlPct,
+        hold_days: holdDays,
+        exit_reason: sell.exit_reason || null,
+        entry_trade_id: entry.id,
+      });
+
+      const sign = realizedPnl >= 0 ? "+" : "";
+      log(`[pnl] ${sell.symbol} sell #${sell.id} ← buy #${entry.id}: ${sign}$${realizedPnl.toFixed(2)} (${(realizedPnlPct * 100).toFixed(2)}%) held ${holdDays ?? "?"}d`);
+      pnlMatched++;
+    }
+
+    if (sellsMissing.length > 0) {
+      log(`[pnl] Done: ${pnlMatched} matched, ${pnlSkipped} skipped`);
+    }
+  }
+
+  const result = { updated, inserted, skipped, pnlMatched, pnlSkipped };
+  log(`── Reconcile done: ${updated} updated, ${inserted} inserted, ${skipped} unchanged, ${pnlMatched} P&L matched ──`);
 
   // Log reconcile_run event
   if (!dryRun) {
@@ -198,7 +261,7 @@ async function runReconcile({ dryRun = false } = {}) {
       journal.logEvent({
         event_type: "reconcile_run",
         severity: "info",
-        message: `Reconcile: ${updated} updated, ${inserted} inserted, ${skipped} unchanged`,
+        message: `Reconcile: ${updated} updated, ${inserted} inserted, ${skipped} unchanged, ${pnlMatched} P&L matched`,
         metadata: result,
       });
     } catch (_) {}

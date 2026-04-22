@@ -129,12 +129,28 @@ function initDb(dbPath) {
     getTradesByStrategy: db.prepare(`SELECT * FROM trades WHERE strategy = @strategy AND submitted_at >= @since ORDER BY submitted_at DESC`),
     getTradesByDateRange: db.prepare(`SELECT * FROM trades WHERE submitted_at >= @from AND submitted_at <= @to ORDER BY submitted_at`),
 
-    // Find entry trade for FIFO matching
+    // Find entry trade for FIFO matching (strategy-aware)
     findEntryTrade: db.prepare(`
       SELECT * FROM trades
       WHERE symbol = @symbol AND side = 'buy' AND status = 'filled'
       ORDER BY fill_time ASC
       LIMIT 1
+    `),
+
+    findEntryTradeByStrategy: db.prepare(`
+      SELECT * FROM trades
+      WHERE symbol = @symbol AND side = 'buy' AND status = 'filled'
+        AND strategy = @strategy
+      ORDER BY fill_time ASC
+      LIMIT 1
+    `),
+
+    // Find all filled sells missing P&L
+    findSellsMissingPnl: db.prepare(`
+      SELECT * FROM trades
+      WHERE side = 'sell' AND status = 'filled'
+        AND (realized_pnl IS NULL OR (realized_pnl = 0 AND entry_trade_id IS NULL))
+      ORDER BY fill_time ASC
     `),
 
     // ── Positions ──
@@ -607,6 +623,31 @@ function findEntryTrade(symbol) {
   catch (err) { console.error("journal: findEntryTrade failed:", err.message); return null; }
 }
 
+function findEntryTradeByStrategy(symbol, strategy) {
+  try { return stmts.findEntryTradeByStrategy.get({ symbol, strategy }); }
+  catch (err) { console.error("journal: findEntryTradeByStrategy failed:", err.message); return null; }
+}
+
+function findSellsMissingPnl() {
+  try { return stmts.findSellsMissingPnl.all(); }
+  catch (err) { console.error("journal: findSellsMissingPnl failed:", err.message); return []; }
+}
+
+function updateExitPnl({ id, realized_pnl, realized_pnl_pct, hold_days, exit_reason, entry_trade_id }) {
+  try {
+    stmts.updateExit.run({
+      id,
+      realized_pnl: Math.round(realized_pnl * 100) / 100,
+      realized_pnl_pct: Math.round(realized_pnl_pct * 10000) / 10000,
+      hold_days: hold_days != null ? hold_days : null,
+      exit_reason: exit_reason || null,
+      entry_trade_id: entry_trade_id || null,
+    });
+  } catch (err) {
+    console.error("journal: updateExitPnl failed:", err.message);
+  }
+}
+
 function getDb() { return db; }
 
 // ══════════════════════════════════════════
@@ -644,4 +685,7 @@ module.exports = {
   getDailySnapshots,
   getPreviousSnapshot,
   findEntryTrade,
+  findEntryTradeByStrategy,
+  findSellsMissingPnl,
+  updateExitPnl,
 };
