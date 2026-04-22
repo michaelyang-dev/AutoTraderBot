@@ -28,9 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from unified_backtester import (
     MLMediumStrategy, MomentumStrategy, MeanReversionStrategy, MLSlowStrategy,
-    MegaCapStrategy, PortfolioManager, SlotConfig,
+    MegaCapStrategy, TSMOMStrategy, PortfolioManager, SlotConfig,
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_MR_ONLY, SLOT_ML_SLOW_ONLY,
     SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW, SLOT_MCAP_ONLY, SLOT_ML_MOM_MR_MCAP,
+    SLOT_TSMOM_ONLY, SLOT_ML_MOM_MCAP_TSMOM,
     load_bars_cached, load_predictions_cached,
     INITIAL_CASH, DATA_DIR,
 )
@@ -46,6 +47,7 @@ _STRATEGY_SLOTS = {
     "mean_reversion": ("mean_reversion", 2),
     "ml_slow":        ("ml_slow", 1),
     "mega_cap":       ("mega_cap", 2),
+    "tsmom":          ("tsmom", 2),
 }
 
 STRATEGY_MAP = {
@@ -54,7 +56,9 @@ STRATEGY_MAP = {
     "mean_reversion": (["mean_reversion"],                              SLOT_MR_ONLY),
     "ml_slow":        (["ml_slow"],                                     SLOT_ML_SLOW_ONLY),
     "mega_cap":       (["mega_cap"],                                    SLOT_MCAP_ONLY),
+    "tsmom":          (["tsmom"],                                       SLOT_TSMOM_ONLY),
     "combined":       (["ml", "momentum", "mean_reversion", "mega_cap"], SLOT_ML_MOM_MR_MCAP),
+    "combined_v2":    (["ml", "momentum", "mega_cap", "tsmom"],         SLOT_ML_MOM_MCAP_TSMOM),
     "ml_mom":         (["ml", "momentum"],                              SLOT_ML_MOM_MR),
 }
 
@@ -87,6 +91,8 @@ def build_strategies(names, predictions_df, price_data, volume_data,
             strats.append(MLSlowStrategy(predictions_df, price_data))
         elif name == "mega_cap":
             strats.append(MegaCapStrategy(price_data))
+        elif name == "tsmom":
+            strats.append(TSMOMStrategy(price_data))
         else:
             sys.exit(f"Unknown strategy: {name}")
     return strats
@@ -110,7 +116,7 @@ def main():
     parser.add_argument("--ml-threshold", type=float, default=0.55,
                         help="ML probability threshold in threshold mode (default: 0.55)")
     parser.add_argument("--exclude", nargs="+", default=[],
-                        choices=["ml", "momentum", "mean_reversion", "mega_cap", "ml_slow"],
+                        choices=["ml", "momentum", "mean_reversion", "mega_cap", "ml_slow", "tsmom"],
                         help="Strategies to exclude from combined (e.g. --exclude mean_reversion)")
     parser.add_argument("--validation", action="store_true",
                         help="Use validation predictions (holdout 2024+, NOT for live)")
@@ -185,7 +191,7 @@ def main():
             sys.exit("All strategies excluded — nothing to run.")
         slot_config = _build_slot_config(strat_names)
 
-    needs_prices = any(s in strat_names for s in ["momentum", "mean_reversion", "ml_slow", "mega_cap"])
+    needs_prices = any(s in strat_names for s in ["momentum", "mean_reversion", "ml_slow", "mega_cap", "tsmom"])
 
     price_data = close if needs_prices else None
     volume_data = None  # volume not cached yet; strategies handle missing volume

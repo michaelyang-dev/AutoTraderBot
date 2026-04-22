@@ -609,6 +609,31 @@ MEGACAP_UNIVERSE = [
 ]
 
 
+# ── TSMOM Strategy Configuration ──────────────────────────────────────────────
+TSMOM_UNIVERSE = [
+    # US Equity Broad
+    "SPY", "QQQ", "IWM",
+    # US Sectors
+    "XLK", "XLF", "XLV", "XLE", "XLY",
+    # International Equity
+    "EFA", "EEM", "FXI",
+    # Commodities
+    "GLD", "DBC", "USO",
+    # Bonds
+    "TLT", "IEF", "HYG",
+    # Currency
+    "UUP",
+]
+TSMOM_LOOKBACK_LONG = 252     # 12-month return check
+TSMOM_LOOKBACK_SHORT = 63     # 3-month return check
+TSMOM_TOP_N = 2               # Max 2 ETFs held at once
+TSMOM_TARGET_VOL = 0.10       # 10% annualized target per position
+TSMOM_VOL_LOOKBACK = 20       # Days for realized vol
+TSMOM_MAX_POS_PCT = 0.15      # Cap at 15% of portfolio per ETF
+TSMOM_STOP_LOSS = -0.08       # -8% stop loss
+TSMOM_MAX_HOLD = 63           # Force re-eval after 63 trading days
+
+
 class MegaCapStrategy(Strategy):
     """
     12-month-minus-1-month momentum on mega-cap stocks.
@@ -744,6 +769,119 @@ class MegaCapStrategy(Strategy):
 
     def get_position_size(self, signal, portfolio_value):
         return portfolio_value * self.BASE_PCT
+
+
+class TSMOMStrategy(Strategy):
+    """
+    Time-Series Momentum across a multi-asset ETF universe (17 ETFs).
+
+    Each ETF evaluated INDEPENDENTLY on its own history. Eligible ONLY if its
+    12-month AND 3-month returns are both positive. In bear markets, TSMOM exits
+    to cash rather than forcing long positions.
+
+    Provides bear-market protection and cross-asset diversification that the
+    cross-sectional MomentumStrategy (always long top-5) cannot offer.
+    """
+
+    def __init__(self, price_data):
+        """price_data: DataFrame -- close prices, columns=symbols, index=dates."""
+        self._price_data = price_data
+        self._symbols = [s for s in TSMOM_UNIVERSE if s in price_data.columns]
+        self._build_lookup()
+
+    @property
+    def name(self):
+        return "tsmom"
+
+    def _build_lookup(self):
+        """Pre-compute per-date, per-symbol: ret_252d, ret_63d, vol_20d."""
+        self._stats_by_date = {}
+        px = self._price_data
+
+        for sym in self._symbols:
+            if sym not in px.columns:
+                continue
+            prices = px[sym]
+            returns = prices.pct_change()
+
+            ret_252d = prices.pct_change(periods=TSMOM_LOOKBACK_LONG)
+            ret_63d = prices.pct_change(periods=TSMOM_LOOKBACK_SHORT)
+            vol_20d = returns.rolling(TSMOM_VOL_LOOKBACK).std() * np.sqrt(252)
+
+            for date in px.index:
+                r252 = ret_252d.get(date)
+                r63 = ret_63d.get(date)
+                v20 = vol_20d.get(date)
+
+                if pd.isna(r252) or pd.isna(r63) or pd.isna(v20) or v20 <= 0:
+                    continue
+
+                if date not in self._stats_by_date:
+                    self._stats_by_date[date] = {}
+                self._stats_by_date[date][sym] = {
+                    "ret_252d": float(r252),
+                    "ret_63d": float(r63),
+                    "vol_20d": float(v20),
+                }
+
+    def generate_signals(self, date, universe_data):
+        """Top 2 ETFs by 3m return, only if both 12m AND 3m returns are positive."""
+        stats_today = self._stats_by_date.get(date, {})
+        if not stats_today:
+            return []
+
+        candidates = []
+        for sym, stats in stats_today.items():
+            if stats["ret_252d"] > 0 and stats["ret_63d"] > 0:
+                candidates.append((sym, stats["ret_63d"], stats["vol_20d"]))
+
+        candidates.sort(key=lambda x: -x[1])
+        top_n = candidates[:TSMOM_TOP_N]
+
+        signals = []
+        for sym, mom_score, vol in top_n:
+            sig = Signal(
+                symbol=sym,
+                confidence=1.0,
+                strategy_name=self.name,
+                fwd_ret=0.0,
+                price_based=True,
+            )
+            sig._vol = vol
+            signals.append(sig)
+        return signals
+
+    def get_position_size(self, signal, portfolio_value):
+        """Inverse-volatility sizing, capped at TSMOM_MAX_POS_PCT."""
+        vol = getattr(signal, "_vol", 0.20)
+        scale = TSMOM_TARGET_VOL / max(vol, 0.05)
+        return portfolio_value * TSMOM_MAX_POS_PCT * min(scale, 1.0)
+
+    def check_exit(self, position, current_data):
+        """Exit if: max hold hit, stop loss, or either time horizon flips negative."""
+        sym = position.symbol
+        idx = current_data["idx"]
+        date = current_data["date"]
+        prices = current_data.get("prices", {})
+
+        days_held = idx - position.entry_idx
+        if days_held >= TSMOM_MAX_HOLD:
+            return True, "tsmom_max_hold"
+
+        cur_px = prices.get(sym, np.nan)
+        if not np.isnan(cur_px) and position.entry_price > 0:
+            ret = (cur_px / position.entry_price) - 1.0
+            if ret <= TSMOM_STOP_LOSS:
+                return True, "tsmom_stop_loss"
+
+        stats = self._stats_by_date.get(date, {}).get(sym)
+        if stats:
+            if stats["ret_252d"] <= 0:
+                return True, "tsmom_trend_break_12m"
+            if stats["ret_63d"] <= 0:
+                return True, "tsmom_trend_break_3m"
+
+        return False, ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1044,6 +1182,20 @@ SLOT_ML_MOM_MR_MCAP = SlotConfig(
     strategy_slots={"ml_medium": 2, "momentum": 4, "mean_reversion": 2, "mega_cap": 2},
     flex_slots=2,
     max_positions=12,
+)
+
+# TSMOM only: 2 primary, no flex
+SLOT_TSMOM_ONLY = SlotConfig(
+    strategy_slots={"tsmom": 2},
+    flex_slots=0,
+    max_positions=2,
+)
+
+# ML + Momentum + Mega-cap + TSMOM: ML 2 + Mom 3 + MC 2 + TSMOM 2 + 2 flex = max 11
+SLOT_ML_MOM_MCAP_TSMOM = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 3, "mega_cap": 2, "tsmom": 2},
+    flex_slots=2,
+    max_positions=11,
 )
 
 # Multi-strategy production mode (full)
