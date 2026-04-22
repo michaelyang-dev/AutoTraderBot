@@ -22,7 +22,7 @@ const RISK = {
   MAX_POSITION_PCT: 0.15,
   STOP_LOSS_PCT: -0.08,
   TAKE_PROFIT_PCT: 0.15,
-  MAX_OPEN_POSITIONS: 11,             // 4-strategy: ML(2)+Mom(3)+MR(3)+MCAP(2)+flex(1)
+  MAX_OPEN_POSITIONS: 8,              // 3-strategy: ML(2)+Mom(3)+MCAP(2)+flex(1)
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.08,
@@ -39,11 +39,11 @@ const RISK = {
 // ── Multi-strategy slot allocation ──
 const SLOT_CONFIG = {
   ml_medium: 2,          // ML primary slots (regime-adaptive)
-  momentum: 3,           // Momentum primary slots (reduced from 4)
-  mean_reversion: 3,     // Mean Reversion primary slots (reduced from 4)
-  mega_cap: 2,           // Mega-Cap Overlay slots (NEW)
+  momentum: 3,           // Momentum primary slots
+  mean_reversion: 0,     // Disabled — backtest shows +10pp alpha without MR
+  mega_cap: 2,           // Mega-Cap Overlay slots
   flex: 1,               // Shared flex pool
-  max: 11,               // Hard cap (= RISK.MAX_OPEN_POSITIONS)
+  max: 8,                // Hard cap (= RISK.MAX_OPEN_POSITIONS)
 };
 
 // ── Momentum strategy parameters ──
