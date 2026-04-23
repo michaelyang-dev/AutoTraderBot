@@ -1215,7 +1215,8 @@ class PortfolioManager:
 
     # ── public API ───────────────────────────────────────────────────────
 
-    def run(self, all_dates, spy_prices=None, price_data=None):
+    def run(self, all_dates, spy_prices=None, price_data=None,
+            detail_log=False):
         """
         Execute the backtest.
 
@@ -1225,10 +1226,13 @@ class PortfolioManager:
         spy_prices : ``{date → float}`` for idle-cash parking (None to disable)
         price_data : DataFrame with close prices (columns=symbols, index=dates).
                      Required for price-based strategies (momentum, etc.).
+        detail_log : if True, also return (equity_df, trade_details) with
+                     per-day equity curve and per-trade detail records.
 
         Returns
         -------
-        (portfolio_series, trades_list)
+        (portfolio_series, trades_list)                          — default
+        (portfolio_series, trades_list, equity_df, trade_details) — detail_log
         """
         n_dates = len(all_dates)
         multi = len(self.strategies) > 1
@@ -1257,6 +1261,10 @@ class PortfolioManager:
         cooldowns       = {}        # (symbol, strategy_name) → expiry index
         port_vals       = []
         last_spy_action_idx = -2    # idle SPY day gap (1 day min between actions)
+
+        # Optional detailed logging
+        trade_details   = [] if detail_log else None
+        equity_records  = [] if detail_log else None
 
         for i, date in enumerate(all_dates):
             spy_px = spy_prices.get(date) if spy_prices else None
@@ -1296,6 +1304,23 @@ class PortfolioManager:
                 net   = gross * (1.0 - self.slippage)
                 cash += net
                 trades.append((net - pos.cost) / pos.cost)
+                if trade_details is not None:
+                    trade_details.append({
+                        "entry_date": all_dates[pos.entry_idx],
+                        "exit_date": date,
+                        "symbol": sym,
+                        "strategy": pos.strategy_name,
+                        "action": "sell",
+                        "cost": pos.cost,
+                        "entry_price": pos.entry_price,
+                        "exit_price": day_prices.get(sym, pos.entry_price) if pos.price_based else 0.0,
+                        "gross": gross,
+                        "net": net,
+                        "pnl": net - pos.cost,
+                        "ret": (net - pos.cost) / pos.cost,
+                        "hold_days": i - pos.entry_idx,
+                        "price_based": pos.price_based,
+                    })
                 if multi:
                     cooldowns[(sym, pos.strategy_name)] = i + COOLDOWN_DAYS
 
@@ -1419,6 +1444,23 @@ class PortfolioManager:
                     entry_price=entry_px,
                     peak_price=entry_px,
                 )
+                if trade_details is not None:
+                    trade_details.append({
+                        "entry_date": date,
+                        "exit_date": None,
+                        "symbol": sig.symbol,
+                        "strategy": sig.strategy_name,
+                        "action": "buy",
+                        "cost": cost,
+                        "entry_price": entry_px,
+                        "exit_price": 0.0,
+                        "gross": 0.0,
+                        "net": 0.0,
+                        "pnl": 0.0,
+                        "ret": 0.0,
+                        "hold_days": 0,
+                        "price_based": sig.price_based,
+                    })
                 # Track sector buys this cycle
                 sector_bought_today[sector] = sector_bought_today.get(sector, 0) + 1
 
@@ -1453,8 +1495,21 @@ class PortfolioManager:
                     interp_ret = pos.fwd_ret * days_held / self.hold_days
                     port_val  += pos.cost * (1.0 + interp_ret)
             port_vals.append(port_val)
+            if equity_records is not None:
+                equity_records.append({
+                    "date": date,
+                    "portfolio_value": port_val,
+                    "spy_value": spy_px if spy_px else np.nan,
+                    "cash": cash,
+                    "n_positions": len(positions),
+                })
 
         series = pd.Series(port_vals, index=pd.DatetimeIndex(all_dates))
+        if detail_log:
+            import pandas as _pd
+            eq_df = _pd.DataFrame(equity_records)
+            td_df = _pd.DataFrame(trade_details) if trade_details else _pd.DataFrame()
+            return series, [float(t) for t in trades], eq_df, td_df
         return series, [float(t) for t in trades]
 
 

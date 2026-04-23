@@ -136,6 +136,8 @@ def main():
                         help="Write metrics JSON to this path")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
+    parser.add_argument("--export-logs", default=None, metavar="DIR",
+                        help="Export equity_curve.parquet and trade_log.parquet to DIR")
     args = parser.parse_args()
 
     # Set vol-sizing global flag before any strategy instantiation
@@ -229,7 +231,13 @@ def main():
     # ── 4. Run backtest ─────────────────────────────────────────────────
     log("Running backtest ...")
     pm = PortfolioManager(strategies=strategies, slot_config=slot_config)
-    vals, trades = pm.run(all_dates, spy_prices=spy_dict, price_data=price_data)
+    do_detail = args.export_logs is not None
+    result = pm.run(all_dates, spy_prices=spy_dict, price_data=price_data,
+                    detail_log=do_detail)
+    if do_detail:
+        vals, trades, equity_df, trade_log_df = result
+    else:
+        vals, trades = result
 
     # ── 5. Compute metrics ──────────────────────────────────────────────
     if args.selection_mode == "top_n":
@@ -267,6 +275,15 @@ def main():
                for k, v in metrics.items()}
         Path(args.output).write_text(json.dumps(out, indent=2))
         log(f"Metrics written to {args.output}")
+
+    # ── 8. Optionally export detailed logs ─────────────────────────────
+    if args.export_logs:
+        export_dir = Path(args.export_logs)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        equity_df.to_parquet(export_dir / "equity_curve.parquet", index=False)
+        if not trade_log_df.empty:
+            trade_log_df.to_parquet(export_dir / "trade_log.parquet", index=False)
+        log(f"Logs exported to {export_dir}")
 
 
 if __name__ == "__main__":
