@@ -29,6 +29,7 @@ Multi-Strategy Slot System
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
+import json
 import os
 import time
 import warnings
@@ -219,7 +220,7 @@ def load_features_cached(features_file: Path = None,
 # ── Constants ────────────────────────────────────────────────────────────────
 
 INITIAL_CASH    = 100_000.0
-SLIPPAGE        = 0.0005       # 0.05% per leg (one-way)
+SLIPPAGE        = 0.0012       # 0.12% per leg — matches real Alpaca market order fills
 HOLD_DAYS       = 10           # default hold period (trading days)
 POSITION_PCT    = 0.12         # 12% of portfolio per position at full confidence
 
@@ -232,6 +233,130 @@ SPY_INVEST_PCT    = 0.85      # invest 85% of idle cash into SPY
 OVERLAP_2X      = 1.25        # size multiplier when 2 strategies agree
 OVERLAP_3X      = 1.50        # size multiplier when 3+ agree
 COOLDOWN_DAYS   = 5           # days a symbol is blocked after a sell
+MIN_POSITION_DOLLARS = 5000.0  # matches live tradingEngine.js RISK.MIN_POSITION_DOLLARS
+
+# Module-level NEVER_BUY — applied to all strategies (matches live)
+NEVER_BUY = {
+    "VIXY", "UVXY", "VXX", "SVXY",
+    "TQQQ", "SQQQ", "QQQ3",
+    "SPXU", "SPXS", "SDS", "UPRO",
+    "QID", "SDOW",
+    "LABU", "LABD", "JNUG", "JDST", "NUGT", "DUST",
+    "FNGU", "FNGD", "SOXL", "SOXS", "YANG", "YINN",
+}
+
+# Sector position limits — matches live tradingEngine.js RISK.SECTOR_MAX_POSITIONS
+SECTOR_MAX_POSITIONS = {
+    "International": 2,
+    "Commodity": 2,
+    "Bond": 2,
+    "Volatility": 1,
+}
+
+# Mirror live SECTOR_MAP exactly
+SYMBOL_SECTOR = {
+    "AAPL": "Tech", "MSFT": "Tech", "GOOGL": "Tech", "GOOG": "Tech", "META": "Tech",
+    "NVDA": "Semis", "AMD": "Semis", "INTC": "Semis", "QCOM": "Semis", "AVGO": "Semis", "MU": "Semis", "TSM": "Semis",
+    "CRM": "Tech", "ORCL": "Tech", "SAP": "Tech", "ADBE": "Tech", "NOW": "Tech", "SNOW": "Tech",
+    "PLTR": "Tech", "UBER": "Tech", "LYFT": "Tech", "SHOP": "Tech", "TWLO": "Tech", "ZM": "Tech",
+    "NET": "Tech", "DDOG": "Tech", "MDB": "Tech", "CRWD": "Tech", "ZS": "Tech", "OKTA": "Tech",
+    "PANW": "Tech", "FTNT": "Tech", "CYBR": "Tech",
+    "AMZN": "Consumer", "TSLA": "Auto", "GM": "Auto", "F": "Auto",
+    "WMT": "Consumer", "TGT": "Consumer", "COST": "Consumer", "HD": "Consumer", "LOW": "Consumer",
+    "NKE": "Consumer", "SBUX": "Consumer", "MCD": "Consumer", "YUM": "Consumer", "CMG": "Consumer",
+    "BABA": "Consumer", "JD": "Consumer", "PDD": "Consumer",
+    "JPM": "Finance", "BAC": "Finance", "WFC": "Finance", "GS": "Finance", "MS": "Finance",
+    "C": "Finance", "BLK": "Finance", "AXP": "Finance", "V": "Finance", "MA": "Finance",
+    "PYPL": "Finance", "SQ": "Finance", "COIN": "Finance", "SCHW": "Finance", "USB": "Finance",
+    "UNH": "Health", "JNJ": "Health", "PFE": "Health", "ABBV": "Health", "MRK": "Health",
+    "LLY": "Health", "BMY": "Health", "AMGN": "Health", "GILD": "Health", "BIIB": "Health",
+    "MRNA": "Health", "BNTX": "Health", "CVS": "Health", "CI": "Health", "HUM": "Health",
+    "MDT": "Health", "ABT": "Health", "TMO": "Health", "DHR": "Health", "ISRG": "Health",
+    "NFLX": "Media", "DIS": "Media", "PARA": "Media", "WBD": "Media", "CMCSA": "Media",
+    "T": "Media", "VZ": "Media", "TMUS": "Media",
+    "SPOT": "Media", "SNAP": "Media", "PINS": "Media", "RDDT": "Media",
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy", "EOG": "Energy",
+    "OXY": "Energy", "PSX": "Energy", "VLO": "Energy", "MPC": "Energy",
+    "BA": "Industrial", "CAT": "Industrial", "GE": "Industrial", "HON": "Industrial",
+    "LMT": "Industrial", "RTX": "Industrial", "NOC": "Industrial", "DE": "Industrial",
+    "UPS": "Industrial", "FDX": "Industrial", "CSX": "Industrial",
+    "AMT": "REIT", "PLD": "REIT", "EQIX": "REIT", "SPG": "REIT",
+    "NEE": "Utilities", "SO": "Utilities", "DUK": "Utilities",
+    # ETFs
+    "XLE": "Energy", "XLF": "Finance", "XLV": "Health", "XLI": "Industrial",
+    "XLK": "Tech", "XLY": "Consumer", "XLP": "Staples", "XLU": "Utilities",
+    "XLRE": "REIT", "XLB": "Materials", "XLC": "Media",
+    "EWZ": "International", "EWJ": "International", "FXI": "International",
+    "INDA": "International", "EFA": "International", "EEM": "International",
+    "VGK": "International", "VWO": "International", "IEFA": "International",
+    "GLD": "Commodity", "SLV": "Commodity", "USO": "Commodity", "DBC": "Commodity", "CPER": "Commodity",
+    "TLT": "Bond", "IEF": "Bond", "SHY": "Bond", "HYG": "Bond", "LQD": "Bond",
+    "VIXY": "Volatility", "UUP": "Commodity",
+    # Additional S&P 500 coverage
+    "CSCO": "Tech", "INTU": "Tech", "SNPS": "Tech", "CDNS": "Tech",
+    "KLAC": "Semis", "LRCX": "Semis", "AMAT": "Semis",
+    "ACN": "Tech", "IBM": "Tech", "TXN": "Semis", "ADI": "Semis", "MCHP": "Semis", "ON": "Semis",
+    "ADP": "Tech", "FISV": "Tech", "FIS": "Tech", "GPN": "Tech", "ADSK": "Tech",
+    "PG": "Staples", "KO": "Staples", "PEP": "Staples", "PM": "Staples", "MO": "Staples",
+    "CL": "Staples", "KHC": "Staples", "GIS": "Staples", "SJM": "Staples", "K": "Staples",
+    "MDLZ": "Staples", "HSY": "Staples", "HRL": "Staples", "CPB": "Staples", "CAG": "Staples",
+    "LIN": "Materials", "APD": "Materials", "SHW": "Materials", "ECL": "Materials", "PPG": "Materials",
+    "DD": "Materials", "NEM": "Materials", "FCX": "Materials", "NUE": "Materials",
+    "D": "Utilities", "AEP": "Utilities", "EXC": "Utilities", "SRE": "Utilities", "ES": "Utilities",
+    "WEC": "Utilities", "ED": "Utilities", "DTE": "Utilities", "AEE": "Utilities", "CMS": "Utilities",
+    "BRK.B": "Finance", "MMC": "Finance", "AON": "Finance", "TRV": "Finance",
+    "CB": "Finance", "PNC": "Finance", "TFC": "Finance", "MTB": "Finance", "FITB": "Finance",
+    "CFG": "Finance", "KEY": "Finance", "RF": "Finance", "ZION": "Finance",
+    "SPGI": "Finance", "ICE": "Finance", "CME": "Finance", "MSCI": "Finance", "MCO": "Finance",
+    "UNP": "Industrial", "NSC": "Industrial", "WAB": "Industrial",
+    "ITW": "Industrial", "EMR": "Industrial", "ROK": "Industrial", "ETN": "Industrial",
+    "PH": "Industrial", "IR": "Industrial", "DOV": "Industrial", "GWW": "Industrial",
+    "AAL": "Industrial", "DAL": "Industrial", "UAL": "Industrial", "LUV": "Industrial",
+    "VRTX": "Health", "REGN": "Health", "IDXX": "Health", "IQV": "Health", "ZTS": "Health",
+    "SYK": "Health", "BDX": "Health", "BSX": "Health", "EW": "Health", "BAX": "Health",
+    "HCA": "Health", "CNC": "Health", "MOH": "Health",
+}
+
+# Idle SPY opportunity ratio — matches live minOppRatio
+IDLE_SPY_MIN_OPP_RATIO = 0.25
+
+# Earnings avoidance window (calendar days) — matches live
+EARNINGS_AVOID_DAYS = 3
+
+def _load_earnings_map():
+    """Load earnings dates from cache into {symbol → set of pd.Timestamp}."""
+    cache_dir = DATA_DIR / "earnings_cache"
+    if not cache_dir.exists():
+        return {}
+    earnings = {}
+    for f in cache_dir.glob("*.json"):
+        sym = f.stem
+        try:
+            data = json.loads(f.read_text())
+            dates = set()
+            for item in data:
+                if item.get("date"):
+                    dates.add(pd.Timestamp(item["date"]))
+            if dates:
+                earnings[sym] = dates
+        except Exception:
+            continue
+    return earnings
+
+# Pre-load earnings map at module level
+_EARNINGS_MAP = _load_earnings_map()
+
+def _has_earnings_within(symbol, current_date, days=EARNINGS_AVOID_DAYS):
+    """Check if symbol has earnings within `days` calendar days of current_date."""
+    dates = _EARNINGS_MAP.get(symbol)
+    if not dates:
+        return False
+    current = pd.Timestamp(current_date)
+    for ed in dates:
+        diff = (ed - current).days
+        if 0 <= diff <= days:
+            return True
+    return False
 
 # ── Volatility-targeted position sizing ─────────────────────────────
 VOL_TARGET_RISK_PCT = 0.01      # Target 1% of portfolio at 1-ATR move
@@ -394,15 +519,6 @@ class MomentumStrategy(Strategy):
       - Reduced to 8% if ATR(14) / price > 3%
     """
 
-    NEVER_BUY = {
-        "VIXY", "UVXY", "VXX", "SVXY",
-        "TQQQ", "SQQQ", "QQQ3",
-        "SPXU", "SPXS", "SDS", "UPRO",
-        "QID", "SDOW",
-        "LABU", "LABD", "JNUG", "JDST", "NUGT", "DUST",
-        "FNGU", "FNGD", "SOXL", "SOXS", "YANG", "YINN",
-    }
-
     # Tunable parameters
     LOOKBACK       = 63     # trading days for momentum ranking
     TOP_N          = 5      # signals per day
@@ -428,7 +544,7 @@ class MomentumStrategy(Strategy):
         """
         self._price_data = price_data
         self._volume_data = volume_data
-        self._symbols = [s for s in price_data.columns if s not in self.NEVER_BUY and s != "SPY"]
+        self._symbols = [s for s in price_data.columns if s not in NEVER_BUY and s != "SPY"]
 
         # Pre-compute all indicators
         self._mom_ret = {}      # {date → {sym → 63d return}}
@@ -931,6 +1047,158 @@ class TSMOMStrategy(Strategy):
         return False, ""
 
 
+class TrendStrategy(Strategy):
+    """
+    Long-term trend-following strategy — matches live tradingEngine.js.
+
+    Entry conditions (computeTrendStatus):
+      - Price > 200-day SMA
+      - 50-day SMA > 200-day SMA (golden cross)
+      - Price above 200-SMA for >= 30 of last 40 trading days
+      - Not in NEVER_BUY, not already held
+
+    Position sizing:
+      - 5% of portfolio per position (matches live allocCashTrend = cyclePortfolioValue * 0.05)
+
+    Exit rules:
+      - Trailing stop: -10% from peak
+      - SMA break: 3 consecutive closes below 200-SMA
+
+    Limits:
+      - Max 3 trend positions
+      - Total trend portfolio < 30% of total portfolio
+      - Uses flex slots (no dedicated slot)
+    """
+
+    SMA_LONG_PERIOD   = 200
+    SMA_SHORT_PERIOD  = 50
+    MIN_DAYS_ABOVE    = 30    # out of lookback window
+    LOOKBACK_WINDOW   = 40    # trading days to check
+    TRAIL_STOP        = -0.10
+    MAX_TREND_POS     = 3
+    MAX_TREND_PCT     = 0.30  # max 30% of portfolio in trend
+    BASE_PCT          = 0.05  # 5% of portfolio per position
+    SMA_BREAK_DAYS    = 3     # consecutive closes below SMA200 to exit
+
+    def __init__(self, price_data, volume_data=None):
+        self._price_data = price_data
+        self._symbols = [s for s in price_data.columns if s not in NEVER_BUY and s != "SPY"]
+        self._sma200 = {}       # {date → {sym → sma200}}
+        self._sma50 = {}        # {date → {sym → sma50}}
+        self._trend_status = {} # {date → {sym → dict}}
+        self._break_counts = {} # {sym → consecutive days below SMA200}
+        self._precompute()
+
+    @property
+    def name(self):
+        return "trend"
+
+    def _precompute(self):
+        """Pre-compute SMA200, SMA50, and trend status for all dates."""
+        px = self._price_data
+        dates = px.index.tolist()
+
+        for date in dates:
+            loc = px.index.get_loc(date)
+            if loc < self.SMA_LONG_PERIOD:
+                continue
+
+            sma200_day = {}
+            sma50_day = {}
+            trend_day = {}
+
+            for sym in self._symbols:
+                col = px[sym]
+                curr = col.iloc[loc]
+                if np.isnan(curr) or curr <= 0:
+                    continue
+
+                # SMA200
+                sma200_val = col.iloc[loc - self.SMA_LONG_PERIOD + 1:loc + 1].mean()
+                sma200_day[sym] = sma200_val
+
+                # SMA50
+                if loc >= self.SMA_SHORT_PERIOD:
+                    sma50_val = col.iloc[loc - self.SMA_SHORT_PERIOD + 1:loc + 1].mean()
+                    sma50_day[sym] = sma50_val
+                else:
+                    continue
+
+                price_above_200 = curr > sma200_val
+
+                # Count days above SMA200 in lookback window
+                lookback = min(self.LOOKBACK_WINDOW, loc - self.SMA_LONG_PERIOD + 1)
+                days_above = 0
+                for k in range(lookback):
+                    bar_loc = loc - k
+                    bar_price = col.iloc[bar_loc]
+                    if np.isnan(bar_price):
+                        continue
+                    bar_sma200 = col.iloc[bar_loc - self.SMA_LONG_PERIOD + 1:bar_loc + 1].mean()
+                    if bar_price > bar_sma200:
+                        days_above += 1
+
+                is_strong = (price_above_200 and sma50_val > sma200_val
+                             and days_above >= self.MIN_DAYS_ABOVE)
+
+                trend_day[sym] = {
+                    "is_strong": is_strong,
+                    "price_above_200": price_above_200,
+                    "days_above": days_above,
+                }
+
+            self._sma200[date] = sma200_day
+            self._sma50[date] = sma50_day
+            self._trend_status[date] = trend_day
+
+    def generate_signals(self, date, universe_data):
+        trend_day = self._trend_status.get(date, {})
+        signals = []
+        for sym, status in trend_day.items():
+            if status["is_strong"]:
+                signals.append(Signal(
+                    symbol=sym,
+                    confidence=0.5,  # lower than ML/momentum so trend doesn't dominate
+                    strategy_name=self.name,
+                    fwd_ret=0.0,
+                    price_based=True,
+                ))
+        return signals
+
+    def check_exit(self, position, current_data):
+        prices = current_data.get("prices", {})
+        date = current_data["date"]
+
+        cur_px = prices.get(position.symbol, np.nan)
+        if np.isnan(cur_px) or cur_px <= 0:
+            return False, ""
+
+        # Trailing stop: -10% from peak
+        peak = position.peak_price
+        if peak > 0:
+            drop = (cur_px - peak) / peak
+            if drop <= self.TRAIL_STOP:
+                self._break_counts.pop(position.symbol, None)
+                return True, "trend_trail_stop"
+
+        # SMA break: 3 consecutive closes below 200-SMA
+        sma200_day = self._sma200.get(date, {})
+        sma200 = sma200_day.get(position.symbol)
+        if sma200 is not None:
+            if cur_px < sma200:
+                self._break_counts[position.symbol] = self._break_counts.get(position.symbol, 0) + 1
+                if self._break_counts[position.symbol] >= self.SMA_BREAK_DAYS:
+                    self._break_counts.pop(position.symbol, None)
+                    return True, "trend_sma_break"
+            else:
+                self._break_counts[position.symbol] = 0
+
+        return False, ""
+
+    def get_position_size(self, signal, portfolio_value, date=None):
+        return portfolio_value * self.BASE_PCT
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Portfolio Manager
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1268,7 @@ class PortfolioManager:
         trades          = []        # list of per-trade returns
         cooldowns       = {}        # (symbol, strategy_name) → expiry index
         port_vals       = []
+        last_spy_action_idx = -2    # idle SPY day gap (1 day min between actions)
 
         for i, date in enumerate(all_dates):
             spy_px = spy_prices.get(date) if spy_prices else None
@@ -1047,11 +1316,12 @@ class PortfolioManager:
             for strat in self.strategies.values():
                 all_signals.extend(strat.generate_signals(date, None))
 
-            # Exclude held symbols
+            # Exclude held symbols and blacklisted symbols
             held = set(positions.keys())
             # For non-price-based signals, also exclude NaN fwd_ret
             all_signals = [s for s in all_signals
                            if s.symbol not in held
+                           and s.symbol not in NEVER_BUY
                            and (s.price_based or not np.isnan(s.fwd_ret))]
 
             # Cooldowns (multi-strategy only — per-strategy cooldown)
@@ -1074,12 +1344,28 @@ class PortfolioManager:
             # ── 5. Execute buys ──────────────────────────────────────────
             max_slots = self.slot_config.max_positions - len(positions)
 
-            # Release idle SPY before buying picks
+            # Release idle SPY before buying picks — with opportunity ratio check
             if (spy_px and idle_spy_shares > 0
-                    and resolved and max_slots > 0):
-                proceeds = idle_spy_shares * spy_px * (1.0 - self.slippage)
-                cash += proceeds
-                idle_spy_shares = 0.0
+                    and resolved and max_slots > 0
+                    and i > last_spy_action_idx):
+                idle_value = idle_spy_shares * spy_px
+                # Estimate total opportunity size
+                port_est_for_opp = cash + idle_value
+                for p in positions.values():
+                    if p.price_based:
+                        px = day_prices.get(p.symbol, p.entry_price)
+                        port_est_for_opp += p.cost * (px / p.entry_price if p.entry_price > 0 else 1.0)
+                    else:
+                        port_est_for_opp += p.cost
+                est_opp_size = len(resolved[:max_slots]) * port_est_for_opp * POSITION_PCT
+                if est_opp_size >= idle_value * IDLE_SPY_MIN_OPP_RATIO:
+                    proceeds = idle_spy_shares * spy_px * (1.0 - self.slippage)
+                    cash += proceeds
+                    idle_spy_shares = 0.0
+                    last_spy_action_idx = i
+
+            # Sector counts for this cycle
+            sector_bought_today = {}
 
             # Consider up to max_slots candidates (matches original [:slots])
             for sig in resolved[:max_slots]:
@@ -1090,6 +1376,22 @@ class PortfolioManager:
                         p.strategy_name, 0) + 1
                 if self.slot_config.available_for(
                         sig.strategy_name, counts, len(positions)) <= 0:
+                    continue
+
+                # Sector limit check
+                sector = SYMBOL_SECTOR.get(sig.symbol, "Other")
+                sector_limit = SECTOR_MAX_POSITIONS.get(sector)
+                if sector_limit is not None:
+                    existing_count = sum(
+                        1 for p in positions.values()
+                        if SYMBOL_SECTOR.get(p.symbol, "Other") == sector
+                    )
+                    cycle_count = sector_bought_today.get(sector, 0)
+                    if existing_count + cycle_count >= sector_limit:
+                        continue
+
+                # Earnings avoidance (skip if earnings within 3 calendar days)
+                if _has_earnings_within(sig.symbol, date):
                     continue
 
                 # For price-based signals, require a valid entry price
@@ -1111,7 +1413,7 @@ class PortfolioManager:
                 target = strat.get_position_size(sig, port_est, date=date)
 
                 cost = min(target, cash * 0.95)
-                if cost < 50.0:
+                if cost < MIN_POSITION_DOLLARS:
                     continue
 
                 cash -= cost * (1.0 + self.slippage)
@@ -1129,9 +1431,11 @@ class PortfolioManager:
                     entry_price=entry_px,
                     peak_price=entry_px,
                 )
+                # Track sector buys this cycle
+                sector_bought_today[sector] = sector_bought_today.get(sector, 0) + 1
 
             # ── 6. Park idle cash in SPY ─────────────────────────────────
-            if spy_px:
+            if spy_px and i > last_spy_action_idx:
                 pos_val = 0.0
                 for p in positions.values():
                     if p.price_based:
@@ -1148,6 +1452,7 @@ class PortfolioManager:
                     new_shares       = invest / spy_px
                     cash            -= invest * (1.0 + self.slippage)
                     idle_spy_shares += new_shares
+                    last_spy_action_idx = i
 
             # ── 7. Mark-to-market ────────────────────────────────────────
             port_val = cash + (idle_spy_shares * spy_px if spy_px else 0)
@@ -1240,10 +1545,11 @@ SLOT_ML_MOM_MR_MCAP = SlotConfig(
 )
 
 # Matches live bot's SLOT_CONFIG exactly (for apples-to-apples comparison)
+# Live: ml_medium: 2, momentum: 3, mean_reversion: 0, mega_cap: 2, flex: 1, max: 8
 SLOT_LIVE = SlotConfig(
-    strategy_slots={"ml_medium": 2, "momentum": 3, "mean_reversion": 3, "mega_cap": 2},
+    strategy_slots={"ml_medium": 2, "momentum": 3, "mean_reversion": 0, "mega_cap": 2},
     flex_slots=1,
-    max_positions=11,
+    max_positions=8,
 )
 
 # TSMOM only: 2 primary, no flex
@@ -1251,6 +1557,20 @@ SLOT_TSMOM_ONLY = SlotConfig(
     strategy_slots={"tsmom": 2},
     flex_slots=0,
     max_positions=2,
+)
+
+# Trend only: 3 primary (matches live max 3 trend positions)
+SLOT_TREND_ONLY = SlotConfig(
+    strategy_slots={"trend": 3},
+    flex_slots=0,
+    max_positions=3,
+)
+
+# Live + Trend: same as SLOT_LIVE but trend uses flex slot
+SLOT_LIVE_TREND = SlotConfig(
+    strategy_slots={"ml_medium": 2, "momentum": 3, "mean_reversion": 0, "mega_cap": 2},
+    flex_slots=1,
+    max_positions=8,
 )
 
 # ML + Momentum + Mega-cap + TSMOM: ML 2 + Mom 3 + MC 2 + TSMOM 2 + 2 flex = max 11
