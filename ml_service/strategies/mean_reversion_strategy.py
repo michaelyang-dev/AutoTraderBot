@@ -94,90 +94,49 @@ class MeanReversionStrategy(Strategy):
         return "mean_reversion"
 
     def _precompute(self):
-        """Pre-compute all indicators needed for signal generation and exits."""
+        """Pre-compute all indicators needed for signal generation and exits.
+
+        Uses vectorized pandas rolling operations for all indicators,
+        then fast row-wise .dropna().to_dict() for materialization."""
         px = self._price_data
-        dates = px.index.tolist()
+        sym_cols = [s for s in self._symbols if s in px.columns]
+        px_sub = px[sym_cols]
 
-        # 30-day return
-        ret30 = px.pct_change(self.DROP_PERIOD)
-
-        # 30-day rolling low
-        low30 = px.rolling(self.DROP_PERIOD, min_periods=self.DROP_PERIOD).min()
-
-        # 200-day SMA
-        sma200 = px.rolling(self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
-
-        # 20-day SMA (for take-profit exit)
-        sma20 = px.rolling(self.SMA_SHORT, min_periods=self.SMA_SHORT).mean()
-
-        # ATR(14) as percentage of price (using close-to-close proxy)
-        daily_ret_abs = px.pct_change().abs()
+        # Vectorized rolling computations (whole-DataFrame, no per-symbol loop)
+        ret30 = px_sub.pct_change(self.DROP_PERIOD)
+        low30 = px_sub.rolling(self.DROP_PERIOD, min_periods=self.DROP_PERIOD).min()
+        sma200 = px_sub.rolling(self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
+        sma20 = px_sub.rolling(self.SMA_SHORT, min_periods=self.SMA_SHORT).mean()
+        daily_ret_abs = px_sub.pct_change().abs()
         atr = daily_ret_abs.rolling(self.ATR_PERIOD, min_periods=self.ATR_PERIOD).mean()
 
-        # 20-day avg volume
-        avg_vol = None
+        avg_vol_df = None
         if self._volume_data is not None:
-            avg_vol = self._volume_data.rolling(
-                self.VOL_PERIOD, min_periods=self.VOL_PERIOD).mean()
+            vol_cols = [s for s in sym_cols if s in self._volume_data.columns]
+            if vol_cols:
+                avg_vol_df = self._volume_data[vol_cols].rolling(
+                    self.VOL_PERIOD, min_periods=self.VOL_PERIOD).mean()
 
-        for date in dates:
-            if date not in ret30.index:
-                continue
+        # Materialize per-date dicts using fast .dropna().to_dict()
+        for date in px_sub.index:
+            ret_row = ret30.loc[date].dropna()
+            self._drop_30d[date] = ret_row.to_dict() if not ret_row.empty else {}
 
-            # 30-day returns
-            rets = {}
-            for sym in self._symbols:
-                if sym in ret30.columns:
-                    r = ret30.at[date, sym]
-                    if not np.isnan(r):
-                        rets[sym] = r
-            self._drop_30d[date] = rets
+            low_row = low30.loc[date].dropna()
+            self._low_30d[date] = low_row.to_dict() if not low_row.empty else {}
 
-            # 30-day lows
-            lows = {}
-            for sym in self._symbols:
-                if sym in low30.columns:
-                    v = low30.at[date, sym]
-                    if not np.isnan(v):
-                        lows[sym] = v
-            self._low_30d[date] = lows
+            sma200_row = sma200.loc[date].dropna()
+            self._sma200[date] = sma200_row.to_dict() if not sma200_row.empty else {}
 
-            # SMA200
-            sma_day = {}
-            for sym in self._symbols:
-                if sym in sma200.columns:
-                    v = sma200.at[date, sym]
-                    if not np.isnan(v):
-                        sma_day[sym] = v
-            self._sma200[date] = sma_day
+            sma20_row = sma20.loc[date].dropna()
+            self._sma20[date] = sma20_row.to_dict() if not sma20_row.empty else {}
 
-            # SMA20
-            sma20_day = {}
-            for sym in self._symbols:
-                if sym in sma20.columns:
-                    v = sma20.at[date, sym]
-                    if not np.isnan(v):
-                        sma20_day[sym] = v
-            self._sma20[date] = sma20_day
+            atr_row = atr.loc[date].dropna()
+            self._atr_pct[date] = atr_row.to_dict() if not atr_row.empty else {}
 
-            # ATR percentage
-            atr_day = {}
-            for sym in self._symbols:
-                if sym in atr.columns:
-                    v = atr.at[date, sym]
-                    if not np.isnan(v):
-                        atr_day[sym] = v
-            self._atr_pct[date] = atr_day
-
-            # Volume
-            if avg_vol is not None:
-                vol_day = {}
-                for sym in self._symbols:
-                    if sym in avg_vol.columns:
-                        v = avg_vol.at[date, sym]
-                        if not np.isnan(v):
-                            vol_day[sym] = v
-                self._avg_vol[date] = vol_day
+            if avg_vol_df is not None:
+                vol_row = avg_vol_df.loc[date].dropna() if date in avg_vol_df.index else pd.Series(dtype=float)
+                self._avg_vol[date] = vol_row.to_dict() if not vol_row.empty else {}
 
     def generate_signals(self, date, universe_data):
         drops = self._drop_30d.get(date, {})
