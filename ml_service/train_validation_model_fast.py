@@ -246,22 +246,26 @@ def train_validation_model():
     xgb_holdout_auc = roc_auc_score(y_holdout, xgb_holdout_probs)
     log(f"  XGB AUC -- Train: {xgb_train_auc:.4f}  Calib: {xgb_auc:.4f}  Holdout: {xgb_holdout_auc:.4f}")
 
-    # ── Ensemble predictions ──
-    log(f"\n  Generating ensemble predictions for ALL {len(df):,} rows ...")
-    lgbm_all = calib_lgbm.predict_proba(X_all)[:, 1]
-    xgb_all = calib_xgb.predict_proba(X_all)[:, 1]
-    ensemble_probs = 0.5 * lgbm_all + 0.5 * xgb_all
+    # ── Ensemble predictions (calib + holdout only — exclude training period) ──
+    oos_mask = df["date"] > train_end_ts  # 2023+ only (calib + holdout)
+    df_oos = df[oos_mask].copy()
+    X_oos = df_oos[feature_cols].values
+    log(f"\n  Generating ensemble predictions for {len(df_oos):,} OOS rows "
+        f"(excluding {(~oos_mask).sum():,} in-sample training rows) ...")
+    lgbm_oos = calib_lgbm.predict_proba(X_oos)[:, 1]
+    xgb_oos = calib_xgb.predict_proba(X_oos)[:, 1]
+    ensemble_oos = 0.5 * lgbm_oos + 0.5 * xgb_oos
 
-    df["prob_lgbm"] = lgbm_all
-    df["prob_rf"] = xgb_all  # column name kept as prob_rf for schema compatibility
-    df["prob_ensemble"] = ensemble_probs
+    df_oos["prob_lgbm"] = lgbm_oos
+    df_oos["prob_rf"] = xgb_oos  # column name kept as prob_rf for schema compatibility
+    df_oos["prob_ensemble"] = ensemble_oos
 
     ens_train_auc = roc_auc_score(y_train, 0.5 * lgbm_train_probs + 0.5 * xgb_train_probs)
     ens_auc = roc_auc_score(y_calib, 0.5 * lgbm_calib_probs + 0.5 * xgb_calib_probs)
     ens_holdout_auc = roc_auc_score(y_holdout, 0.5 * lgbm_holdout_probs + 0.5 * xgb_holdout_probs)
     log(f"  Ensemble AUC -- Train: {ens_train_auc:.4f}  Calib: {ens_auc:.4f}  Holdout: {ens_holdout_auc:.4f}")
-    log(f"  Ensemble range: [{ensemble_probs.min():.4f}, {ensemble_probs.max():.4f}]")
-    log(f"  Mean: {ensemble_probs.mean():.4f}  Median: {np.median(ensemble_probs):.4f}")
+    log(f"  Ensemble range: [{ensemble_oos.min():.4f}, {ensemble_oos.max():.4f}]")
+    log(f"  Mean: {ensemble_oos.mean():.4f}  Median: {np.median(ensemble_oos):.4f}")
 
     # Save models
     log(f"\n  Saving LGBM -> {MODEL_FILE.name}")
@@ -277,13 +281,14 @@ def train_validation_model():
     joblib.dump(imp, str(IMPUTER_FILE))
     log(f"  Imputer -> {IMPUTER_FILE.name}")
 
-    # Save predictions
+    # Save predictions (2023+ only — no in-sample training data)
     save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_rf",
                  "prob_ensemble", "fwd_ret", "in_sp500"]
-    df[save_cols].to_parquet(PRED_FILE, index=False, engine="pyarrow", compression="snappy")
-    log(f"  Predictions -> {PRED_FILE.name} ({len(df):,} rows)")
+    df_oos[save_cols].to_parquet(PRED_FILE, index=False, engine="pyarrow", compression="snappy")
+    log(f"  Predictions -> {PRED_FILE.name} ({len(df_oos):,} rows, "
+        f"{df_oos['date'].min().date()} to {df_oos['date'].max().date()})")
 
-    return calib_lgbm, calib_xgb, imp, df, feature_cols
+    return calib_lgbm, calib_xgb, imp, df_oos, feature_cols
 
 
 # ── STEP 2: Verify match ────────────────────────────────────────────────────
