@@ -1306,9 +1306,9 @@ class PortfolioManager:
                 strat = self.strategies[pos.strategy_name]
                 should_exit, _reason = strat.check_exit(pos, cur)
                 if should_exit:
-                    to_close.append(sym)
+                    to_close.append((sym, _reason))
 
-            for sym in to_close:
+            for sym, exit_reason in to_close:
                 pos = positions.pop(sym)
                 if pos.price_based:
                     # Use actual closing price
@@ -1338,6 +1338,8 @@ class PortfolioManager:
                         "ret": (net - pos.cost) / pos.cost,
                         "hold_days": i - pos.entry_idx,
                         "price_based": pos.price_based,
+                        "exit_reason": exit_reason,
+                        "peak_price": pos.peak_price,
                     })
                 if multi:
                     cooldowns[(sym, pos.strategy_name)] = i + COOLDOWN_DAYS
@@ -1478,6 +1480,8 @@ class PortfolioManager:
                         "ret": 0.0,
                         "hold_days": 0,
                         "price_based": sig.price_based,
+                        "exit_reason": "",
+                        "peak_price": entry_px,
                     })
                 # Track sector buys this cycle
                 sector_bought_today[sector] = sector_bought_today.get(sector, 0) + 1
