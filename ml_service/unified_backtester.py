@@ -1617,6 +1617,14 @@ SLOT_LIVE = SlotConfig(
     max_positions=8,
 )
 
+# V2: Reallocate dead strategy slots to ML (mega_cap: 0 trades in 11y, flex consolidated)
+# ml_medium: 2→5 (+3 from mega_cap+flex), momentum: 3 (unchanged), max: 8 (unchanged)
+SLOT_LIVE_V2 = SlotConfig(
+    strategy_slots={"ml_medium": 5, "momentum": 3, "mean_reversion": 0, "mega_cap": 0},
+    flex_slots=0,
+    max_positions=8,
+)
+
 # TSMOM only: 2 primary, no flex
 SLOT_TSMOM_ONLY = SlotConfig(
     strategy_slots={"tsmom": 2},
