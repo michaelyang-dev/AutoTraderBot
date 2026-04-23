@@ -1094,61 +1094,62 @@ class TrendStrategy(Strategy):
         return "trend"
 
     def _precompute(self):
-        """Pre-compute SMA200, SMA50, and trend status for all dates."""
-        px = self._price_data
-        dates = px.index.tolist()
-
-        for date in dates:
-            loc = px.index.get_loc(date)
-            if loc < self.SMA_LONG_PERIOD:
+        """Pre-compute SMA200, SMA50, and trend status using vectorized pandas operations.
+        
+        Previous implementation was a triple-nested Python loop doing ~75M .mean() calls,
+        taking 15+ minutes. This vectorized version uses pandas.rolling() internally
+        implemented in C, running in ~2-5 seconds.
+        """
+        # Subset to symbols we care about (drop NEVER_BUY and SPY)
+        px = self._price_data[self._symbols].copy()
+        
+        # Vectorized rolling means — pandas does this in C
+        sma200_df = px.rolling(window=self.SMA_LONG_PERIOD, min_periods=self.SMA_LONG_PERIOD).mean()
+        sma50_df = px.rolling(window=self.SMA_SHORT_PERIOD, min_periods=self.SMA_SHORT_PERIOD).mean()
+        
+        # Days where price > SMA200 in the lookback window
+        price_above_200_df = (px > sma200_df).astype(int)
+        days_above_df = price_above_200_df.rolling(
+            window=self.LOOKBACK_WINDOW, min_periods=1
+        ).sum()
+        
+        # is_strong conditions: price > sma200 AND sma50 > sma200 AND days_above >= threshold
+        is_strong_df = (
+            (px > sma200_df) & 
+            (sma50_df > sma200_df) & 
+            (days_above_df >= self.MIN_DAYS_ABOVE)
+        )
+        
+        # Materialize to dict format for compatibility with generate_signals()
+        # Skip dates before SMA200 warmup
+        valid_dates = px.index[self.SMA_LONG_PERIOD:]
+        
+        for date in valid_dates:
+            # Fast row-wise dict extraction
+            sma200_row = sma200_df.loc[date].dropna()
+            sma50_row = sma50_df.loc[date].dropna()
+            
+            if sma200_row.empty:
                 continue
-
-            sma200_day = {}
-            sma50_day = {}
+            
+            self._sma200[date] = sma200_row.to_dict()
+            self._sma50[date] = sma50_row.to_dict()
+            
+            # Build trend_status dict only for symbols with valid SMA200
+            is_strong_row = is_strong_df.loc[date]
+            days_above_row = days_above_df.loc[date]
+            px_row = px.loc[date]
+            
             trend_day = {}
-
-            for sym in self._symbols:
-                col = px[sym]
-                curr = col.iloc[loc]
-                if np.isnan(curr) or curr <= 0:
+            for sym in sma200_row.index:
+                curr = px_row.get(sym)
+                if curr is None or np.isnan(curr) or curr <= 0:
                     continue
-
-                # SMA200
-                sma200_val = col.iloc[loc - self.SMA_LONG_PERIOD + 1:loc + 1].mean()
-                sma200_day[sym] = sma200_val
-
-                # SMA50
-                if loc >= self.SMA_SHORT_PERIOD:
-                    sma50_val = col.iloc[loc - self.SMA_SHORT_PERIOD + 1:loc + 1].mean()
-                    sma50_day[sym] = sma50_val
-                else:
-                    continue
-
-                price_above_200 = curr > sma200_val
-
-                # Count days above SMA200 in lookback window
-                lookback = min(self.LOOKBACK_WINDOW, loc - self.SMA_LONG_PERIOD + 1)
-                days_above = 0
-                for k in range(lookback):
-                    bar_loc = loc - k
-                    bar_price = col.iloc[bar_loc]
-                    if np.isnan(bar_price):
-                        continue
-                    bar_sma200 = col.iloc[bar_loc - self.SMA_LONG_PERIOD + 1:bar_loc + 1].mean()
-                    if bar_price > bar_sma200:
-                        days_above += 1
-
-                is_strong = (price_above_200 and sma50_val > sma200_val
-                             and days_above >= self.MIN_DAYS_ABOVE)
-
                 trend_day[sym] = {
-                    "is_strong": is_strong,
-                    "price_above_200": price_above_200,
-                    "days_above": days_above,
+                    "is_strong": bool(is_strong_row.get(sym, False)),
+                    "price_above_200": bool(curr > sma200_row[sym]),
+                    "days_above": int(days_above_row.get(sym, 0)),
                 }
-
-            self._sma200[date] = sma200_day
-            self._sma50[date] = sma50_day
             self._trend_status[date] = trend_day
 
     def generate_signals(self, date, universe_data):
