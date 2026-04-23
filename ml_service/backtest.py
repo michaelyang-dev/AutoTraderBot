@@ -79,7 +79,8 @@ def _build_slot_config(strat_names):
 
 
 def build_strategies(names, predictions_df, price_data, volume_data,
-                     threshold, selection_mode, top_n):
+                     threshold, selection_mode, top_n,
+                     momentum_regime_filter=False):
     """Instantiate strategy objects from name list."""
     strats = []
     for name in names:
@@ -88,7 +89,8 @@ def build_strategies(names, predictions_df, price_data, volume_data,
                 predictions_df, threshold=threshold,
                 top_n=top_n, selection_mode=selection_mode))
         elif name == "momentum":
-            strats.append(MomentumStrategy(price_data, volume_data=volume_data))
+            strats.append(MomentumStrategy(price_data, volume_data=volume_data,
+                                           regime_filter=momentum_regime_filter))
         elif name == "mean_reversion":
             strats.append(MeanReversionStrategy(price_data, volume_data=volume_data))
         elif name == "ml_slow":
@@ -136,6 +138,8 @@ def main():
                         help="Write metrics JSON to this path")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress progress output")
+    parser.add_argument("--momentum-regime-filter", action="store_true",
+                        help="Skip momentum buys when SPY < 50-day SMA (regime filter)")
     parser.add_argument("--export-logs", default=None, metavar="DIR",
                         help="Export equity_curve.parquet and trade_log.parquet to DIR")
     args = parser.parse_args()
@@ -226,7 +230,8 @@ def main():
         f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}, vol_sizing={args.vol_sizing}]")
     strategies = build_strategies(
         strat_names, preds, price_data, volume_data,
-        args.ml_threshold, args.selection_mode, args.top_n)
+        args.ml_threshold, args.selection_mode, args.top_n,
+        momentum_regime_filter=args.momentum_regime_filter)
 
     # ── 4. Run backtest ─────────────────────────────────────────────────
     log("Running backtest ...")

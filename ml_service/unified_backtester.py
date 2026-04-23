@@ -535,15 +535,17 @@ class MomentumStrategy(Strategy):
     HIGH_ATR_PCT   = 0.08
     HIGH_ATR_THRESH = 0.03  # ATR/price threshold
 
-    def __init__(self, price_data, volume_data=None):
+    def __init__(self, price_data, volume_data=None, regime_filter=False):
         """
         Args
         ----
         price_data : DataFrame — close prices, columns=symbols, index=dates
         volume_data : DataFrame — daily volume, same shape (optional, for volume filter)
+        regime_filter : if True, skip all momentum buys when SPY < 50-day SMA
         """
         self._price_data = price_data
         self._volume_data = volume_data
+        self._regime_filter = regime_filter
         self._symbols = [s for s in price_data.columns if s not in NEVER_BUY and s != "SPY"]
 
         # Pre-compute all indicators
@@ -552,6 +554,7 @@ class MomentumStrategy(Strategy):
         self._sma200 = {}       # {date → {sym → sma200}}
         self._atr_pct = {}      # {date → {sym → atr/price}}
         self._avg_vol = {}      # {date → {sym → 20d avg volume}}
+        self._spy_below_50sma = set()  # dates where SPY < 50-SMA (regime filter)
         self._precompute()
 
     @property
@@ -608,7 +611,22 @@ class MomentumStrategy(Strategy):
                 vol_row = avg_vol_df.loc[date].dropna() if date in avg_vol_df.index else pd.Series(dtype=float)
                 self._avg_vol[date] = vol_row.to_dict() if not vol_row.empty else {}
 
+        # SPY 50-SMA regime filter (pre-compute which dates SPY is below)
+        if self._regime_filter and "SPY" in px.columns:
+            spy_close = px["SPY"]
+            spy_sma50 = spy_close.rolling(50, min_periods=50).mean()
+            for date in px_sub.index:
+                spy_px = spy_close.get(date)
+                sma_val = spy_sma50.get(date)
+                if spy_px is not None and sma_val is not None:
+                    if not np.isnan(spy_px) and not np.isnan(sma_val) and spy_px < sma_val:
+                        self._spy_below_50sma.add(date)
+
     def generate_signals(self, date, universe_data):
+        # Regime filter: skip all momentum buys when SPY < 50-day SMA
+        if self._regime_filter and date in self._spy_below_50sma:
+            return []
+
         rankings = self._rankings.get(date, {})
         if not rankings:
             return []
