@@ -198,6 +198,15 @@ def main():
     close = close.reindex(sim_index, method="ffill")
 
     spy_px = close["SPY"].dropna()
+    if spy_px.empty:
+        # Cache may be stale or corrupt — retry without cache
+        log("SPY data missing after reindex — retrying without cache ...")
+        close = load_bars_cached(universe_syms, start_str, end_str, no_cache=True)
+        close = close.reindex(sim_index, method="ffill")
+        spy_px = close["SPY"].dropna()
+        if spy_px.empty:
+            sys.exit("ERROR: No SPY price data available for the requested date range.")
+
     spy_dict = close["SPY"].to_dict()
     spy_bh = spy_px / spy_px.iloc[0] * INITIAL_CASH
 
