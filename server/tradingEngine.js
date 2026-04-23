@@ -998,6 +998,36 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let cooldowns = {};              // strategy-specific: { "sym:strategy" → { cycle, expireTime } }
   let trendPositions = {};
   let trendBreakCounts = {};
+
+  // ── Alert rate limiting (in-memory) ──
+  const _alertState = {
+    lastAlertAt: 0,
+    windowMs: 5 * 60 * 1000,       // 5-minute suppression window
+    pendingCount: 0,
+    wasDisconnected: false,         // tracks whether we need a recovery message
+  };
+
+  function _shouldAlertConnection() {
+    const now = Date.now();
+    if (now - _alertState.lastAlertAt > _alertState.windowMs) {
+      _alertState.lastAlertAt = now;
+      _alertState.pendingCount = 1;
+      _alertState.wasDisconnected = true;
+      return { send: true, count: 1 };
+    }
+    _alertState.pendingCount++;
+    return { send: false, count: _alertState.pendingCount };
+  }
+
+  function _checkConnectionRecovery() {
+    if (_alertState.wasDisconnected) {
+      _alertState.wasDisconnected = false;
+      _alertState.pendingCount = 0;
+      return true;
+    }
+    return false;
+  }
+
   // ── Multi-layer circuit breaker state ──
   let circuitBreaker = {
     // Layer 1: Daily
@@ -1419,7 +1449,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       error = err.message;
       connected = false;
       addLog(`Initialization failed: ${err.message}`, "error");
-      notify.send(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
+      const alert = _shouldAlertConnection();
+      if (alert.send) {
+        notify.send(`⚠️ Alpaca connection issue on startup — retrying. Error: ${err.message}`, { deduplicate: true, immediate: true });
+      }
       throw err;
     }
   }
@@ -1612,9 +1645,19 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       connected = true;
       error = null;
+      // Send recovery notification if we were previously disconnected
+      if (_checkConnectionRecovery()) {
+        addLog("[connection] Alpaca connection restored", "system");
+        notify.send(`✅ Alpaca connection restored — trading resumed normally.`, { immediate: true });
+      }
     } catch (err) {
       addLog(`Price poll error: ${err.message}`, "error");
-      notify.send(`🚨 ALPACA CONNECTION FAILED — cannot execute trades. Error: ${err.message}`, { deduplicate: true, immediate: true });
+      const alert = _shouldAlertConnection();
+      if (alert.send) {
+        notify.send(`⚠️ Alpaca connection issue — this cycle skipped, retrying. Error: ${err.message}`, { immediate: true });
+      } else {
+        addLog(`[connection] Suppressed alert (${alert.count} errors in 5-min window)`, "system");
+      }
       error = err.message;
     }
   }
