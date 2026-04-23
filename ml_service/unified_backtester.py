@@ -559,71 +559,54 @@ class MomentumStrategy(Strategy):
         return "momentum"
 
     def _precompute(self):
-        """Pre-compute momentum returns, rankings, SMA, ATR, volume."""
-        dates = self._price_data.index.tolist()
+        """Pre-compute momentum returns, rankings, SMA, ATR, volume.
+
+        Uses vectorized pandas rolling operations for all indicators,
+        then fast row-wise .dropna().to_dict() for materialization.
+        """
         px = self._price_data
+        sym_cols = [s for s in self._symbols if s in px.columns]
+        px_sub = px[sym_cols]
 
-        # 63-day returns
-        ret63 = px.pct_change(self.LOOKBACK)
-
-        # 200-day SMA
-        sma200 = px.rolling(self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
-
-        # ATR(14) as percentage of price
-        # True Range = max(H-L, |H-Cp|, |L-Cp|) — with close-only data, use |C-Cp|
-        daily_ret_abs = px.pct_change().abs()
+        # Vectorized rolling computations (all done in C)
+        ret63 = px_sub.pct_change(self.LOOKBACK)
+        sma200 = px_sub.rolling(self.SMA_PERIOD, min_periods=self.SMA_PERIOD).mean()
+        daily_ret_abs = px_sub.pct_change().abs()
         atr = daily_ret_abs.rolling(self.ATR_PERIOD, min_periods=self.ATR_PERIOD).mean()
 
-        # 20-day avg volume
-        avg_vol = None
+        avg_vol_df = None
         if self._volume_data is not None:
-            avg_vol = self._volume_data.rolling(self.VOL_PERIOD, min_periods=self.VOL_PERIOD).mean()
+            vol_cols = [s for s in sym_cols if s in self._volume_data.columns]
+            if vol_cols:
+                avg_vol_df = self._volume_data[vol_cols].rolling(
+                    self.VOL_PERIOD, min_periods=self.VOL_PERIOD).mean()
 
-        for date in dates:
-            if date not in ret63.index:
+        # Materialize to dict-of-dicts using fast row extraction
+        for date in px_sub.index:
+            # Momentum returns
+            ret_row = ret63.loc[date].dropna()
+            if ret_row.empty:
+                self._mom_ret[date] = {}
                 continue
-
-            # Momentum returns for this date
-            rets = {}
-            for sym in self._symbols:
-                if sym in ret63.columns:
-                    r = ret63.at[date, sym]
-                    if not np.isnan(r):
-                        rets[sym] = r
+            rets = ret_row.to_dict()
             self._mom_ret[date] = rets
 
             # Rankings (1 = best momentum)
-            if rets:
-                sorted_syms = sorted(rets.keys(), key=lambda s: rets[s], reverse=True)
-                self._rankings[date] = {s: rank + 1 for rank, s in enumerate(sorted_syms)}
+            sorted_syms = sorted(rets.keys(), key=lambda s: rets[s], reverse=True)
+            self._rankings[date] = {s: rank + 1 for rank, s in enumerate(sorted_syms)}
 
             # SMA200
-            sma_day = {}
-            for sym in self._symbols:
-                if sym in sma200.columns:
-                    v = sma200.at[date, sym]
-                    if not np.isnan(v):
-                        sma_day[sym] = v
-            self._sma200[date] = sma_day
+            sma_row = sma200.loc[date].dropna()
+            self._sma200[date] = sma_row.to_dict() if not sma_row.empty else {}
 
             # ATR percentage
-            atr_day = {}
-            for sym in self._symbols:
-                if sym in atr.columns:
-                    v = atr.at[date, sym]
-                    if not np.isnan(v):
-                        atr_day[sym] = v
-            self._atr_pct[date] = atr_day
+            atr_row = atr.loc[date].dropna()
+            self._atr_pct[date] = atr_row.to_dict() if not atr_row.empty else {}
 
             # Volume
-            if avg_vol is not None:
-                vol_day = {}
-                for sym in self._symbols:
-                    if sym in avg_vol.columns:
-                        v = avg_vol.at[date, sym]
-                        if not np.isnan(v):
-                            vol_day[sym] = v
-                self._avg_vol[date] = vol_day
+            if avg_vol_df is not None:
+                vol_row = avg_vol_df.loc[date].dropna() if date in avg_vol_df.index else pd.Series(dtype=float)
+                self._avg_vol[date] = vol_row.to_dict() if not vol_row.empty else {}
 
     def generate_signals(self, date, universe_data):
         rankings = self._rankings.get(date, {})
@@ -830,51 +813,55 @@ class MegaCapStrategy(Strategy):
         return "mega_cap"
 
     def _precompute(self):
-        px = self._price_data
-        dates = px.index.tolist()
-        for date in dates:
-            loc = px.index.get_loc(date)
-            if loc < self.LOOKBACK:
-                continue
+        """Vectorized precompute using pandas.rolling() — replaces per-date per-symbol loop."""
+        px = self._price_data[self._symbols].copy()
 
-            candidates = []
+        # Vectorized rolling computations
+        sma200_df = px.rolling(window=self.SMA_LONG, min_periods=self.SMA_LONG).mean()
+        sma50_df = px.rolling(window=self.SMA_EXIT, min_periods=self.SMA_EXIT).mean()
+        high_52wk_df = px.rolling(window=252, min_periods=252).max()
+
+        # 12-1 momentum: price[t-SKIP] / price[t-LOOKBACK] - 1
+        price_skip = px.shift(self.SKIP)
+        price_12m = px.shift(self.LOOKBACK)
+        mom_12_1_df = (price_skip / price_12m) - 1.0
+
+        valid_dates = px.index[self.LOOKBACK:]
+
+        for date in valid_dates:
+            px_row = px.loc[date]
+            sma200_row = sma200_df.loc[date]
+            sma50_row = sma50_df.loc[date]
+            high_row = high_52wk_df.loc[date]
+            mom_row = mom_12_1_df.loc[date]
+
             sma200_day = {}
             sma50_day = {}
+            candidates = []
 
             for sym in self._symbols:
-                col = px[sym]
-                curr = col.iloc[loc]
+                curr = px_row.get(sym, np.nan)
                 if np.isnan(curr) or curr <= 0:
                     continue
 
-                # SMA200
-                if loc >= self.SMA_LONG:
-                    sma200_day[sym] = col.iloc[loc - self.SMA_LONG + 1:loc + 1].mean()
-                    if curr <= sma200_day[sym]:
-                        continue
-                else:
+                s200 = sma200_row.get(sym, np.nan)
+                if np.isnan(s200) or curr <= s200:
+                    continue
+                sma200_day[sym] = s200
+
+                s50 = sma50_row.get(sym, np.nan)
+                if not np.isnan(s50):
+                    sma50_day[sym] = s50
+
+                m = mom_row.get(sym, np.nan)
+                if np.isnan(m):
                     continue
 
-                # SMA50 (for exit check)
-                if loc >= self.SMA_EXIT:
-                    sma50_day[sym] = col.iloc[loc - self.SMA_EXIT + 1:loc + 1].mean()
-
-                # 12-1 momentum
-                price_skip = col.iloc[loc - self.SKIP]
-                price_12m = col.iloc[loc - self.LOOKBACK]
-                if np.isnan(price_12m) or price_12m <= 0:
+                h52 = high_row.get(sym, np.nan)
+                if not np.isnan(h52) and h52 > 0 and (curr / h52) < self.HIGH_52WK:
                     continue
-                if np.isnan(price_skip) or price_skip <= 0:
-                    continue
-                mom_12_1 = (price_skip / price_12m) - 1.0
 
-                # 52-week high filter
-                if loc >= 252:
-                    high_52wk = col.iloc[loc - 251:loc + 1].max()
-                    if high_52wk > 0 and (curr / high_52wk) < self.HIGH_52WK:
-                        continue
-
-                candidates.append((sym, mom_12_1))
+                candidates.append((sym, m))
 
             candidates.sort(key=lambda x: x[1], reverse=True)
             self._mom[date] = candidates
