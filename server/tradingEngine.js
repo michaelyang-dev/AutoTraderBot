@@ -38,6 +38,7 @@ const RISK = {
 
 // ── Strategy kill switches ──
 const DISABLE_TREND_STRATEGY = true;  // Backtest proved trend hurts (-8.41pp alpha, -0.364 Sharpe)
+const ENABLE_MOMENTUM_REGIME_FILTER = true;  // Skip momentum buys when SPY < 50-SMA (OOS: +11.8pp CAGR, +0.69 Sharpe, -7.6pp DD)
 
 // ── Multi-strategy slot allocation ──
 const SLOT_CONFIG = {
@@ -2432,7 +2433,15 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       // Filter momentum signals: check cooldowns and regime
       const momOpportunities = [];
-      if (regime !== "BEARISH") {
+      const spySma50 = regimeResult.sma50;
+      const spyNowPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
+      const momRegimeBlocked = ENABLE_MOMENTUM_REGIME_FILTER
+        && spySma50 != null && spyNowPrice != null
+        && spyNowPrice < spySma50;
+
+      if (momRegimeBlocked) {
+        addLog(`[momentum] SKIPPED — SPY $${spyNowPrice.toFixed(2)} below 50-SMA $${spySma50.toFixed(2)} (regime filter)`, "system");
+      } else if (regime !== "BEARISH") {
         for (const sig of momResult.signals) {
           if (isOnCooldown(sig.sym, "momentum")) continue;
           // First-to-fire: skip if ML already claimed this symbol
