@@ -1320,6 +1320,32 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
       addLog(`Loaded ${positionsRaw.length} position(s): ${positionsRaw.map(p => p.symbol).join(", ") || "none"}`, "system");
 
+      // 2b. Rehydrate strategy tags from journal
+      for (const p of positionsRaw) {
+        if (p.symbol === "SPY") continue;
+        try {
+          const entry = journal.findLatestEntryTrade(p.symbol);
+          if (entry && entry.strategy) {
+            positionStrategy[p.symbol] = entry.strategy;
+            // Restore trendPositions map so exit logic (trailing stop, SMA-break) works
+            if (entry.strategy === "trend") {
+              trendPositions[p.symbol] = {
+                entryPrice: entry.fill_price || p.avg_entry_price,
+                peakPrice: Math.max(entry.fill_price || 0, p.current_price),
+              };
+              trendBreakCounts[p.symbol] = 0;
+            }
+            addLog(`[rehydrate] ${p.symbol} tagged as ${entry.strategy} from journal (bought ${entry.submitted_at})`, "system");
+          } else {
+            positionStrategy[p.symbol] = "legacy";
+            addLog(`[rehydrate] ${p.symbol} has no journal entry — tagged legacy`, "system");
+          }
+        } catch (err) {
+          positionStrategy[p.symbol] = "legacy";
+          addLog(`[rehydrate] ${p.symbol} journal lookup failed: ${err.message} — tagged legacy`, "error");
+        }
+      }
+
       // 3. Restore idle SPY tracking
       const spyPos = positionsRaw.find(p => p.symbol === "SPY");
       if (spyPos) {

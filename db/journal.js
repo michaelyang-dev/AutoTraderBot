@@ -139,6 +139,16 @@ function initDb(dbPath) {
       LIMIT 1
     `),
 
+    // Most recent unconsumed buy for a symbol (for strategy rehydration on restart)
+    findLatestEntryTrade: db.prepare(`
+      SELECT *, (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) AS remaining
+      FROM trades
+      WHERE symbol = @symbol AND side = 'buy' AND status = 'filled'
+        AND (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) > 0.001
+      ORDER BY submitted_at DESC
+      LIMIT 1
+    `),
+
     // Strategy-aware FIFO: oldest buy with remaining shares for this symbol+strategy
     findEntryTradeByStrategy: db.prepare(`
       SELECT *, (COALESCE(filled_qty, qty) - COALESCE(consumed_qty, 0)) AS remaining
@@ -648,6 +658,11 @@ function findEntryTrade(symbol) {
   catch (err) { console.error("journal: findEntryTrade failed:", err.message); return null; }
 }
 
+function findLatestEntryTrade(symbol) {
+  try { return stmts.findLatestEntryTrade.get({ symbol }); }
+  catch (err) { console.error("journal: findLatestEntryTrade failed:", err.message); return null; }
+}
+
 function findEntryTradeByStrategy(symbol, strategy) {
   try { return stmts.findEntryTradeByStrategy.get({ symbol, strategy }); }
   catch (err) { console.error("journal: findEntryTradeByStrategy failed:", err.message); return null; }
@@ -724,6 +739,7 @@ module.exports = {
   getDailySnapshots,
   getPreviousSnapshot,
   findEntryTrade,
+  findLatestEntryTrade,
   findEntryTradeByStrategy,
   findAllFilledSells,
   consumeEntryShares,
