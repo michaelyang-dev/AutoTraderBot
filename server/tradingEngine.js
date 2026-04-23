@@ -36,6 +36,9 @@ const RISK = {
   MIN_POSITION_DOLLARS: 5000,   // skip positions smaller than $5k
 };
 
+// ── Strategy kill switches ──
+const DISABLE_TREND_STRATEGY = true;  // Backtest proved trend hurts (-8.41pp alpha, -0.364 Sharpe)
+
 // ── Multi-strategy slot allocation ──
 const SLOT_CONFIG = {
   ml_medium: 2,          // ML primary slots (regime-adaptive)
@@ -2749,7 +2752,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 6: Trend new entries ──
-      if (!skipNewBuys && regime !== "BEARISH") {
+      if (DISABLE_TREND_STRATEGY) {
+        addLog(`[trend] SKIPPED — DISABLE_TREND_STRATEGY flag is true`, "system");
+      } else if (!skipNewBuys && regime !== "BEARISH") {
         const trendCount = Object.keys(trendPositions).length;
         let trendCounts = countByStrategy();
         if (trendCount < 3 && trendCounts.total < SLOT_CONFIG.max) {
