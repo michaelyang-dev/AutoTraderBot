@@ -128,6 +128,8 @@ def main():
                         help="Strategies to exclude from combined (e.g. --exclude mean_reversion)")
     parser.add_argument("--include-trend", action="store_true",
                         help="Include TrendStrategy in combined runs (matches live trend engine)")
+    parser.add_argument("--predictions-path", default=None, metavar="FILE",
+                        help="Path to a custom predictions parquet file (overrides --validation)")
     parser.add_argument("--validation", action="store_true",
                         help="Use validation predictions (holdout 2024+, NOT for live)")
     parser.add_argument("--vol-sizing", action="store_true",
@@ -156,11 +158,16 @@ def main():
             print(msg, flush=True)
 
     # ── 1. Load predictions ─────────────────────────────────────────────
-    if args.validation:
+    if args.predictions_path:
+        pred_path = Path(args.predictions_path)
+        log(f"Loading custom predictions from {pred_path} ...")
+        preds = load_predictions_cached(pred_file=pred_path, no_cache=True)
+    elif args.validation:
         log("Loading VALIDATION predictions (holdout 2024+) ...")
+        preds = load_predictions_cached(no_cache=no_cache, validation=args.validation)
     else:
         log("Loading predictions ...")
-    preds = load_predictions_cached(no_cache=no_cache, validation=args.validation)
+        preds = load_predictions_cached(no_cache=no_cache, validation=args.validation)
     all_dates = sorted(preds["date"].unique().tolist())
     universe_syms = sorted(preds["symbol"].unique().tolist())
 
