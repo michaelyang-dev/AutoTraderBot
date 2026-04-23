@@ -30,8 +30,12 @@ Run with:
 
 import sys
 import time
+import os
 import warnings
 from pathlib import Path
+
+# Prevent OpenMP thread deadlock on macOS ARM64
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import joblib
 import numpy as np

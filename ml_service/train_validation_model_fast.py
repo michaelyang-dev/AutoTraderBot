@@ -31,10 +31,16 @@ Run with:
     python3 train_validation_model_fast.py
 """
 
+import os
 import sys
 import time
 import warnings
 from pathlib import Path
+
+# Prevent OpenMP thread deadlock on macOS ARM64 — XGBoost's multi-threaded
+# OpenMP runtime can hang when libomp contends with system threads.
+# n_jobs=1 alone is insufficient; the env var must be set before import.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import joblib
 import numpy as np
