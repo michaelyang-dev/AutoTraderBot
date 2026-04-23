@@ -34,3 +34,11 @@ ml_service/cache/
 
 # Deployment scripts (may contain paths/secrets)
 deploy/
+
+# Data files (too large for git)
+ml_service/data/*.parquet
+ml_service/data/*.pkl
+ml_service/data/altdata_cache/
+ml_service/data/backups/
+ml_service/data/earnings_cache/
+ml_service/data/fundamentals_cache/
