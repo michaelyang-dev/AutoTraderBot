@@ -419,6 +419,129 @@ class SlotConfig:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Consensus indicators (matches live tradingEngine.js getSignals)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _ema(arr, period):
+    """Exponential moving average — matches JS ema()."""
+    if len(arr) < period:
+        return None
+    k = 2.0 / (period + 1)
+    e = np.mean(arr[:period])
+    for v in arr[period:]:
+        e = v * k + e * (1 - k)
+    return e
+
+
+def _consensus_score(price_data, symbol, date):
+    """
+    Compute consensus score for a symbol on a given date.
+    Returns buyVotes - sellVotes (float), or None if insufficient data.
+    Matches live tradingEngine.js getSignals() exactly.
+    """
+    if symbol not in price_data.columns:
+        return None
+    # Get prices up to and including this date
+    col = price_data[symbol]
+    mask = col.index <= date
+    prices = col.loc[mask].dropna().values
+    if len(prices) < 35:
+        return None
+
+    buy_votes = 0.0
+    sell_votes = 0.0
+
+    # 1. SMA crossover (10/30)
+    s10 = np.mean(prices[-10:])
+    s30 = np.mean(prices[-30:])
+    ps10 = np.mean(prices[-11:-1])
+    ps30 = np.mean(prices[-31:-1])
+    if s10 > s30 and ps10 <= ps30:
+        buy_votes += 1
+    elif s10 < s30 and ps10 >= ps30:
+        sell_votes += 1
+    elif s10 > s30:
+        buy_votes += 0.3
+    else:
+        sell_votes += 0.3
+
+    # 2. RSI (14)
+    period = 14
+    if len(prices) >= period + 1:
+        gains = 0.0
+        losses = 0.0
+        for j in range(len(prices) - period, len(prices)):
+            d = prices[j] - prices[j - 1]
+            if d > 0:
+                gains += d
+            else:
+                losses -= d
+        rs = gains / (losses if losses > 0 else 0.001)
+        rsi_val = 100.0 - 100.0 / (1.0 + rs)
+    else:
+        rsi_val = 50.0
+    if rsi_val < 28:
+        buy_votes += 1
+    elif rsi_val > 72:
+        sell_votes += 1
+    elif rsi_val < 40:
+        buy_votes += 0.3
+    elif rsi_val > 60:
+        sell_votes += 0.3
+
+    # 3. MACD (12/26)
+    e12 = _ema(prices, 12)
+    e26 = _ema(prices, 26)
+    if e12 is not None and e26 is not None:
+        m = e12 - e26
+        pe12 = _ema(prices[:-1], 12)
+        pe26 = _ema(prices[:-1], 26)
+        if pe12 is not None and pe26 is not None:
+            pm = pe12 - pe26
+            s = m * 0.82
+            ps = pm * 0.82
+            if m > s and pm <= ps:
+                buy_votes += 1
+            elif m < s and pm >= ps:
+                sell_votes += 1
+            elif m > s:
+                buy_votes += 0.3
+            else:
+                sell_votes += 0.3
+
+    # 4. Bollinger Bands (20, 2σ)
+    if len(prices) >= 20:
+        sl = prices[-20:]
+        mean = np.mean(sl)
+        std = np.std(sl, ddof=0)  # population std, matches JS
+        upper = mean + 2 * std
+        lower = mean - 2 * std
+        cur = prices[-1]
+        if cur <= lower:
+            buy_votes += 1
+        elif cur >= upper:
+            sell_votes += 1
+        elif cur < mean:
+            buy_votes += 0.2
+        else:
+            sell_votes += 0.2
+
+    # 5. Momentum (12-day)
+    if len(prices) > 12:
+        mom_val = (prices[-1] - prices[-13]) / prices[-13]
+        if mom_val > 0.035:
+            buy_votes += 1
+        elif mom_val < -0.025:
+            sell_votes += 1
+        elif mom_val > 0:
+            buy_votes += 0.2
+        else:
+            sell_votes += 0.2
+
+    return buy_votes - sell_votes
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ML Medium Strategy — wraps the existing LightGBM model
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -460,6 +583,16 @@ class MLMediumStrategy(Strategy):
 
     # -- interface --------------------------------------------------------
 
+    # Stop-loss / take-profit thresholds (matches live tradingEngine.js RISK)
+    STOP_LOSS_PCT       = -0.08
+    TAKE_PROFIT_PCT     =  0.25   # WF-optimized: lets winners run
+    TRAILING_STOP_PCT   = -0.12   # WF-optimized: reduces premature exits
+    ML_MIN_HOLD_DAYS    =  5      # consensus exit blocked during first 5 trading days
+
+    def set_price_data(self, price_data):
+        """Attach full price DataFrame for consensus indicator computation."""
+        self._price_data = price_data
+
     def generate_signals(self, date, universe_data):
         raw = self._signals_by_date.get(date, [])
         if self._selection_mode == "top_n":
@@ -471,11 +604,34 @@ class MLMediumStrategy(Strategy):
             selected = [(s, p, r) for s, p, r in raw if p > self._threshold]
         return [
             Signal(symbol=sym, confidence=prob,
-                   strategy_name=self.name, fwd_ret=fwd_ret)
+                   strategy_name=self.name, fwd_ret=fwd_ret,
+                   price_based=True)
             for sym, prob, fwd_ret in selected
         ]
 
     def check_exit(self, position, current_data):
+        # Stop-loss and take-profit using actual daily prices (matches live)
+        if position.entry_price > 0:
+            px = current_data["prices"].get(position.symbol)
+            if px is not None and not np.isnan(px):
+                ret = (px / position.entry_price) - 1.0
+                if ret <= self.STOP_LOSS_PCT:
+                    return True, "stop_loss"
+                if ret >= self.TAKE_PROFIT_PCT:
+                    return True, "take_profit"
+                # Trailing stop: drop from peak since entry
+                if position.peak_price > 0:
+                    drop = (px / position.peak_price) - 1.0
+                    if drop <= self.TRAILING_STOP_PCT:
+                        return True, "trailing_stop"
+        # Consensus exit (after min-hold period)
+        days_held = current_data["idx"] - position.entry_idx
+        if days_held >= self.ML_MIN_HOLD_DAYS and hasattr(self, "_price_data"):
+            score = _consensus_score(self._price_data, position.symbol,
+                                     current_data["date"])
+            if score is not None and score <= -1.0:
+                return True, "consensus_sell"
+        # Max hold period
         if current_data["idx"] >= position.exit_idx:
             return True, "hold_complete"
         return False, ""
@@ -530,7 +686,8 @@ class CautiousMLStrategy(MLMediumStrategy):
             selected = raw[:self._cautious_top_n]
             return [
                 Signal(symbol=sym, confidence=prob,
-                       strategy_name=self.name, fwd_ret=fwd_ret)
+                       strategy_name=self.name, fwd_ret=fwd_ret,
+                       price_based=True)
                 for sym, prob, fwd_ret in selected
             ]
         return super().generate_signals(date, universe_data)
@@ -1309,6 +1466,12 @@ class PortfolioManager:
             _global_atr_df = daily_ret_abs.rolling(14, min_periods=14).mean()
         else:
             _global_atr_df = None
+
+        # Attach price data to ML strategies for consensus indicator computation
+        if price_data is not None:
+            for strat in self.strategies.values():
+                if hasattr(strat, "set_price_data"):
+                    strat.set_price_data(price_data)
 
         # Pre-build price lookup for price-based strategies
         # {date → {symbol → price}}
