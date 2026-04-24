@@ -1,6 +1,6 @@
 # Config A (Current Live) vs Config B (Proposed New) — Walk-Forward
 
-Generated: 2026-04-23 22:04
+Generated: 2026-04-23 22:15
 
 ## Methodology
 Proper walk-forward: year Y uses model trained only on data <= Y-1.
@@ -12,105 +12,106 @@ Same universe, features, model. Only difference is strategy/portfolio constructi
 |---------|----------------------|----------------------|
 | Slot config | ml:5, mom:3, max:8 | ml:5, mom:3, max:8 |
 | Momentum regime filter | ON (SPY < 50-SMA blocks mom buys) | ON |
+| CAUTIOUS ML filter | ON (top 2 only) | ON (top 2 only) |
+| ML top_n | 5 | 5 |
 | Regime-aware sizing | OFF | ON (8/5/2) |
-| SPY parking | OFF | OFF |
-| top_n | 8 | 8 |
+| SPY parking | ON (30% reserve, 20% threshold) | ON |
 
-## Regime Definition (Config B)
-- **BULLISH**: SPY > SMA50 AND SPY > SMA200 AND SMA50 > SMA200
-- **BEARISH**: SPY < SMA200 AND SMA50 < SMA200
-- **CAUTIOUS**: everything else
+## Regime Definition (Live Production)
+- **BULLISH**: SPY > SMA50 AND SPY > SMA200
+- **CAUTIOUS**: SPY > SMA200 (but below SMA50)
+- **BEARISH**: SPY <= SMA200
 
 ## Regime Distribution by Year
 
 | Year | BULLISH | CAUTIOUS | BEARISH | % BULLISH |
 |------|---------|----------|---------|-----------|
-| 2015 | 111d | 105d | 36d | 44% |
-| 2016 | 128d | 86d | 38d | 51% |
+| 2015 | 142d | 56d | 54d | 56% |
+| 2016 | 155d | 49d | 48d | 62% |
 | 2017 | 236d | 15d | 0d | 94% |
-| 2018 | 145d | 93d | 13d | 58% |
-| 2019 | 153d | 74d | 25d | 61% |
-| 2020 | 145d | 70d | 38d | 57% |
+| 2018 | 145d | 65d | 41d | 58% |
+| 2019 | 185d | 40d | 27d | 73% |
+| 2020 | 173d | 21d | 59d | 68% |
 | 2021 | 232d | 20d | 0d | 92% |
-| 2022 | 8d | 63d | 180d | 3% |
-| 2023 | 166d | 76d | 8d | 66% |
+| 2022 | 29d | 18d | 204d | 12% |
+| 2023 | 174d | 60d | 16d | 70% |
 | 2024 | 221d | 31d | 0d | 88% |
-| 2025 | 148d | 84d | 17d | 59% |
-| **Total** | **1693d** | **717d** | **355d** | **61%** |
+| 2025 | 180d | 27d | 42d | 72% |
+| **Total** | **1872d** | **402d** | **491d** | **68%** |
 
 ## Per-Year Comparison
 
 | Year | Regime | A CAGR | B CAGR | Delta | A Sharpe | B Sharpe | A MaxDD | B MaxDD |
 |------|--------|--------|--------|-------|----------|----------|---------|---------|
-| 2015 | B44/C42/R14 | +4.9% | -2.0% | -7.0% | 0.57 | -0.21 | -8.5% | -10.4% |
-| 2016 | B51/C34/R15 | +25.3% | +14.5% | -10.8% | 2.40 | 1.52 | -7.0% | -4.8% |
-| 2017 | B94/C6/R0 | +22.7% | +17.2% | -5.5% | 2.60 | 2.04 | -3.1% | -3.1% |
-| 2018 | B58/C37/R5 | +4.1% | +6.5% | +2.4% | 0.47 | 0.72 | -13.5% | -11.9% |
-| 2019 | B61/C29/R10 | +5.1% | -1.9% | -7.1% | 0.62 | -0.19 | -11.1% | -11.2% |
-| 2020 | B57/C28/R15 | +25.1% | +9.8% | -15.3% | 1.56 | 0.73 | -25.2% | -22.1% |
-| 2021 | B92/C8/R0 | +33.9% | +23.4% | -10.5% | 2.22 | 1.64 | -9.1% | -9.1% |
-| 2022 | B3/C25/R72 | -24.6% | -13.4% | +11.2% | -3.06 | -1.80 | -24.6% | -15.0% |
-| 2023 | B66/C30/R3 | +48.7% | +14.8% | -34.0% | 2.66 | 1.28 | -11.0% | -12.2% |
-| 2024 | B88/C12/R0 | +3.7% | -0.8% | -4.5% | 0.32 | 0.02 | -16.2% | -16.3% |
-| 2025 | B59/C34/R7 | +34.4% | +27.1% | -7.3% | 2.28 | 1.87 | -6.7% | -7.0% |
+| 2015 | B56/C22/R21 | +1.7% | -4.8% | -6.5% | 0.24 | -0.46 | -11.6% | -13.3% |
+| 2016 | B62/C19/R19 | +24.1% | +15.9% | -8.2% | 2.22 | 1.49 | -6.1% | -6.7% |
+| 2017 | B94/C6/R0 | +15.9% | +12.6% | -3.3% | 1.83 | 1.48 | -4.4% | -4.4% |
+| 2018 | B58/C26/R16 | +0.2% | -4.4% | -4.6% | 0.07 | -0.34 | -15.3% | -19.0% |
+| 2019 | B73/C16/R11 | -0.1% | -2.6% | -2.5% | 0.03 | -0.24 | -12.9% | -10.2% |
+| 2020 | B68/C8/R23 | +20.1% | +19.4% | -0.7% | 1.13 | 1.03 | -29.9% | -22.5% |
+| 2021 | B92/C8/R0 | +30.1% | +22.1% | -8.0% | 1.98 | 1.51 | -8.7% | -8.7% |
+| 2022 | B12/C7/R81 | -28.7% | -15.3% | +13.4% | -3.05 | -1.11 | -29.3% | -16.6% |
+| 2023 | B70/C24/R6 | +46.4% | +11.9% | -34.5% | 2.50 | 0.98 | -12.4% | -15.3% |
+| 2024 | B88/C12/R0 | +3.9% | -3.1% | -7.1% | 0.33 | -0.13 | -16.6% | -18.3% |
+| 2025 | B72/C11/R17 | +29.3% | +24.3% | -5.1% | 1.82 | 1.46 | -11.3% | -11.4% |
 
 ## Summary Metrics
 
 | Metric | Config A | Config B | Delta |
 |--------|----------|----------|-------|
-| Median CAGR | +22.7% | +9.8% | -12.9% |
-| Mean CAGR | +16.7% | +8.7% | -8.0% |
-| Median Sharpe | 1.56 | 0.73 | -0.83 |
-| Mean Sharpe | 1.15 | 0.69 | -0.46 |
-| Worst Max DD | -25.2% | -22.1% | +3.1% |
-| Mean Max DD | -12.4% | -11.2% | +1.2% |
-| Median Alpha | +10.2% | +5.5% | -4.7% |
-| Mean Beta | 0.33 | 0.31 | -0.03 |
-| Positive CAGR years | 10/11 | 7/11 | -3 |
-| Alpha-positive years | 8/11 | 7/11 | -1 |
-| Mean trades/year | 101 | 72 | -29 |
-| Mean win rate | 51.9% | 48.6% | -3.3% |
+| Median CAGR | +15.9% | +11.9% | -4.1% |
+| Mean CAGR | +13.0% | +6.9% | -6.1% |
+| Median Sharpe | 1.13 | 0.98 | -0.15 |
+| Mean Sharpe | 0.83 | 0.52 | -0.31 |
+| Worst Max DD | -29.9% | -22.5% | +7.4% |
+| Mean Max DD | -14.4% | -13.3% | +1.1% |
+| Median Alpha | +3.0% | -1.8% | -4.7% |
+| Mean Beta | 0.42 | 0.50 | +0.07 |
+| Positive CAGR years | 9/11 | 6/11 | -3 |
+| Alpha-positive years | 8/11 | 5/11 | -3 |
+| Mean trades/year | 97 | 70 | -27 |
+| Mean win rate | 51.5% | 46.7% | -4.7% |
 
 ## Bear Market Focus (2018, 2022)
 
-### 2018 (BEAR=13d, CAUT=93d)
-- Config A: CAGR=+4.1%, Sharpe=0.47, DD=-13.5%
-- Config B: CAGR=+6.5%, Sharpe=0.72, DD=-11.9%
-- Delta CAGR: +2.4%, Delta Sharpe: +0.25
+### 2018 (BEAR=41d, CAUT=65d)
+- Config A: CAGR=+0.2%, Sharpe=0.07, DD=-15.3%
+- Config B: CAGR=-4.4%, Sharpe=-0.34, DD=-19.0%
+- Delta CAGR: -4.6%, Delta Sharpe: -0.41
 
-### 2022 (BEAR=180d, CAUT=63d)
-- Config A: CAGR=-24.6%, Sharpe=-3.06, DD=-24.6%
-- Config B: CAGR=-13.4%, Sharpe=-1.80, DD=-15.0%
-- Delta CAGR: +11.2%, Delta Sharpe: +1.26
+### 2022 (BEAR=204d, CAUT=18d)
+- Config A: CAGR=-28.7%, Sharpe=-3.05, DD=-29.3%
+- Config B: CAGR=-15.3%, Sharpe=-1.11, DD=-16.6%
+- Delta CAGR: +13.4%, Delta Sharpe: +1.94
 
 ## Bull Year Regression Check
 Did regime sizing hurt any strong bull years?
 
-- 2016: A=+25.3% -> B=+14.5% (delta -10.8%) **REGRESSION**
-- 2017: A=+22.7% -> B=+17.2% (delta -5.5%) **REGRESSION**
-- 2019: A=+5.1% -> B=-1.9% (delta -7.1%) **REGRESSION**
-- 2020: A=+25.1% -> B=+9.8% (delta -15.3%) **REGRESSION**
-- 2021: A=+33.9% -> B=+23.4% (delta -10.5%) **REGRESSION**
-- 2023: A=+48.7% -> B=+14.8% (delta -34.0%) **REGRESSION**
-- 2024: A=+3.7% -> B=-0.8% (delta -4.5%) **REGRESSION**
-- 2025: A=+34.4% -> B=+27.1% (delta -7.3%) **REGRESSION**
+- 2016: A=+24.1% -> B=+15.9% (delta -8.2%) **REGRESSION**
+- 2017: A=+15.9% -> B=+12.6% (delta -3.3%) **REGRESSION**
+- 2019: A=-0.1% -> B=-2.6% (delta -2.5%) **REGRESSION**
+- 2020: A=+20.1% -> B=+19.4% (delta -0.7%)
+- 2021: A=+30.1% -> B=+22.1% (delta -8.0%) **REGRESSION**
+- 2023: A=+46.4% -> B=+11.9% (delta -34.5%) **REGRESSION**
+- 2024: A=+3.9% -> B=-3.1% (delta -7.1%) **REGRESSION**
+- 2025: A=+29.3% -> B=+24.3% (delta -5.1%) **REGRESSION**
 
-8 regressions (>2pp) in bull years.
+7 regressions (>2pp) in bull years.
 
 ## Regime Accuracy Check
-- BULLISH: 1693d (61%)
-- CAUTIOUS: 717d (26%)
-- BEARISH: 355d (13%)
+- BULLISH: 1872d (68%)
+- CAUTIOUS: 402d (15%)
+- BEARISH: 491d (18%)
 
-BEARISH triggered 12.8% — moderate impact.
+BEARISH triggered 17.8% of the time — significant exposure reduction in downturns.
 
 ## Verdict
 
-- Median Sharpe improvement: -0.83 (threshold: >0.30)
-- Median CAGR change: -12.9%
-- Worst DD improved: -25.2% -> -22.1%
-- Sharpe improved: 2/11 years
-- CAGR improved: 2/11 years
-- Regressions in bull years: 8
+- Median Sharpe improvement: -0.15 (threshold: >0.30)
+- Median CAGR change: -4.1%
+- Worst DD improved: -29.9% -> -22.5%
+- Sharpe improved: 1/11 years
+- CAGR improved: 1/11 years
+- Regressions in bull years: 7
 
 **DO NOT DEPLOY**: Config B does not clearly improve over Config A.
