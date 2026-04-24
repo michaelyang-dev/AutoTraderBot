@@ -2436,7 +2436,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       // Filter momentum signals: check cooldowns and regime
       const momOpportunities = [];
-      const spySma50 = regimeResult.sma50;
+      const spySma50 = computeRegime(priceHist.SPY).sma50;
       const spyNowPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
       const momRegimeBlocked = ENABLE_MOMENTUM_REGIME_FILTER
         && spySma50 != null && spyNowPrice != null
