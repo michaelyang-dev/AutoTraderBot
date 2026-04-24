@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Walk-Forward Short Model — Dedicated Underperformer Predictor
-==============================================================
-Same walk-forward methodology as walk_forward_validation.py but with
-an INVERTED target: bottom 20% by forward 10-day return.
+Walk-Forward Short Model v2 — Short-Specific Features
+======================================================
+Dedicated underperformer predictor using SHORT-SPECIFIC features:
+  - Accruals quality (earnings vs cash flow divergence)
+  - Debt/leverage deterioration
+  - Margin compression
+  - Insider selling acceleration
+  - Earnings miss streaks
+  - Price breakdown signals
 
-The long model asks "which stocks will be in the top 20%?"
-This model asks "which stocks will be in the bottom 20%?"
+Uses features_short_enriched.parquet (built by short_features.py).
+Same walk-forward methodology: train on years before Y, predict year Y.
 
-High prob_short = model thinks this stock will underperform.
-We then check: do the model's top-5 picks (highest prob_short)
-actually have negative forward returns?
+High prob_short = model thinks this stock will be in the bottom 20%.
+We then check: do the model's top-5 picks actually have negative fwd returns?
 
 Produces per-year predictions in ml_service/data/walkforward_short/
 Then runs Phase 1 signal validation on them.
@@ -35,24 +39,25 @@ from scipy import stats
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sp500_universe import get_etf_symbols
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 WF_SHORT_DIR = DATA_DIR / "walkforward_short"
-INPUT_FILE = DATA_DIR / "features.parquet"
+INPUT_FILE = DATA_DIR / "features_short_enriched.parquet"
 OUT_DIR = DATA_DIR / "longshort"
 
 YEARS = list(range(2015, 2026))
 
 LGB_PARAMS = dict(
-    n_estimators=500,
-    learning_rate=0.05,
-    max_depth=6,
-    num_leaves=31,
-    min_child_samples=50,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=0.1,
-    reg_lambda=0.1,
+    n_estimators=800,
+    learning_rate=0.03,
+    max_depth=5,
+    num_leaves=24,
+    min_child_samples=100,
+    subsample=0.7,
+    colsample_bytree=0.7,
+    reg_alpha=0.5,
+    reg_lambda=1.0,
     objective="binary",
     metric="auc",
     random_state=42,
@@ -61,9 +66,14 @@ LGB_PARAMS = dict(
 )
 
 XGB_PARAMS = dict(
-    n_estimators=300,
-    max_depth=8,
-    learning_rate=0.1,
+    n_estimators=500,
+    max_depth=5,
+    learning_rate=0.05,
+    min_child_weight=100,
+    subsample=0.7,
+    colsample_bytree=0.7,
+    reg_alpha=0.5,
+    reg_lambda=1.0,
     tree_method="hist",
     n_jobs=1,
     random_state=42,
@@ -78,14 +88,84 @@ RANK_FEATURES = [
     ("ret_60d", "momentum_rank_60d"),
     ("rsi_14", "rsi_rank"),
     ("dist_sma50", "dist_sma50_rank"),
+    ("accruals_ratio", "accruals_rank"),
+    ("leverage_ratio", "leverage_rank"),
 ]
 
-FUNDAMENTAL_FEATURE_COLS = [
-    "revenue_growth_yoy", "eps_growth_yoy", "revenue_growth_qoq",
+# Short-specific features: focus on DETERIORATION signals
+SHORT_FEATURE_COLS = [
+    # -- Accruals quality (earnings quality red flags) --
+    "accruals_ratio", "accruals_ratio_change", "accruals_rank",
+    "fcf_to_ni", "ocf_to_ni",
+    # -- Working capital deterioration --
+    "ar_to_revenue", "inv_to_revenue",
+    # -- Debt & leverage --
+    "debt_growth_qoq", "debt_growth_yoy",
+    "leverage_ratio", "leverage_change_qoq", "leverage_rank",
+    "net_debt_to_ebitda", "interest_coverage", "interest_coverage_change",
+    # -- Margin compression --
+    "gross_margin_qoq_chg", "operating_margin_qoq_chg", "net_margin_qoq_chg",
+    "gross_margin_yoy_chg", "operating_margin_yoy_chg",
+    "sga_to_revenue", "sga_burden_change",
+    "revenue_growth_qoq_chg",
+    # -- Capex burden --
+    "capex_to_revenue", "capex_to_ocf",
+    # -- Shareholder dilution --
+    "buyback_yield", "net_debt_issuance_to_assets",
+    # -- Earnings miss patterns --
+    "eps_surprise_pct", "revenue_surprise_pct",
+    "eps_miss_streak", "revenue_miss_streak", "eps_surprise_trend",
+    # -- Insider selling --
+    "insider_sell_ratio_30d", "insider_sell_ratio_90d",
+    "insider_sell_acceleration", "insider_net_sell_shares_30d",
+    "insider_large_sell_flag",
+    # -- Price breakdown signals --
+    "below_sma200", "below_sma50", "death_cross", "near_52w_low",
+    "rsi_weak", "vol_price_divergence", "momentum_collapse", "vol_expansion",
+    # -- Keep some existing fundamentals that matter for shorts --
+    "revenue_growth_yoy", "eps_growth_yoy",
     "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
-    "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
     "debt_to_equity", "current_ratio", "roe", "roa",
-    "days_since_earnings", "eps_surprise_last",
+    "eps_surprise_last", "days_since_earnings",
+    # -- Keep key technical features --
+    "ret_5d", "ret_10d", "ret_20d", "ret_60d", "ret_120d",
+    "vol_10d", "vol_20d", "vol_60d",
+    "rsi_14", "bb_position",
+    "dist_sma50", "dist_sma200", "sma200_slope",
+    "dist_52w_high", "dist_52w_low",
+    "max_dd_6m", "consec_down_months",
+    "vol_ratio_20d", "obv_trend_20d",
+    # -- Cross-asset context --
+    "spy_ret_10d", "spy_ret_20d", "vixy_level",
+    "yield_curve_10y2y", "hy_spread",
+    # -- Rank features --
+    "vol_rank_20d", "momentum_rank_60d", "rsi_rank", "dist_sma50_rank",
+]
+
+# Fundamental cols that may be NaN (don't drop rows for these)
+FUNDAMENTAL_FEATURE_COLS = [
+    "accruals_ratio", "accruals_ratio_change", "accruals_rank",
+    "fcf_to_ni", "ocf_to_ni",
+    "ar_to_revenue", "inv_to_revenue",
+    "debt_growth_qoq", "debt_growth_yoy",
+    "leverage_ratio", "leverage_change_qoq", "leverage_rank",
+    "net_debt_to_ebitda", "interest_coverage", "interest_coverage_change",
+    "gross_margin_qoq_chg", "operating_margin_qoq_chg", "net_margin_qoq_chg",
+    "gross_margin_yoy_chg", "operating_margin_yoy_chg",
+    "sga_to_revenue", "sga_burden_change",
+    "revenue_growth_qoq_chg",
+    "capex_to_revenue", "capex_to_ocf",
+    "buyback_yield", "net_debt_issuance_to_assets",
+    "eps_surprise_pct", "revenue_surprise_pct",
+    "eps_miss_streak", "revenue_miss_streak", "eps_surprise_trend",
+    "insider_sell_ratio_30d", "insider_sell_ratio_90d",
+    "insider_sell_acceleration", "insider_net_sell_shares_30d",
+    "insider_large_sell_flag",
+    "revenue_growth_yoy", "eps_growth_yoy",
+    "gross_margin", "operating_margin", "net_margin", "margin_trend_4q",
+    "debt_to_equity", "current_ratio", "roe", "roa",
+    "eps_surprise_last", "days_since_earnings",
+    "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
     "eps_revision_30d", "revenue_revision_30d",
     "insider_buy_ratio_90d", "insider_net_shares_90d",
 ]
@@ -96,15 +176,22 @@ def log(msg: str):
 
 
 def get_feature_cols(df: pd.DataFrame) -> list:
-    exclude = {"date", "symbol", "target", "target_v5", "target_short",
-               "in_sp500", "pct_rank"}
-    forward_keywords = {"fwd", "forward", "future"}
-    return [c for c in df.columns
-            if c not in exclude and not any(kw in c.lower() for kw in forward_keywords)]
+    """Return only short-specific features that exist in the dataframe."""
+    available = [c for c in SHORT_FEATURE_COLS if c in df.columns]
+    missing = [c for c in SHORT_FEATURE_COLS if c not in df.columns]
+    if missing:
+        log(f"  [WARN] Missing {len(missing)} short features: {missing[:10]}...")
+    return available
 
 
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add rank features and BOTH targets (long + short)."""
+    """Add rank features and short target. EXCLUDE ETFs from training/prediction."""
+    # Remove ETFs — they contaminate the short signal (VIXY, USO decay structurally)
+    etf_syms = set(get_etf_symbols())
+    n_before = len(df)
+    df = df[~df["symbol"].isin(etf_syms)].copy()
+    log(f"  Removed {n_before - len(df):,} ETF rows ({len(etf_syms)} ETFs)")
+
     for base_col, rank_col in RANK_FEATURES:
         if base_col in df.columns:
             df[rank_col] = df.groupby("date")[base_col].rank(pct=True)
@@ -120,10 +207,11 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     valid["target_v5"] = (valid["pct_rank"] >= 0.80).astype(int)
     df.loc[valid.index, "target_v5"] = valid["target_v5"]
 
-    # SHORT target: bottom 20%
+    # SHORT target: bottom 10% (more extreme than 20%)
     df["target_short"] = np.nan
-    valid["target_short"] = (valid["pct_rank"] <= 0.20).astype(int)
+    valid["target_short"] = (valid["pct_rank"] <= 0.10).astype(int)
     df.loc[valid.index, "target_short"] = valid["target_short"]
+    df.loc[valid.index, "pct_rank"] = valid["pct_rank"]
 
     df["fwd_ret"] = df["fwd_10d_ret"]
     return df
@@ -279,11 +367,14 @@ def validate_short_signal(all_preds):
 
 def generate_report(results, auc_by_year):
     lines = []
-    lines.append("# Phase 1A: Dedicated Short Model — Signal Validation")
+    lines.append("# Phase 1C: Short Model v3 — Stocks Only, Bottom 10%")
     lines.append(f"\nGenerated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
     lines.append("\n## Model Design")
-    lines.append("\n- **Target**: `target_short` = bottom 20% of S&P 500 by forward 10-day return")
-    lines.append("- **Architecture**: Same LGBM + XGBoost ensemble, same features")
+    lines.append("\n- **Target**: `target_short` = bottom **10%** of S&P 500 stocks by forward 10-day return")
+    lines.append("- **Architecture**: LGBM + XGBoost ensemble")
+    lines.append("- **Features**: Short-specific (accruals, debt, margin compression, "
+                 "insider selling, earnings misses, price breakdowns)")
+    lines.append("- **Critical fix**: ETFs excluded (VIXY/USO/PSKY were contaminating prior models)")
     lines.append("- **Walk-forward**: Train on years before Y, predict year Y")
     lines.append("- **Key question**: Do the model's top-5 picks (highest `prob_short`) actually go DOWN?")
 
@@ -388,7 +479,7 @@ def generate_report(results, auc_by_year):
 def main():
     t0 = time.perf_counter()
     log("=" * 70)
-    log("  PATH A: DEDICATED SHORT MODEL (bottom-20% target)")
+    log("  SHORT MODEL v3: STOCKS ONLY + BOTTOM 10% TARGET")
     log("=" * 70)
 
     WF_SHORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -396,14 +487,16 @@ def main():
 
     # Load and prepare features
     log(f"\nLoading {INPUT_FILE} ...")
+    if not INPUT_FILE.exists():
+        sys.exit(f"ERROR: {INPUT_FILE} not found. Run short_features.py first.")
     df = pd.read_parquet(INPUT_FILE)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
-    assert "days_until_earnings" not in df.columns
 
     df = prepare_features(df)
     feature_cols = get_feature_cols(df)
 
+    # Only require non-fundamental cols to be non-null (fundamentals may be sparse)
     non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
     df = df.dropna(subset=non_fund_cols + ["target_short"])
 
@@ -448,7 +541,7 @@ def main():
             f"spread={r['spread_mean']:+.3%} (p={r['spread_p']:.4f})")
 
     report, decision = generate_report(results, auc_by_year)
-    report_file = OUT_DIR / "PHASE1A_SHORT_MODEL.md"
+    report_file = OUT_DIR / "PHASE1C_SHORT_MODEL_V3.md"
     report_file.write_text(report)
 
     elapsed = time.perf_counter() - t0
