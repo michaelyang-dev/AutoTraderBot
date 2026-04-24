@@ -39,6 +39,7 @@ const RISK = {
 // ── Strategy kill switches ──
 const DISABLE_TREND_STRATEGY = true;  // Backtest proved trend hurts (-8.41pp alpha, -0.364 Sharpe)
 const ENABLE_MOMENTUM_REGIME_FILTER = true;  // Skip momentum buys when SPY < 50-SMA (OOS: +11.8pp CAGR, +0.69 Sharpe, -7.6pp DD)
+const ENABLE_SPY_PARKING = false;  // Walk-forward validated OFF: +0.42 Sharpe, +3.4% CAGR (commit f8bd464)
 
 // ── Multi-strategy slot allocation ──
 const SLOT_CONFIG = {
@@ -1378,10 +1379,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // 3. Restore idle SPY tracking
-      const spyPos = positionsRaw.find(p => p.symbol === "SPY");
-      if (spyPos) {
-        idleSpyShares = spyPos.qty;
-        addLog(`Restored idle SPY tracking: ${idleSpyShares} shares`, "system");
+      if (ENABLE_SPY_PARKING) {
+        const spyPos = positionsRaw.find(p => p.symbol === "SPY");
+        if (spyPos) {
+          idleSpyShares = spyPos.qty;
+          addLog(`Restored idle SPY tracking: ${idleSpyShares} shares`, "system");
+        }
       }
 
       // 4. Check clock
@@ -2535,45 +2538,47 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 3a: Sell idle SPY to free cash before buys ──
-      const spyPos = currentPositions.find(p => p.symbol === "SPY");
-      if (idleSpyShares > 0 && spyPos && allOpportunities.length > 0) {
-        const spyShareCount = spyPos.qty;
-        const spyPrice = spyPos.current_price || spyPos.avg_entry_price;
-        const idleValue = spyPos.market_value;
+      if (ENABLE_SPY_PARKING) {
+        const spyPos = currentPositions.find(p => p.symbol === "SPY");
+        if (idleSpyShares > 0 && spyPos && allOpportunities.length > 0) {
+          const spyShareCount = spyPos.qty;
+          const spyPrice = spyPos.current_price || spyPos.avg_entry_price;
+          const idleValue = spyPos.market_value;
 
-        // Estimate total opportunity size from position sizing
-        const estOppSize = allOpportunities.reduce((sum, opp) => {
-          const pct = opp.positionPct || RISK.MAX_POSITION_PCT;
-          return sum + cyclePortfolioValue * pct * currentVolScale;
-        }, 0);
+          // Estimate total opportunity size from position sizing
+          const estOppSize = allOpportunities.reduce((sum, opp) => {
+            const pct = opp.positionPct || RISK.MAX_POSITION_PCT;
+            return sum + cyclePortfolioValue * pct * currentVolScale;
+          }, 0);
 
-        // Only sell SPY if opportunities are meaningful relative to parked SPY
-        const minOppRatio = 0.25;
-        const meaningfulOpps = estOppSize >= idleValue * minOppRatio;
+          // Only sell SPY if opportunities are meaningful relative to parked SPY
+          const minOppRatio = 0.25;
+          const meaningfulOpps = estOppSize >= idleValue * minOppRatio;
 
-        // Dead zone: don't rebalance SPY more than once per 15 min wall-clock
-        const IDLE_SPY_MIN_GAP_MS = 15 * 60 * 1000;
-        const msSinceLastAction = Date.now() - lastIdleSpyActionAt;
-        const outsideDeadZone = msSinceLastAction >= IDLE_SPY_MIN_GAP_MS;
+          // Dead zone: don't rebalance SPY more than once per 15 min wall-clock
+          const IDLE_SPY_MIN_GAP_MS = 15 * 60 * 1000;
+          const msSinceLastAction = Date.now() - lastIdleSpyActionAt;
+          const outsideDeadZone = msSinceLastAction >= IDLE_SPY_MIN_GAP_MS;
 
-        if (meaningfulOpps && outsideDeadZone) {
-          try {
-            await closePosition("SPY");
-            idleSpyShares = 0;
-            lastIdleSpyActionAt = Date.now();
-            addLog(`[idle-spy] Selling ${spyShareCount} SPY ($${idleValue.toFixed(0)}) to fund ${allOpportunities.length} picks (est $${estOppSize.toFixed(0)})`, "system");
-            try { journal.closePosition({ symbol: "SPY", fillPrice: spyPrice, exitReason: "idle-spy-sell" }); } catch (_) {}
-            notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
-            const freshAcct = await getAccount();
-            cycleCash = freshAcct.cash;
-          } catch (err) {
-            addLog(`[idle-spy] Failed to sell SPY: ${err.message}`, "error");
+          if (meaningfulOpps && outsideDeadZone) {
+            try {
+              await closePosition("SPY");
+              idleSpyShares = 0;
+              lastIdleSpyActionAt = Date.now();
+              addLog(`[idle-spy] Selling ${spyShareCount} SPY ($${idleValue.toFixed(0)}) to fund ${allOpportunities.length} picks (est $${estOppSize.toFixed(0)})`, "system");
+              try { journal.closePosition({ symbol: "SPY", fillPrice: spyPrice, exitReason: "idle-spy-sell" }); } catch (_) {}
+              notify.send(`🅿️ SPY IDLE SELL | ${spyShareCount} shares @ $${spyPrice.toFixed(2)} | Freeing cash for ${allOpportunities.length} pick${allOpportunities.length !== 1 ? "s" : ""}`);
+              const freshAcct = await getAccount();
+              cycleCash = freshAcct.cash;
+            } catch (err) {
+              addLog(`[idle-spy] Failed to sell SPY: ${err.message}`, "error");
+            }
+          } else if (!meaningfulOpps) {
+            addLog(`[idle-spy] Skip SPY sell -- opps $${estOppSize.toFixed(0)} < ${(minOppRatio * 100).toFixed(0)}% of idle $${idleValue.toFixed(0)}`, "system");
+          } else {
+            const minsRemaining = Math.ceil((IDLE_SPY_MIN_GAP_MS - msSinceLastAction) / 60000);
+            addLog(`[idle-spy] Skip SPY sell -- last action ${Math.floor(msSinceLastAction / 60000)}min ago, need ${minsRemaining}min more`, "system");
           }
-        } else if (!meaningfulOpps) {
-          addLog(`[idle-spy] Skip SPY sell -- opps $${estOppSize.toFixed(0)} < ${(minOppRatio * 100).toFixed(0)}% of idle $${idleValue.toFixed(0)}`, "system");
-        } else {
-          const minsRemaining = Math.ceil((IDLE_SPY_MIN_GAP_MS - msSinceLastAction) / 60000);
-          addLog(`[idle-spy] Skip SPY sell -- last action ${Math.floor(msSinceLastAction / 60000)}min ago, need ${minsRemaining}min more`, "system");
         }
       }
 
@@ -2894,7 +2899,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 7: Park idle cash in SPY ──
-      if (!skipNewBuys) {
+      if (ENABLE_SPY_PARKING && !skipNewBuys) {
         try {
           const freshAcct = await getAccount();
           const freshCash = freshAcct.cash;
