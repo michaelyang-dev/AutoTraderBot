@@ -485,8 +485,9 @@ class MLMediumStrategy(Strategy):
             size_pct = _vol_targeted_size_pct(signal.symbol, date)
             if size_pct is not None:
                 return portfolio_value * size_pct
-        ml_mult = min(1.0, max(0.60, signal.confidence * 1.6 - 0.28))
-        return portfolio_value * self._position_pct * ml_mult
+        # Equal-weight: walk-forward shows rank #1-#5 returns are statistically
+        # indistinguishable, so confidence scaling just penalizes good trades.
+        return portfolio_value * self._position_pct
 
 
 # ══════════════════════════════════════════════════════════════════════════════

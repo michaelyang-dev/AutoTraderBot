@@ -2678,12 +2678,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           const atrPct = stockAtr ? stockAtr / opp.price : RISK.ATR_TARGET_PCT;
           const volatilityScale = RISK.ATR_TARGET_PCT / atrPct;
           const regimeMult = regime === "CAUTIOUS" ? 0.75 : 1.0;
-          const mlMult = opp.mlConf != null
-            ? Math.min(1.0, Math.max(0.60, opp.mlConf * 1.6 - 0.28))
-            : 1.0;
+          // Equal-weight ML sizing: walk-forward analysis shows rank #1-#5 returns
+          // are statistically indistinguishable (+1.19% to +1.67%), so confidence
+          // scaling just penalizes good trades. ATR + regime scaling still apply.
           dynPositionPct = Math.max(
             RISK.MIN_POSITION_PCT,
-            Math.min(RISK.MAX_POSITION_PCT, RISK.MAX_POSITION_PCT * volatilityScale * regimeMult * mlMult)
+            Math.min(RISK.MAX_POSITION_PCT, RISK.MAX_POSITION_PCT * volatilityScale * regimeMult)
           );
         }
 
