@@ -12,6 +12,9 @@ Usage examples:
     python3 backtest.py --start 2022-01-01 --end 2024-01-01
     python3 backtest.py --symbols AAPL,MSFT,GOOGL --no-cache
     python3 backtest.py --output results.json --quiet
+    python3 backtest.py --live                    # match live production exactly
+    python3 backtest.py --no-spy-parking          # disable SPY parking only
+    python3 backtest.py --cautious-filter          # enable CAUTIOUS ML filter only
 """
 
 import argparse
@@ -27,7 +30,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from unified_backtester import (
-    MLMediumStrategy, MomentumStrategy, MeanReversionStrategy, MLSlowStrategy,
+    MLMediumStrategy, CautiousMLStrategy, compute_regime_live,
+    MomentumStrategy, MeanReversionStrategy, MLSlowStrategy,
     MegaCapStrategy, TSMOMStrategy, TrendStrategy, PortfolioManager, SlotConfig,
     SLOT_ML_ONLY, SLOT_MOM_ONLY, SLOT_MR_ONLY, SLOT_ML_SLOW_ONLY,
     SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW, SLOT_MCAP_ONLY, SLOT_ML_MOM_MR_MCAP,
@@ -80,14 +84,21 @@ def _build_slot_config(strat_names):
 
 def build_strategies(names, predictions_df, price_data, volume_data,
                      threshold, selection_mode, top_n,
-                     momentum_regime_filter=False):
+                     momentum_regime_filter=False,
+                     cautious_filter=False, regime_dict=None):
     """Instantiate strategy objects from name list."""
     strats = []
     for name in names:
         if name == "ml":
-            strats.append(MLMediumStrategy(
-                predictions_df, threshold=threshold,
-                top_n=top_n, selection_mode=selection_mode))
+            if cautious_filter and regime_dict is not None:
+                strats.append(CautiousMLStrategy(
+                    predictions_df, regime_dict=regime_dict,
+                    threshold=threshold,
+                    top_n=top_n, selection_mode=selection_mode))
+            else:
+                strats.append(MLMediumStrategy(
+                    predictions_df, threshold=threshold,
+                    top_n=top_n, selection_mode=selection_mode))
         elif name == "momentum":
             strats.append(MomentumStrategy(price_data, volume_data=volume_data,
                                            regime_filter=momentum_regime_filter))
@@ -142,9 +153,20 @@ def main():
                         help="Suppress progress output")
     parser.add_argument("--momentum-regime-filter", action="store_true",
                         help="Skip momentum buys when SPY < 50-day SMA (regime filter)")
+    parser.add_argument("--no-spy-parking", action="store_true",
+                        help="Disable SPY idle-cash parking (matches live production)")
+    parser.add_argument("--cautious-filter", action="store_true",
+                        help="Enable CAUTIOUS regime ML filter: only top 2 picks during CAUTIOUS (matches live)")
+    parser.add_argument("--live", action="store_true",
+                        help="Match live production config: --no-spy-parking + --cautious-filter")
     parser.add_argument("--export-logs", default=None, metavar="DIR",
                         help="Export equity_curve.parquet and trade_log.parquet to DIR")
     args = parser.parse_args()
+
+    # --live is a convenience shortcut
+    if args.live:
+        args.no_spy_parking = True
+        args.cautious_filter = True
 
     # Set vol-sizing global flag before any strategy instantiation
     import unified_backtester
@@ -217,6 +239,14 @@ def main():
     spy_dict = close["SPY"].to_dict()
     spy_bh = spy_px / spy_px.iloc[0] * INITIAL_CASH
 
+    # Compute regime for CAUTIOUS filter (uses full SPY history for SMA accuracy)
+    regime_dict = None
+    if args.cautious_filter:
+        regime_series = compute_regime_live(spy_px)
+        regime_dict = regime_series.to_dict()
+        regime_counts = regime_series.value_counts()
+        log(f"Regime distribution: {dict(regime_counts)}")
+
     # ── 3. Build strategies ─────────────────────────────────────────────
     strat_names, slot_config = STRATEGY_MAP[args.strategy]
 
@@ -242,18 +272,26 @@ def main():
     price_data = close if (needs_prices or args.vol_sizing) else None
     volume_data = None  # volume not cached yet; strategies handle missing volume
 
+    flags = []
+    if args.no_spy_parking:
+        flags.append("no-parking")
+    if args.cautious_filter:
+        flags.append("cautious-filter")
+    flag_str = f", flags=[{','.join(flags)}]" if flags else ""
     log(f"Strategy: {args.strategy} ({', '.join(strat_names)}) "
-        f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}, vol_sizing={args.vol_sizing}]")
+        f"[{args.selection_mode}, top_n={args.top_n}, thresh={args.ml_threshold}, vol_sizing={args.vol_sizing}{flag_str}]")
     strategies = build_strategies(
         strat_names, preds, price_data, volume_data,
         args.ml_threshold, args.selection_mode, args.top_n,
-        momentum_regime_filter=args.momentum_regime_filter)
+        momentum_regime_filter=args.momentum_regime_filter,
+        cautious_filter=args.cautious_filter, regime_dict=regime_dict)
 
     # ── 4. Run backtest ─────────────────────────────────────────────────
+    spy_prices_arg = None if args.no_spy_parking else spy_dict
     log("Running backtest ...")
     pm = PortfolioManager(strategies=strategies, slot_config=slot_config)
     do_detail = args.export_logs is not None
-    result = pm.run(all_dates, spy_prices=spy_dict, price_data=price_data,
+    result = pm.run(all_dates, spy_prices=spy_prices_arg, price_data=price_data,
                     detail_log=do_detail)
     if do_detail:
         vals, trades, equity_df, trade_log_df = result

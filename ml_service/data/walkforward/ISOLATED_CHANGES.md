@@ -1,6 +1,6 @@
 # Isolated Impact of Three Changes vs Live Production
 
-Generated: 2026-04-23 22:37
+Generated: 2026-04-24 14:26
 
 ## Methodology
 Proper walk-forward: year Y uses model trained only on data <= Y-1.

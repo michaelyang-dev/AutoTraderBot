@@ -537,9 +537,9 @@ function computeMomentumSignals(priceHist, volHist, heldSymbols, earningsMap) {
   // Sort by score descending, take top N
   candidates.sort((a, b) => b.score - a.score);
 
-  // Build rankings for exit logic
+  // Build rankings for exit logic and add rank to each candidate
   const rankings = {};
-  candidates.forEach(({sym}, idx) => { rankings[sym] = idx + 1; });
+  candidates.forEach((c, idx) => { rankings[c.sym] = idx + 1; c.rank = idx + 1; });
 
   return { signals: candidates.slice(0, MOM.TOP_N), rankings };
 }
@@ -1070,6 +1070,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let momPeakPrices = {};          // { symbol → peak since entry }
   let momEntryDates = {};          // { symbol → cycleNumber at entry }
   let momTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
+
+  // ── ML strategy state ──
+  let mlEntryDates = {};             // { symbol → cycleNumber at entry }
   let mlTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
 
   // ── Mean Reversion strategy state ──
@@ -1366,6 +1369,17 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
                 peakPrice: Math.max(entry.fill_price || 0, p.current_price),
               };
               trendBreakCounts[p.symbol] = 0;
+            }
+            // Restore ML entry date so minimum hold period works across restarts
+            if (entry.strategy === "ml" && entry.submitted_at) {
+              const entryDate = new Date(entry.submitted_at);
+              const now = new Date();
+              const calendarDays = (now - entryDate) / (1000 * 60 * 60 * 24);
+              // Approximate trading days ≈ calendar days × 5/7 (weekdays only)
+              const tradingDays = calendarDays * (5 / 7);
+              const estimatedCyclesHeld = Math.round(tradingDays * 390);
+              mlEntryDates[p.symbol] = cycleNumber - estimatedCyclesHeld;
+              addLog(`[rehydrate] ${p.symbol} ML entry date restored: ~${tradingDays.toFixed(1)} trading days ago`, "system");
             }
             addLog(`[rehydrate] ${p.symbol} tagged as ${entry.strategy} from journal (bought ${entry.submitted_at})`, "system");
           } else {
@@ -1908,6 +1922,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete mcEntryPrices[symbol];
               delete mcPeakPrices[symbol];
               delete mcEntryDates[symbol];
+            } else if (strat === "ml") {
+              delete mlEntryDates[symbol];
             }
             delete positionStrategy[symbol];
             addLog(stopMsg, "sell");
@@ -1942,6 +1958,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete mcEntryPrices[symbol];
               delete mcPeakPrices[symbol];
               delete mcEntryDates[symbol];
+            } else if (strat === "ml") {
+              delete mlEntryDates[symbol];
             }
             delete positionStrategy[symbol];
             addLog(`TAKE-PROFIT ${symbol}: ${qty} shares @ $${curr.toFixed(2)} | P&L: +$${unrealized_pl.toFixed(2)}`, "profit");
@@ -1981,6 +1999,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             } else if (strat === "mean_reversion") {
               delete mrEntryPrices[pos.symbol];
               delete mrEntryDates[pos.symbol];
+            } else if (strat === "ml") {
+              delete mlEntryDates[pos.symbol];
             }
             delete positionStrategy[pos.symbol];
             addLog(`EARNINGS SELL ${pos.symbol}: earnings tomorrow (${earningsDate}) -- exiting to avoid overnight announcement risk`, "sell");
@@ -2307,6 +2327,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               if (blStrat === "momentum") { delete momEntryPrices[sym]; delete momPeakPrices[sym]; delete momEntryDates[sym]; }
               else if (blStrat === "mean_reversion") { delete mrEntryPrices[sym]; delete mrEntryDates[sym]; }
               else if (blStrat === "mega_cap") { delete mcEntryPrices[sym]; delete mcPeakPrices[sym]; delete mcEntryDates[sym]; }
+              else if (blStrat === "ml") { delete mlEntryDates[sym]; }
               delete positionStrategy[sym];
               addLog(`SELL ${sym}: ${analysis.consensus} -- closing blacklisted position`, "sell");
               if (posData) {
@@ -2334,15 +2355,30 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const analysis = getSignals(prices);
 
         // Sell on SELL consensus (only for ML positions — every other strategy has its own exit rules)
+        // ML minimum hold: 5 trading days (~1950 cycles at 1 cycle/min, 390 min/day)
+        // The ML model predicts 10-day forward returns; selling before 5 days defeats the signal.
+        // Stop-loss and trailing stops (STEP 1a/1b) still fire during the hold period.
+        const ML_MIN_HOLD_CYCLES = 5 * 390;
         const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend"]);
         if (heldSymbols.has(sym) && !trendPositions[sym] && !excludedStrategies.has(positionStrategy[sym]) && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
+          // Check minimum hold period before allowing consensus-based exit
+          const mlEntryCycle = mlEntryDates[sym];
+          if (mlEntryCycle != null) {
+            const mlCyclesHeld = cycleNumber - mlEntryCycle;
+            if (mlCyclesHeld < ML_MIN_HOLD_CYCLES) {
+              const approxDaysHeld = (mlCyclesHeld / 390).toFixed(1);
+              addLog(`HOLD ${sym}: ${analysis.consensus} signal but ML min-hold active (${approxDaysHeld}d / 5.0d) -- skipping sell`, "system");
+              continue;
+            }
+          }
           try {
             await closePosition(sym);
             const posData = currentPositions.find(p => p.symbol === sym);
             // Always set cooldown on consensus-sell to prevent buy-sell-buy churn
             setCooldown(sym, "ml");
+            delete mlEntryDates[sym];
             delete positionStrategy[sym];
-            addLog(`SELL ${sym}: ${analysis.consensus} -- closing position`, "sell");
+            addLog(`SELL ${sym}: ${analysis.consensus} -- closing position (held ${mlEntryCycle != null ? ((cycleNumber - mlEntryCycle) / 390).toFixed(1) : "?"}d)`, "sell");
             if (posData) {
               tradeCount.sells++; mlTradeCount.sells++;
               if (posData.unrealized_pl >= 0) { tradeCount.wins++; mlTradeCount.wins++; }
@@ -2473,7 +2509,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       if (mrOpportunities.length > 0) {
-        addLog(`MR signals: ${mrOpportunities.length} candidate${mrOpportunities.length !== 1 ? "s" : ""} (${mrOpportunities.map(o => `${o.sym} ${(o.drop30d * 100).toFixed(1)}%`).join(", ")})`, "system");
+        addLog(`MR signals: ${mrOpportunities.length} candidate${mrOpportunities.length !== 1 ? "s" : ""} (${mrOpportunities.map(o => `${o.sym} RSI=${o.rsiVal?.toFixed(0) ?? "?"}`).join(", ")})`, "system");
       }
 
       // ── STEP 2d: Compute mega-cap overlay signals (ALWAYS active) ──
@@ -2722,6 +2758,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             mcEntryDates[opp.sym] = cycleNumber;
           } else {
             liveCounts.ml++;
+            mlEntryDates[opp.sym] = cycleNumber;
           }
           liveCounts.total++;
 

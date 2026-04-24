@@ -30,7 +30,8 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from unified_backtester import (
-    MLMediumStrategy, MomentumStrategy, MeanReversionStrategy,
+    MLMediumStrategy, CautiousMLStrategy, compute_regime_live,
+    MomentumStrategy, MeanReversionStrategy,
     MegaCapStrategy, PortfolioManager, Signal,
     SLOT_LIVE_V2, load_bars_cached,
     INITIAL_CASH, SLIPPAGE, HOLD_DAYS,
@@ -46,40 +47,6 @@ YEARS = list(range(2015, 2026))
 
 def log(msg: str):
     print(msg, flush=True)
-
-
-# ── Regime Detection (live production definition) ───────────────────────────
-
-def compute_regime_live(spy_series: pd.Series) -> pd.Series:
-    sma50 = spy_series.rolling(50, min_periods=50).mean()
-    sma200 = spy_series.rolling(200, min_periods=200).mean()
-    regime = pd.Series("BEARISH", index=spy_series.index)
-    regime[spy_series > sma200] = "CAUTIOUS"
-    regime[(spy_series > sma50) & (spy_series > sma200)] = "BULLISH"
-    return regime
-
-
-# ── CAUTIOUS ML Filter (matches live tradingEngine.js line 2394) ────────────
-
-class CautiousMLStrategy(MLMediumStrategy):
-    """During CAUTIOUS regime, only top 2 ML picks allowed (rank 3+ blocked)."""
-
-    def __init__(self, predictions_df, regime_dict, threshold=0.55, top_n=5,
-                 selection_mode="top_n", position_pct=POSITION_PCT):
-        super().__init__(predictions_df, threshold, top_n, selection_mode, position_pct)
-        self._regime_dict = regime_dict
-
-    def generate_signals(self, date, universe_data):
-        regime = self._regime_dict.get(date, "CAUTIOUS")
-        if regime == "CAUTIOUS":
-            raw = self._signals_by_date.get(date, [])
-            selected = raw[:2]
-            return [
-                Signal(symbol=sym, confidence=prob,
-                       strategy_name=self.name, fwd_ret=fwd_ret)
-                for sym, prob, fwd_ret in selected
-            ]
-        return super().generate_signals(date, universe_data)
 
 
 # ── Generic backtest runner ─────────────────────────────────────────────────

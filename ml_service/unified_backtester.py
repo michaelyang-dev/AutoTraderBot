@@ -490,7 +490,53 @@ class MLMediumStrategy(Strategy):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Placeholder Strategies (not yet implemented — generate no signals)
+#  Regime computation (matches live tradingEngine.js)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def compute_regime_live(spy_series: pd.Series) -> pd.Series:
+    """
+    Live production regime (tradingEngine.js lines 688-709):
+      BULLISH:  SPY > SMA50 AND SPY > SMA200
+      CAUTIOUS: SPY > SMA200 (but not above SMA50)
+      BEARISH:  SPY <= SMA200
+    """
+    sma50 = spy_series.rolling(50, min_periods=50).mean()
+    sma200 = spy_series.rolling(200, min_periods=200).mean()
+    regime = pd.Series("BEARISH", index=spy_series.index)
+    regime[spy_series > sma200] = "CAUTIOUS"
+    regime[(spy_series > sma50) & (spy_series > sma200)] = "BULLISH"
+    return regime
+
+
+class CautiousMLStrategy(MLMediumStrategy):
+    """
+    Wraps MLMediumStrategy with the live CAUTIOUS regime filter:
+    during CAUTIOUS regime, only ML picks with rank <= cautious_top_n
+    are allowed (default 2, matching live tradingEngine.js line 2397).
+    """
+
+    def __init__(self, predictions_df, regime_dict, cautious_top_n=2,
+                 threshold=0.55, top_n=5,
+                 selection_mode="top_n", position_pct=POSITION_PCT):
+        super().__init__(predictions_df, threshold, top_n, selection_mode, position_pct)
+        self._regime_dict = regime_dict
+        self._cautious_top_n = cautious_top_n
+
+    def generate_signals(self, date, universe_data):
+        regime = self._regime_dict.get(date, "CAUTIOUS")
+        if regime == "CAUTIOUS":
+            raw = self._signals_by_date.get(date, [])
+            selected = raw[:self._cautious_top_n]
+            return [
+                Signal(symbol=sym, confidence=prob,
+                       strategy_name=self.name, fwd_ret=fwd_ret)
+                for sym, prob, fwd_ret in selected
+            ]
+        return super().generate_signals(date, universe_data)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Price-based Strategies
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MomentumStrategy(Strategy):
