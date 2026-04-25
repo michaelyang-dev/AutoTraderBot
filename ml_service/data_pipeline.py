@@ -24,6 +24,7 @@ FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 # ── Universe (loaded from sp500_universe module) ─────────────────────────────
 from sp500_universe import get_stock_symbols, get_etf_symbols, get_full_universe, get_cross_asset, get_all_symbols
 from sp500_history import get_sp500_on_date, load_sp500_changes
+from unified_backtester import SYMBOL_SECTOR
 
 STOCK_SYMBOLS = get_stock_symbols()
 UNIVERSE = get_full_universe()
@@ -947,6 +948,25 @@ def main():
     n_rank_features = 5
     n_fund_cross = sum(1 for c in ["pe_vs_universe_median", "ps_vs_universe_median"] if c in master.columns)
     print(f"  Added {n_rank_features} cross-sectional rank features + {n_fund_cross} fundamental cross-sectional features")
+
+    # ── Sector-relative features ─────────────────────────────────────────
+    print("Computing sector-relative features ...")
+    master["sector"] = master["symbol"].map(SYMBOL_SECTOR).fillna("Other")
+    sector_relative_cols = [
+        ("ret_10d",  "ret_10d_vs_sector"),
+        ("ret_20d",  "ret_20d_vs_sector"),
+        ("rsi_14",   "rsi_14_vs_sector"),
+        ("vol_20d",  "vol_20d_vs_sector"),
+    ]
+    n_sector_feats = 0
+    for src_col, dst_col in sector_relative_cols:
+        if src_col in master.columns:
+            sector_date_median = master.groupby(["date", "sector"])[src_col].transform("median")
+            master[dst_col] = master[src_col] - sector_date_median
+            n_sector_feats += 1
+    # Drop sector column — it's categorical and only used for computing relative features
+    master.drop(columns=["sector"], inplace=True)
+    print(f"  Added {n_sector_feats} sector-relative features")
 
     # ── Clip fundamental outliers ───────────────────────────────────────
     print("Clipping fundamental feature outliers ...")
