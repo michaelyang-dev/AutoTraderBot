@@ -179,7 +179,6 @@ FUNDAMENTAL_FEATURE_COLS = [
     "pe_ratio", "ps_ratio", "pe_vs_universe_median", "ps_vs_universe_median",
     "debt_to_equity", "current_ratio", "roe", "roa",
     "days_since_earnings", "eps_surprise_last",
-    "eps_revision_30d", "revenue_revision_30d",
     "insider_buy_ratio_90d", "insider_net_shares_90d",
 ]
 
@@ -442,13 +441,6 @@ def _compute_fundamental_features(symbol, date_index, fund_data):
     feat["roa"] = roa_daily
     feat["days_since_earnings"] = days_since
     feat["eps_surprise_last"] = np.clip(eps_surprise, -2.0, 2.0)
-
-    # ── Analyst estimate revisions ───────────────────────────────────
-    # Compare current-year estimate to 30 days ago (using estimate snapshots)
-    # Since we only have point-in-time estimates, use the available data
-    # For simplicity: set to NaN (we only have 4 annual estimates, not daily snapshots)
-    feat["eps_revision_30d"] = np.nan
-    feat["revenue_revision_30d"] = np.nan
 
     # ── Insider activity ─────────────────────────────────────────────
     buy_ratio = np.full(n_days, np.nan)

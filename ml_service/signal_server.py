@@ -103,7 +103,6 @@ FEATURE_COLS = [
     "gross_margin","operating_margin","net_margin","margin_trend_4q",
     "pe_ratio","ps_ratio","debt_to_equity","current_ratio","roe","roa",
     "days_since_earnings","eps_surprise_last",
-    "eps_revision_30d","revenue_revision_30d",
     "insider_buy_ratio_90d","insider_net_shares_90d",
     # Cross-asset
     "spy_ret_5d","tlt_ret_5d","spy_ret_10d","tlt_ret_10d",
@@ -138,7 +137,6 @@ FUNDAMENTAL_FEATURE_COLS = [
     "gross_margin","operating_margin","net_margin","margin_trend_4q",
     "pe_ratio","ps_ratio","debt_to_equity","current_ratio","roe","roa",
     "days_since_earnings","eps_surprise_last",
-    "eps_revision_30d","revenue_revision_30d",
     "insider_buy_ratio_90d","insider_net_shares_90d",
 ]
 
