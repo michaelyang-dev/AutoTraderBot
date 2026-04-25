@@ -87,9 +87,11 @@ module.exports = function mountGrafanaRoutes(app) {
         FROM trades WHERE status='filled'
       `).get();
 
-      // Open positions count
+      // Open positions: count + total value + unrealized P&L
       const positions = db.prepare(`
         SELECT COUNT(*) as count,
+               SUM(current_value) as total_current_value,
+               SUM(cost_basis) as total_cost_basis,
                SUM(unrealized_pnl) as total_unrealized_pnl
         FROM positions
       `).get();
@@ -99,22 +101,40 @@ module.exports = function mountGrafanaRoutes(app) {
         SELECT MAX(portfolio_value) as all_time_high FROM daily_snapshots
       `).get();
 
+      // Today's realized P&L from sells (use ET timezone, not UTC)
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const todayPnl = db.prepare(`
+        SELECT COALESCE(SUM(realized_pnl), 0) as day_realized_pnl
+        FROM trades
+        WHERE status='filled' AND side='sell' AND DATE(submitted_at) = ?
+      `).get(today);
+
       db.close();
 
-      const portfolio_value = latest?.portfolio_value || 0;
+      // Fetch live account data from Alpaca via the existing /api/account handler
+      const account = await fetchLocal("http://localhost:3001/api/account", 5000);
+
+      const positionsValue = positions?.total_current_value || 0;
+      const cash = account?.cash || latest?.cash || 0;
+      const portfolio_value = account?.equity || latest?.portfolio_value || positionsValue;
       const ath = peak?.all_time_high || portfolio_value;
       const drawdown_from_ath = ath > 0 ? (portfolio_value / ath - 1) : 0;
       const sellTrades = (tradeStats?.wins || 0) + (tradeStats?.losses || 0);
 
-      res.json({
+      // Day P&L: prefer snapshot, fall back to today's realized + unrealized change
+      const day_pnl = latest?.day_pnl ?? (todayPnl?.day_realized_pnl || 0);
+
+      // Wrap in array — Infinity plugin handles string fields better from arrays
+      res.json([{
         portfolio_value,
-        cash: latest?.cash || 0,
-        day_pnl: latest?.day_pnl || 0,
+        cash,
+        day_pnl,
         day_pnl_pct: latest?.day_pnl_pct || 0,
         regime: latest?.regime || "UNKNOWN",
         spy_day_pct: latest?.spy_day_pct || 0,
         positions_count: positions?.count || 0,
         total_unrealized_pnl: positions?.total_unrealized_pnl || 0,
+        positions_value: positionsValue,
         all_time_high: ath,
         drawdown_from_ath,
         total_trades: tradeStats?.total_trades || 0,
@@ -126,7 +146,7 @@ module.exports = function mountGrafanaRoutes(app) {
         avg_hold_days: tradeStats?.avg_hold_days || 0,
         avg_slippage_bps: tradeStats?.avg_slippage_bps || 0,
         last_snapshot_date: latest?.date || null,
-      });
+      }]);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -137,13 +157,11 @@ module.exports = function mountGrafanaRoutes(app) {
     try {
       const db = getDb();
       const rows = db.prepare(`
-        SELECT symbol, qty, avg_cost, cost_basis, current_price,
+        SELECT symbol, qty, strategy, avg_cost, current_price,
                current_value, unrealized_pnl, unrealized_pnl_pct,
-               strategy, entry_regime, days_held,
-               stop_loss, take_profit, trailing_stop,
-               highest_price_since_entry, opened_at
+               days_held
         FROM positions
-        ORDER BY unrealized_pnl_pct DESC
+        ORDER BY unrealized_pnl DESC
       `).all();
       db.close();
       res.json(rows);
@@ -159,10 +177,10 @@ module.exports = function mountGrafanaRoutes(app) {
       const limit = parseInt(req.query.limit) || 200;
       const since = req.query.since || "2020-01-01";
       const rows = db.prepare(`
-        SELECT symbol, side, qty, strategy, signal_prob, ml_rank,
-               regime, intended_price, fill_price, fill_time,
-               slippage_bps, commission, realized_pnl, realized_pnl_pct,
-               hold_days, exit_reason, status, submitted_at
+        SELECT submitted_at, symbol, side, qty, strategy,
+               fill_price, regime, signal_prob,
+               realized_pnl, realized_pnl_pct,
+               hold_days, exit_reason, slippage_bps
         FROM trades
         WHERE status='filled' AND submitted_at >= ?
         ORDER BY submitted_at DESC
@@ -184,8 +202,6 @@ module.exports = function mountGrafanaRoutes(app) {
         SELECT
           strategy,
           COUNT(*) as total_trades,
-          SUM(CASE WHEN side='buy' THEN 1 ELSE 0 END) as buys,
-          SUM(CASE WHEN side='sell' THEN 1 ELSE 0 END) as sells,
           SUM(CASE WHEN side='sell' AND realized_pnl > 0 THEN 1 ELSE 0 END) as wins,
           SUM(CASE WHEN side='sell' AND realized_pnl <= 0 THEN 1 ELSE 0 END) as losses,
           ROUND(100.0 * SUM(CASE WHEN side='sell' AND realized_pnl > 0 THEN 1 ELSE 0 END)
@@ -474,6 +490,189 @@ module.exports = function mountGrafanaRoutes(app) {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ══════════════════════════════════════════════════════════════════
+  //  BACKTESTING ENDPOINTS
+  // ══════════════════════════════════════════════════════════════════
+
+  const fs = require("fs");
+  const WF_DIR = path.join(__dirname, "..", "ml_service", "data", "walkforward");
+
+  // ── List available backtest configs ──────────────────────────────
+  app.get("/api/grafana/backtest/configs", (req, res) => {
+    try {
+      const files = fs.readdirSync(WF_DIR).filter(f => f.endsWith("_results.json"));
+      const configs = files.map(f => {
+        const name = f.replace("_results.json", "");
+        return { config: name, file: f };
+      });
+      res.json(configs);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Yearly backtest results for a config ────────────────────────
+  app.get("/api/grafana/backtest/yearly", (req, res) => {
+    try {
+      const config = req.query.config || "config_live_production";
+      const filePath = path.join(WF_DIR, `${config}_results.json`);
+      if (!fs.existsSync(filePath)) {
+        return res.json([]);
+      }
+      const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const rows = data.map(r => ({
+        year: r.year,
+        cagr_pct: Math.round(r.cagr * 10000) / 100,
+        sharpe: Math.round(r.sharpe * 100) / 100,
+        sortino: Math.round(r.sortino * 100) / 100,
+        max_dd_pct: Math.round(r.max_dd * 10000) / 100,
+        win_rate_pct: Math.round(r.win_rate * 10000) / 100,
+        profit_factor: Math.round(r.profit_factor * 100) / 100,
+        avg_trade_ret_pct: Math.round(r.avg_trade_ret * 10000) / 100,
+        trades: r.n_trades,
+        alpha_pct: Math.round(r.alpha * 10000) / 100,
+        beta: Math.round(r.beta * 100) / 100,
+        final_value: Math.round(r.final_value),
+      }));
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Summary stats across all years ──────────────────────────────
+  app.get("/api/grafana/backtest/summary", (req, res) => {
+    try {
+      const config = req.query.config || "config_live_production";
+      const filePath = path.join(WF_DIR, `${config}_results.json`);
+      if (!fs.existsSync(filePath)) {
+        return res.json([]);
+      }
+      const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const n = data.length;
+      const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+
+      const cagrs = data.map(r => r.cagr);
+      const sharpes = data.map(r => r.sharpe);
+      const maxDDs = data.map(r => r.max_dd);
+      const winRates = data.map(r => r.win_rate);
+      const alphas = data.map(r => r.alpha);
+      const trades = data.map(r => r.n_trades);
+
+      // Compound growth: chain yearly returns
+      const compounded = data.reduce((acc, r) => acc * (1 + r.cagr), 1);
+      const totalReturn = (compounded - 1);
+
+      const profitableYears = data.filter(r => r.cagr > 0).length;
+
+      res.json([{
+        years: n,
+        avg_cagr_pct: Math.round(avg(cagrs) * 10000) / 100,
+        avg_sharpe: Math.round(avg(sharpes) * 100) / 100,
+        avg_win_rate_pct: Math.round(avg(winRates) * 10000) / 100,
+        worst_dd_pct: Math.round(Math.min(...maxDDs) * 10000) / 100,
+        avg_alpha_pct: Math.round(avg(alphas) * 10000) / 100,
+        total_trades: trades.reduce((a, b) => a + b, 0),
+        total_return_pct: Math.round(totalReturn * 10000) / 100,
+        profitable_years: profitableYears,
+        win_year_pct: Math.round((profitableYears / n) * 10000) / 100,
+        best_year_cagr_pct: Math.round(Math.max(...cagrs) * 10000) / 100,
+        worst_year_cagr_pct: Math.round(Math.min(...cagrs) * 10000) / 100,
+      }]);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Compare two configs side by side ────────────────────────────
+  app.get("/api/grafana/backtest/compare", (req, res) => {
+    try {
+      const configs = (req.query.configs || "config_live_production,config_backtester_default").split(",");
+      const results = [];
+
+      for (const config of configs) {
+        const filePath = path.join(WF_DIR, `${config.trim()}_results.json`);
+        if (!fs.existsSync(filePath)) continue;
+        const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+        const compounded = data.reduce((acc, r) => acc * (1 + r.cagr), 1) - 1;
+
+        results.push({
+          config: config.trim().replace(/^config_/, "").replace(/^isolated_/, "iso: "),
+          years: data.length,
+          avg_cagr_pct: Math.round(avg(data.map(r => r.cagr)) * 10000) / 100,
+          avg_sharpe: Math.round(avg(data.map(r => r.sharpe)) * 100) / 100,
+          total_return_pct: Math.round(compounded * 10000) / 100,
+          worst_dd_pct: Math.round(Math.min(...data.map(r => r.max_dd)) * 10000) / 100,
+          avg_win_rate_pct: Math.round(avg(data.map(r => r.win_rate)) * 10000) / 100,
+          total_trades: data.reduce((a, r) => a + r.n_trades, 0),
+          avg_alpha_pct: Math.round(avg(data.map(r => r.alpha)) * 10000) / 100,
+        });
+      }
+      res.json(results);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── CAGR by year as time series (for bar chart) ─────────────────
+  app.get("/api/grafana/backtest/cagr-by-year", (req, res) => {
+    try {
+      const config = req.query.config || "config_live_production";
+      const filePath = path.join(WF_DIR, `${config}_results.json`);
+      if (!fs.existsSync(filePath)) return res.json([]);
+      const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const rows = data.map(r => ({
+        year: String(r.year),
+        cagr_pct: Math.round(r.cagr * 10000) / 100,
+      }));
+      res.json(rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Run a new backtest ────────────────────────────────────────────
+  let backtestRunning = false;
+  let backtestStatus = { state: "idle", message: "", started_at: null, finished_at: null, config: null };
+
+  app.post("/api/grafana/backtest/run", (req, res) => {
+    if (backtestRunning) {
+      return res.json({ error: "Backtest already running", status: backtestStatus });
+    }
+
+    const { exec } = require("child_process");
+    const threshold = req.body.threshold || 0.52;
+    const maxPositions = req.body.max_positions || 6;
+    const positionPct = req.body.position_pct || 0.12;
+    const holdDays = req.body.hold_days || 10;
+    const label = req.body.label || `custom_t${threshold}_p${maxPositions}`;
+
+    backtestRunning = true;
+    backtestStatus = { state: "running", message: `Running backtest: ${label}`, started_at: new Date().toISOString(), finished_at: null, config: label };
+
+    const pythonBin = path.join(__dirname, "..", "ml_service", "venv", "bin", "python3");
+    const scriptPath = path.join(__dirname, "..", "ml_service", "run_quick_backtest.py");
+    const scriptDir = path.join(__dirname, "..", "ml_service");
+
+    const cmd = `${pythonBin} ${scriptPath} --threshold ${threshold} --max-positions ${maxPositions} --position-pct ${positionPct} --hold-days ${holdDays} --label ${label}`;
+
+    exec(cmd, { cwd: scriptDir, timeout: 300000 }, (err, stdout, stderr) => {
+      backtestRunning = false;
+      if (err) {
+        backtestStatus = { state: "error", message: stderr || err.message, started_at: backtestStatus.started_at, finished_at: new Date().toISOString(), config: label };
+      } else {
+        backtestStatus = { state: "done", message: `Backtest ${label} complete`, started_at: backtestStatus.started_at, finished_at: new Date().toISOString(), config: label };
+      }
+    });
+
+    res.json({ status: "started", label, params: { threshold, maxPositions, positionPct, holdDays } });
+  });
+
+  app.get("/api/grafana/backtest/status", (req, res) => {
+    res.json(backtestStatus);
   });
 
   // ── Health check for Grafana itself ──────────────────────────────

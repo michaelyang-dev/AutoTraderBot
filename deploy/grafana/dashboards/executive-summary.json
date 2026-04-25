@@ -2,387 +2,344 @@
   "annotations": { "list": [] },
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "links": [],
+  "graphTooltip": 2,
+  "links": [
+    { "title": "Risk & Health", "url": "/d/autotrader-risk", "type": "link", "icon": "dashboard", "tooltip": "Risk & System Health Dashboard" }
+  ],
   "panels": [
     {
-      "id": 1,
-      "title": "",
+      "id": 100,
+      "title": "PORTFOLIO OVERVIEW",
       "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-      "collapsed": false,
-      "panels": []
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "title": "Portfolio Value",
+      "description": "Total equity (positions + cash)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "area", "justifyMode": "auto" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "portfolio_value", "text": "Portfolio Value", "type": "number" }] }]
     },
     {
       "id": 2,
-      "title": "Portfolio Value",
+      "title": "Today P&L",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 4, "w": 3, "x": 4, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "green", "value": 100000 }
-            ]
-          },
+          "unit": "currencyUSD", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "#73BF69", "value": 0 }] },
           "color": { "mode": "thresholds" }
-        },
-        "overrides": []
+        }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "portfolio_value", "text": "Portfolio Value", "type": "number" }]
-      }]
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "day_pnl", "text": "Day P&L", "type": "number" }] }]
     },
     {
       "id": 3,
-      "title": "Today P&L",
+      "title": "Realized P&L",
+      "description": "All-time realized P&L from closed trades",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 4, "w": 3, "x": 7, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0 },
-              { "color": "green", "value": 0.01 }
-            ]
-          },
+          "unit": "currencyUSD", "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "#73BF69", "value": 0 }] },
           "color": { "mode": "thresholds" }
-        },
-        "overrides": []
+        }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "day_pnl", "text": "Day P&L", "type": "number" }]
-      }]
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "total_realized_pnl", "text": "Realized P&L", "type": "number" }] }]
     },
     {
       "id": 4,
       "title": "Win Rate",
       "type": "gauge",
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 4, "w": 3, "x": 10, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.4 },
-              { "color": "green", "value": 0.55 }
-            ]
-          },
+          "unit": "percentunit", "min": 0, "max": 1, "decimals": 1,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.40 }, { "color": "yellow", "value": 0.48 }, { "color": "green", "value": 0.52 }] },
           "color": { "mode": "thresholds" }
-        },
-        "overrides": []
+        }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "win_rate", "text": "Win Rate", "type": "number" }]
-      }]
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "win_rate", "text": "Win Rate", "type": "number" }] }]
     },
     {
       "id": 5,
-      "title": "Drawdown from ATH",
+      "title": "Positions",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 4, "w": 2, "x": 13, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "orange", "value": -0.15 },
-              { "color": "yellow", "value": -0.08 },
-              { "color": "green", "value": -0.03 }
-            ]
-          },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }, { "color": "green", "value": 1 }, { "color": "orange", "value": 8 }] },
           "color": { "mode": "thresholds" }
-        },
-        "overrides": []
+        }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "drawdown_from_ath", "text": "Drawdown", "type": "number" }]
-      }]
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "positions_count", "text": "Positions", "type": "number" }] }]
     },
     {
       "id": 6,
-      "title": "Market Regime",
+      "title": "Total Trades",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
-      "fieldConfig": {
-        "defaults": {
-          "mappings": [
-            { "type": "value", "options": { "BULLISH": { "text": "BULLISH", "color": "green" }, "CAUTIOUS": { "text": "CAUTIOUS", "color": "yellow" }, "BEARISH": { "text": "BEARISH", "color": "red" } } }
-          ],
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
-        },
-        "overrides": []
-      },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "regime", "text": "Regime", "type": "string" }]
-      }]
+      "gridPos": { "h": 4, "w": 2, "x": 15, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "super-light-blue" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "total_trades", "text": "Trades", "type": "number" }] }]
     },
     {
       "id": 7,
-      "title": "Open Positions",
+      "title": "Regime",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 4, "w": 3, "x": 17, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 1 },
-              { "color": "orange", "value": 8 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
-        },
-        "overrides": []
+          "mappings": [{ "type": "value", "options": { "BULLISH": { "text": "BULLISH", "color": "green" }, "CAUTIOUS": { "text": "CAUTIOUS", "color": "yellow" }, "BEARISH": { "text": "BEARISH", "color": "red" }, "UNKNOWN": { "text": "CLOSED", "color": "semi-dark-blue" } } }],
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        }
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/portfolio",
-        "parser": "backend",
-        "source": "url",
-        "columns": [{ "selector": "positions_count", "text": "Positions", "type": "number" }]
-      }]
+      "options": { "reduceOptions": { "calcs": ["last"], "fields": "/.*/" }, "colorMode": "background_solid", "graphMode": "none" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/ml-health", "parser": "backend", "source": "url", "columns": [{ "selector": "regime", "text": "Regime", "type": "string" }] }]
+    },
+    {
+      "id": 8,
+      "title": "Win / Loss",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "super-light-blue", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Wins" }, "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Losses" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }
+        ]
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "orientation": "horizontal" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/portfolio", "parser": "backend", "source": "url", "columns": [{ "selector": "wins", "text": "Wins", "type": "number" }, { "selector": "losses", "text": "Losses", "type": "number" }] }]
+    },
+
+    {
+      "id": 101,
+      "title": "PERFORMANCE",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
     },
     {
       "id": 10,
-      "title": "Portfolio vs S&P 500 (Cumulative Return %)",
+      "title": "Portfolio vs S&P 500",
+      "description": "Cumulative return since inception",
       "type": "timeseries",
-      "gridPos": { "h": 10, "w": 16, "x": 0, "y": 5 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 10, "w": 16, "x": 0, "y": 6 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "custom": { "lineWidth": 2, "fillOpacity": 10, "showPoints": "never", "spanNulls": true },
-          "unit": "percent"
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": true, "axisBorderShow": true },
+          "unit": "percent",
+          "noValue": "Waiting for daily snapshots..."
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "portfolio_return_pct" }, "properties": [{ "id": "displayName", "value": "Portfolio" }, { "id": "color", "value": { "fixedColor": "#73BF69", "mode": "fixed" } }] },
-          { "matcher": { "id": "byName", "options": "spy_return_pct" }, "properties": [{ "id": "displayName", "value": "S&P 500" }, { "id": "color", "value": { "fixedColor": "#5794F2", "mode": "fixed" } }] }
+          { "matcher": { "id": "byName", "options": "portfolio_return_pct" }, "properties": [{ "id": "displayName", "value": "Portfolio" }, { "id": "color", "value": { "fixedColor": "#73BF69", "mode": "fixed" } }, { "id": "custom.lineWidth", "value": 3 }] },
+          { "matcher": { "id": "byName", "options": "spy_return_pct" }, "properties": [{ "id": "displayName", "value": "S&P 500" }, { "id": "color", "value": { "fixedColor": "#5794F2", "mode": "fixed" } }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }] }
         ]
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] }, "tooltip": { "mode": "multi" } },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/cumulative-pnl",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "date", "text": "Time", "type": "timestamp" },
-          { "selector": "portfolio_return_pct", "text": "portfolio_return_pct", "type": "number" },
-          { "selector": "spy_return_pct", "text": "spy_return_pct", "type": "number" }
-        ]
-      }]
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "min", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/cumulative-pnl", "parser": "backend", "source": "url", "columns": [{ "selector": "date", "text": "Time", "type": "timestamp" }, { "selector": "portfolio_return_pct", "text": "portfolio_return_pct", "type": "number" }, { "selector": "spy_return_pct", "text": "spy_return_pct", "type": "number" }] }]
     },
     {
       "id": 11,
-      "title": "Strategy P&L Breakdown",
+      "title": "Strategy P&L",
       "type": "piechart",
-      "gridPos": { "h": 10, "w": 8, "x": 16, "y": 5 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
-      "fieldConfig": {
-        "defaults": { "unit": "currencyUSD", "color": { "mode": "palette-classic" } },
-        "overrides": []
+      "gridPos": { "h": 10, "w": 8, "x": 16, "y": 6 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "color": { "mode": "palette-classic" } } },
+      "options": {
+        "reduceOptions": { "calcs": ["sum"] },
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut",
+        "tooltip": { "mode": "multi" }
       },
-      "options": { "reduceOptions": { "calcs": ["sum"] }, "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }, "pieType": "donut" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/strategy-performance",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "strategy", "text": "Strategy", "type": "string" },
-          { "selector": "total_pnl", "text": "Total P&L", "type": "number" }
-        ]
-      }]
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/strategy-performance", "parser": "backend", "source": "url", "columns": [{ "selector": "strategy", "text": "Strategy", "type": "string" }, { "selector": "total_pnl", "text": "Total P&L", "type": "number" }] }]
     },
+
     {
-      "id": 20,
+      "id": 12,
       "title": "Equity Curve",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
         "defaults": {
-          "custom": { "lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never", "spanNulls": true },
+          "custom": { "lineWidth": 2, "fillOpacity": 15, "gradientMode": "opacity", "showPoints": "never", "spanNulls": true, "axisBorderShow": true },
           "unit": "currencyUSD",
-          "color": { "mode": "fixed", "fixedColor": "#73BF69" }
-        },
-        "overrides": []
+          "color": { "mode": "fixed", "fixedColor": "#73BF69" },
+          "noValue": "Waiting for daily snapshots..."
+        }
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/equity",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "date", "text": "Time", "type": "timestamp" },
-          { "selector": "portfolio_value", "text": "Portfolio Value", "type": "number" }
-        ]
-      }]
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/equity", "parser": "backend", "source": "url", "columns": [{ "selector": "date", "text": "Time", "type": "timestamp" }, { "selector": "portfolio_value", "text": "Portfolio Value", "type": "number" }] }]
     },
     {
-      "id": 30,
-      "title": "Open Positions",
-      "type": "table",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "id": 13,
+      "title": "Drawdown from Peak",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
       "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "unrealized_pnl" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "unrealized_pnl_pct" }, "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "current_value" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
-          { "matcher": { "id": "byName", "options": "avg_cost" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
-          { "matcher": { "id": "byName", "options": "current_price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
-        ]
+        "defaults": {
+          "custom": { "lineWidth": 2, "fillOpacity": 25, "gradientMode": "opacity", "showPoints": "never", "spanNulls": true, "axisBorderShow": true },
+          "unit": "percent",
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "max": 0
+        }
       },
-      "options": { "showHeader": true, "sortBy": [{ "displayName": "unrealized_pnl_pct", "desc": true }], "cellHeight": "sm" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/positions",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "symbol", "text": "Symbol", "type": "string" },
-          { "selector": "qty", "text": "Qty", "type": "number" },
-          { "selector": "strategy", "text": "Strategy", "type": "string" },
-          { "selector": "avg_cost", "text": "Avg Cost", "type": "number" },
-          { "selector": "current_price", "text": "Price", "type": "number" },
-          { "selector": "current_value", "text": "Value", "type": "number" },
-          { "selector": "unrealized_pnl", "text": "Unrealized P&L", "type": "number" },
-          { "selector": "unrealized_pnl_pct", "text": "Return %", "type": "number" },
-          { "selector": "days_held", "text": "Days Held", "type": "number" },
-          { "selector": "entry_regime", "text": "Entry Regime", "type": "string" }
-        ]
-      }]
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/equity", "parser": "backend", "source": "url", "columns": [{ "selector": "date", "text": "Time", "type": "timestamp" }, { "selector": "drawdown_pct", "text": "Drawdown %", "type": "number" }] }]
+    },
+
+    {
+      "id": 102,
+      "title": "STRATEGY BREAKDOWN",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
+      "collapsed": false
     },
     {
       "id": 40,
       "title": "Strategy Performance",
       "type": "table",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 31 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 25 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "transformations": [{ "id": "organize", "options": { "indexByName": { "Strategy": 0, "Trades": 1, "Wins": 2, "Losses": 3, "Win %": 4, "Total P&L": 5, "Avg Ret %": 6, "Avg Hold": 7, "Slip bps": 8 } } }],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": { "custom": { "align": "center", "cellHeight": "sm" } },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "total_pnl" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "win_rate" }, "properties": [{ "id": "unit", "value": "percent" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 55 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
+          { "matcher": { "id": "byName", "options": "Strategy" }, "properties": [{ "id": "custom.align", "value": "left" }, { "id": "custom.width", "value": 130 }] },
+          { "matcher": { "id": "byName", "options": "Total P&L" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Win %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 52 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Avg Ret %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Slip bps" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/strategy-performance",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "strategy", "text": "Strategy", "type": "string" },
-          { "selector": "total_trades", "text": "Trades", "type": "number" },
-          { "selector": "wins", "text": "Wins", "type": "number" },
-          { "selector": "losses", "text": "Losses", "type": "number" },
-          { "selector": "win_rate", "text": "Win Rate", "type": "number" },
-          { "selector": "total_pnl", "text": "Total P&L", "type": "number" },
-          { "selector": "avg_return_pct", "text": "Avg Return %", "type": "number" },
-          { "selector": "avg_hold_days", "text": "Avg Hold Days", "type": "number" },
-          { "selector": "avg_slippage_bps", "text": "Avg Slippage (bps)", "type": "number" }
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "Total P&L", "desc": true }] },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/strategy-performance", "parser": "backend", "source": "url", "columns": [{ "selector": "strategy", "text": "Strategy", "type": "string" }, { "selector": "total_trades", "text": "Trades", "type": "number" }, { "selector": "wins", "text": "Wins", "type": "number" }, { "selector": "losses", "text": "Losses", "type": "number" }, { "selector": "win_rate", "text": "Win %", "type": "number" }, { "selector": "total_pnl", "text": "Total P&L", "type": "number" }, { "selector": "avg_return_pct", "text": "Avg Ret %", "type": "number" }, { "selector": "avg_hold_days", "text": "Avg Hold", "type": "number" }, { "selector": "avg_slippage_bps", "text": "Slip bps", "type": "number" }] }]
+    },
+
+    {
+      "id": 103,
+      "title": "POSITIONS & TRADES",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "title": "Open Positions",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "transformations": [{ "id": "organize", "options": { "indexByName": { "Symbol": 0, "Strategy": 1, "Qty": 2, "Avg Cost": 3, "Price": 4, "Val": 5, "Unrealized P&L": 6, "Return %": 7, "Days Held": 8 } } }],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Symbol" }, "properties": [{ "id": "custom.align", "value": "left" }, { "id": "custom.width", "value": 90 }] },
+          { "matcher": { "id": "byName", "options": "Strategy" }, "properties": [{ "id": "custom.width", "value": 100 }] },
+          { "matcher": { "id": "byName", "options": "Unrealized P&L" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Return %" }, "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "decimals", "value": 2 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Val" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }] },
+          { "matcher": { "id": "byName", "options": "Avg Cost" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+          { "matcher": { "id": "byName", "options": "Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+          { "matcher": { "id": "byName", "options": "Days Held" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 10 }, { "color": "orange", "value": 15 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
         ]
-      }]
+      },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Unrealized P&L", "desc": true }], "cellHeight": "sm" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/positions", "parser": "backend", "source": "url", "columns": [{ "selector": "symbol", "text": "Symbol", "type": "string" }, { "selector": "strategy", "text": "Strategy", "type": "string" }, { "selector": "qty", "text": "Qty", "type": "number" }, { "selector": "avg_cost", "text": "Avg Cost", "type": "number" }, { "selector": "current_price", "text": "Price", "type": "number" }, { "selector": "current_value", "text": "Val", "type": "number" }, { "selector": "unrealized_pnl", "text": "Unrealized P&L", "type": "number" }, { "selector": "unrealized_pnl_pct", "text": "Return %", "type": "number" }, { "selector": "days_held", "text": "Days Held", "type": "number" }] }]
     },
     {
       "id": 50,
       "title": "Recent Trades",
       "type": "table",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 37 },
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_AUTOTRADER_API}" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 40 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "transformations": [{ "id": "organize", "options": { "indexByName": { "Time": 0, "Symbol": 1, "Side": 2, "Strategy": 3, "Qty": 4, "Fill Price": 5, "P&L": 6, "Return %": 7, "Hold": 8, "Exit Reason": 9, "Regime": 10, "Slip bps": 11 } } }],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": { "custom": { "align": "center" } },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "realized_pnl" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "realized_pnl_pct" }, "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
-          { "matcher": { "id": "byName", "options": "side" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "mappings", "value": [{ "type": "value", "options": { "buy": { "color": "green", "text": "BUY" }, "sell": { "color": "red", "text": "SELL" } } }] }] },
-          { "matcher": { "id": "byName", "options": "fill_price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
+          { "matcher": { "id": "byName", "options": "Symbol" }, "properties": [{ "id": "custom.align", "value": "left" }, { "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "Time" }, "properties": [{ "id": "custom.width", "value": 150 }] },
+          { "matcher": { "id": "byName", "options": "P&L" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Return %" }, "properties": [{ "id": "unit", "value": "percentunit" }, { "id": "decimals", "value": 2 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Side" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "mappings", "value": [{ "type": "value", "options": { "buy": { "color": "green", "text": "BUY" }, "sell": { "color": "red", "text": "SELL" } } }] }] },
+          { "matcher": { "id": "byName", "options": "Fill Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+          { "matcher": { "id": "byName", "options": "Slip bps" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 10 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
         ]
       },
-      "options": { "showHeader": true, "sortBy": [{ "displayName": "submitted_at", "desc": true }], "cellHeight": "sm" },
-      "targets": [{
-        "refId": "A",
-        "type": "json",
-        "url": "http://localhost:3001/api/grafana/trades?limit=50",
-        "parser": "backend",
-        "source": "url",
-        "columns": [
-          { "selector": "submitted_at", "text": "Time", "type": "timestamp" },
-          { "selector": "symbol", "text": "Symbol", "type": "string" },
-          { "selector": "side", "text": "Side", "type": "string" },
-          { "selector": "qty", "text": "Qty", "type": "number" },
-          { "selector": "strategy", "text": "Strategy", "type": "string" },
-          { "selector": "fill_price", "text": "Fill Price", "type": "number" },
-          { "selector": "regime", "text": "Regime", "type": "string" },
-          { "selector": "signal_prob", "text": "ML Prob", "type": "number" },
-          { "selector": "realized_pnl", "text": "P&L", "type": "number" },
-          { "selector": "realized_pnl_pct", "text": "Return %", "type": "number" },
-          { "selector": "hold_days", "text": "Hold Days", "type": "number" },
-          { "selector": "exit_reason", "text": "Exit Reason", "type": "string" },
-          { "selector": "slippage_bps", "text": "Slippage (bps)", "type": "number" }
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Time", "desc": true }], "cellHeight": "sm" },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/trades?limit=50", "parser": "backend", "source": "url", "columns": [{ "selector": "submitted_at", "text": "Time", "type": "timestamp" }, { "selector": "symbol", "text": "Symbol", "type": "string" }, { "selector": "side", "text": "Side", "type": "string" }, { "selector": "strategy", "text": "Strategy", "type": "string" }, { "selector": "qty", "text": "Qty", "type": "number" }, { "selector": "fill_price", "text": "Fill Price", "type": "number" }, { "selector": "realized_pnl", "text": "P&L", "type": "number" }, { "selector": "realized_pnl_pct", "text": "Return %", "type": "number" }, { "selector": "hold_days", "text": "Hold", "type": "number" }, { "selector": "exit_reason", "text": "Exit Reason", "type": "string" }, { "selector": "regime", "text": "Regime", "type": "string" }, { "selector": "slippage_bps", "text": "Slip bps", "type": "number" }] }]
+    },
+
+    {
+      "id": 104,
+      "title": "P&L ANALYSIS",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
+      "collapsed": false
+    },
+    {
+      "id": 60,
+      "title": "Top P&L by Symbol",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 51 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] },
+          "color": { "mode": "thresholds" }
+        }
+      },
+      "options": { "xTickLabelRotation": -45, "barWidth": 0.7, "legend": { "displayMode": "hidden" }, "tooltip": { "mode": "single" } },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/symbol-distribution", "parser": "backend", "source": "url", "columns": [{ "selector": "symbol", "text": "Symbol", "type": "string" }, { "selector": "total_pnl", "text": "Total P&L", "type": "number" }] }]
+    },
+    {
+      "id": 61,
+      "title": "Exit Reason Breakdown",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 51 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "P2E0F8B2B3F5F786E" },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Exit Reason" }, "properties": [{ "id": "custom.align", "value": "left" }] },
+          { "matcher": { "id": "byName", "options": "Total P&L" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }, { "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] },
+          { "matcher": { "id": "byName", "options": "Avg Return %" }, "properties": [{ "id": "custom.cellOptions", "value": { "type": "color-text" } }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }, { "id": "color", "value": { "mode": "thresholds" } }] }
         ]
-      }]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [{ "displayName": "Count", "desc": true }] },
+      "targets": [{ "refId": "A", "type": "json", "url": "http://localhost:3001/api/grafana/exit-reasons", "parser": "backend", "source": "url", "columns": [{ "selector": "exit_reason", "text": "Exit Reason", "type": "string" }, { "selector": "count", "text": "Count", "type": "number" }, { "selector": "total_pnl", "text": "Total P&L", "type": "number" }, { "selector": "avg_return_pct", "text": "Avg Return %", "type": "number" }, { "selector": "avg_hold_days", "text": "Avg Hold Days", "type": "number" }] }]
     }
   ],
   "refresh": "1m",
@@ -390,9 +347,12 @@
   "tags": ["autotrader", "trading", "portfolio"],
   "templating": { "list": [] },
   "time": { "from": "now-90d", "to": "now" },
-  "timepicker": {},
+  "timepicker": {
+    "refresh_intervals": ["30s", "1m", "5m", "15m"],
+    "time_options": ["7d", "30d", "90d", "180d", "1y"]
+  },
   "timezone": "America/New_York",
   "title": "AutoTrader - Executive Summary",
-  "uid": "autotrader-executive",
-  "version": 1
+  "uid": "at-exec",
+  "version": 4
 }

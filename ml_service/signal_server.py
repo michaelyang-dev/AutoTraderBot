@@ -1,7 +1,7 @@
 """
-ML Signal Server (v5c — LGBM+RF Ensemble)
+ML Signal Server (v6 — Dual-Ensemble 40/60 Blend)
 =================================================
-FastAPI service that loads the V5c calibrated LGBM+RF ensemble (83 features)
+FastAPI service that loads the V6 dual LGBM+XGB ensemble (87 features)
 and serves trading signals to the JS trading bot.
 
 V4 changes from v2:
@@ -126,6 +126,10 @@ FEATURE_COLS = [
     # V4 cross-sectional rank features
     "vol_rank_20d","momentum_rank_60d","rsi_rank","dist_sma50_rank",
     # Sector-relative features (v5d)
+    "ret_10d_vs_sector","ret_20d_vs_sector","rsi_14_vs_sector","vol_20d_vs_sector",
+]
+
+SECTOR_FEATURE_COLS = [
     "ret_10d_vs_sector","ret_20d_vs_sector","rsi_14_vs_sector","vol_20d_vs_sector",
 ]
 
@@ -266,9 +270,13 @@ def _load_fred_macro() -> pd.DataFrame:
 
 # ── Server state ──────────────────────────────────────────────────────────────
 class State:
-    model:          object                 = None
-    model_xgb:      object                 = None
-    imputer:        object                 = None
+    model:          object                 = None    # sector LGBM (or legacy LGBM)
+    model_xgb:      object                 = None    # sector XGB (or legacy XGB/RF)
+    imputer:        object                 = None    # sector imputer
+    model_base_lgbm: object                = None    # base LGBM (no sector features)
+    model_base_xgb:  object                = None    # base XGB (no sector features)
+    imputer_base:    object                = None    # base imputer
+    blend_mode:      str                   = "single"  # "dual" or "single"
     cache:          list                   = []
     last_update:    Optional[datetime]     = None
     is_stale:       bool                   = True
@@ -841,10 +849,26 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     X = np.array(rows, dtype=np.float64)
     log.info("Feature matrix: %d symbols × %d features", X.shape[0], X.shape[1])
 
-    lgbm_probs = state.model.predict_proba(X)[:, 1]
     X_imp = state.imputer.transform(X) if state.imputer is not None else X
-    xgb_probs = state.model_xgb.predict_proba(X_imp)[:, 1]
-    probs = 0.5 * lgbm_probs + 0.5 * xgb_probs
+
+    if state.blend_mode == "dual" and state.model_base_lgbm is not None:
+        # v6 dual-ensemble 40/60 blend
+        # Sector ensemble (87 features) — uses full X
+        sect_probs = 0.5 * state.model.predict_proba(X_imp)[:, 1] + \
+                     0.5 * state.model_xgb.predict_proba(X_imp)[:, 1]
+        # Base ensemble (83 features) — exclude sector columns
+        base_cols_mask = [i for i, c in enumerate(FEATURE_COLS) if c not in SECTOR_FEATURE_COLS]
+        X_base = X[:, base_cols_mask]
+        X_base_imp = state.imputer_base.transform(X_base) if state.imputer_base is not None else X_base
+        base_probs = 0.5 * state.model_base_lgbm.predict_proba(X_base_imp)[:, 1] + \
+                     0.5 * state.model_base_xgb.predict_proba(X_base_imp)[:, 1]
+        probs = 0.4 * base_probs + 0.6 * sect_probs
+        log.info("Dual-ensemble 40/60 blend: base=%d feat, sector=%d feat", X_base.shape[1], X.shape[1])
+    else:
+        # Legacy single-ensemble 50/50 blend
+        lgbm_probs = state.model.predict_proba(X)[:, 1]
+        xgb_probs = state.model_xgb.predict_proba(X_imp)[:, 1]
+        probs = 0.5 * lgbm_probs + 0.5 * xgb_probs
 
     # ── Regime-adaptive signal generation ─────────────────────────────────
     ml_mode = state.ml_mode
@@ -991,7 +1015,7 @@ async def lifespan(app: FastAPI):
     n_lgbm = state.model.calibrated_classifiers_[0].estimator.n_features_in_
     log.info("LGBM loaded (calibrated) — %d features", n_lgbm)
 
-    # Load XGBoost model
+    # Load XGBoost model (sector)
     xgb_file = DATA_DIR / "model_xgb.pkl"
     if xgb_file.exists():
         log.info("Loading XGB model from %s ...", xgb_file)
@@ -1009,11 +1033,26 @@ async def lifespan(app: FastAPI):
         else:
             log.warning("No XGB or RF model found — using LGBM only")
 
-    # Load imputer
+    # Load imputer (sector)
     imp_file = DATA_DIR / "imputer.pkl"
     if imp_file.exists():
         state.imputer = joblib.load(str(imp_file))
         log.info("Imputer loaded")
+
+    # Load v6 dual-ensemble base models (40/60 blend)
+    base_lgbm_file = DATA_DIR / "model_base_lgbm.pkl"
+    base_xgb_file  = DATA_DIR / "model_base_xgb.pkl"
+    base_imp_file  = DATA_DIR / "imputer_base.pkl"
+    if base_lgbm_file.exists() and base_xgb_file.exists():
+        state.model_base_lgbm = joblib.load(str(base_lgbm_file))
+        state.model_base_xgb  = joblib.load(str(base_xgb_file))
+        state.imputer_base    = joblib.load(str(base_imp_file)) if base_imp_file.exists() else None
+        state.blend_mode = "dual"
+        n_base = state.model_base_lgbm.calibrated_classifiers_[0].estimator.n_features_in_
+        log.info("v6 dual-ensemble loaded — base=%d feat, blend=40/60", n_base)
+    else:
+        state.blend_mode = "single"
+        log.info("Base models not found — using single-ensemble mode")
 
     # Load fundamental data from parquets
     log.info("Loading fundamental data ...")
@@ -1057,7 +1096,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "ML Trading Signal Server",
-    description = "LGBM+RF ensemble signals for the auto-trader bot (v5c ensemble)",
+    description = "Dual LGBM+XGB ensemble signals for the auto-trader bot (v6, 40/60 blend)",
     version     = "5.0.0",
     lifespan    = lifespan,
 )
@@ -1077,7 +1116,7 @@ def health():
     return {
         "status":       "ok",
         "model_loaded": state.model is not None,
-        "model_version": "v5c_improved_lgbm_rf_ensemble",
+        "model_version": "v6_dual_ensemble_40_60_blend",
         "feature_count": len(FEATURE_COLS),
         "last_update":  state.last_update.isoformat() if state.last_update else None,
         "is_stale":     state.is_stale,

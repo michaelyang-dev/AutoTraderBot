@@ -1819,17 +1819,9 @@ SLOT_ML_MOM_MR_MCAP = SlotConfig(
     max_positions=12,
 )
 
-# Matches live bot's SLOT_CONFIG exactly (for apples-to-apples comparison)
-# Live: ml_medium: 2, momentum: 3, mean_reversion: 0, mega_cap: 2, flex: 1, max: 8
+# Matches live bot's SLOT_CONFIG exactly (tradingEngine.js)
+# ml_medium: 5, momentum: 3, mean_reversion: 0, mega_cap: 0, flex: 0, max: 8
 SLOT_LIVE = SlotConfig(
-    strategy_slots={"ml_medium": 2, "momentum": 3, "mean_reversion": 0, "mega_cap": 2},
-    flex_slots=1,
-    max_positions=8,
-)
-
-# V2: Reallocate dead strategy slots to ML (mega_cap: 0 trades in 11y, flex consolidated)
-# ml_medium: 2→5 (+3 from mega_cap+flex), momentum: 3 (unchanged), max: 8 (unchanged)
-SLOT_LIVE_V2 = SlotConfig(
     strategy_slots={"ml_medium": 5, "momentum": 3, "mean_reversion": 0, "mega_cap": 0},
     flex_slots=0,
     max_positions=8,
