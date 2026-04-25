@@ -802,8 +802,31 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   async function placeOrder({ symbol, qty, side, type = "market", time_in_force = "day" }) {
     try {
       const alpacaSym = toAlpacaSymbol(symbol);
+
+      // Pre-order validation: check for duplicate pending orders for same symbol+side
+      // This is a last-resort guard in case heldSymbols check was bypassed
+      if (side === "buy") {
+        try {
+          await rateLimitWait();
+          const openOrders = await alpaca.getOrders({ status: "open", symbols: alpacaSym, limit: 10 });
+          const dupBuy = openOrders.find(o => o.side === "buy" && o.symbol === alpacaSym);
+          if (dupBuy) {
+            addLog(`[pre-order] BLOCKED duplicate buy for ${symbol} — pending order ${dupBuy.id} already exists`, "error");
+            throw new Error(`Duplicate buy blocked: pending order ${dupBuy.id} for ${symbol}`);
+          }
+        } catch (err) {
+          if (err.message.includes("Duplicate buy blocked")) throw err;
+          // If order check fails, proceed cautiously — Alpaca will reject if truly invalid
+        }
+      }
+
+      // Use client_order_id for idempotency
+      const clientOrderId = `${symbol}_${side}_${Date.now()}`;
       await rateLimitWait();
-      return await alpaca.createOrder({ symbol: alpacaSym, qty, side, type, time_in_force });
+      return await alpaca.createOrder({
+        symbol: alpacaSym, qty, side, type, time_in_force,
+        client_order_id: clientOrderId,
+      });
     } catch (err) {
       notify.send(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
@@ -1040,10 +1063,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
     weeklyValues: [],          // [{date, openValue}] — last 5 trading days
     weeklyHalted: false,
     weeklyResetDate: null,     // Monday date for auto-reset
-    // Layer 3: Peak drawdown
+    // Layer 3: Peak drawdown (auto-recovery with escalating cooldowns)
     peakValue: 0,
     peakDate: null,
-    peakHalted: false,         // manual reset only
+    peakHalted: false,
+    peakHaltedAt: null,        // ISO timestamp when halt triggered
+    peakHaltCount: 0,          // consecutive halts (escalates cooldown: 1h, 4h, manual)
     // Notification dedup
     _dailyNotified: false,
     _weeklyNotified: false,
@@ -1115,6 +1140,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         circuitBreaker.peakValue = saved.peakValue || 0;
         circuitBreaker.peakDate = saved.peakDate || null;
         circuitBreaker.peakHalted = saved.peakHalted || false;
+        circuitBreaker.peakHaltedAt = saved.peakHaltedAt || null;
+        circuitBreaker.peakHaltCount = saved.peakHaltCount || 0;
         circuitBreaker.weeklyValues = saved.weeklyValues || [];
         addLog(`[circuit-breaker] State loaded: peak=$${circuitBreaker.peakValue.toFixed(0)} (${circuitBreaker.peakDate || "never"})${circuitBreaker.peakHalted ? " | PEAK HALT ACTIVE" : ""}`, "system");
       }
@@ -1129,10 +1156,15 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         peakValue: circuitBreaker.peakValue,
         peakDate: circuitBreaker.peakDate,
         peakHalted: circuitBreaker.peakHalted,
+        peakHaltedAt: circuitBreaker.peakHaltedAt || null,
+        peakHaltCount: circuitBreaker.peakHaltCount || 0,
         weeklyValues: circuitBreaker.weeklyValues,
         savedAt: new Date().toISOString(),
       };
-      fs.writeFileSync(CB_STATE_FILE, JSON.stringify(state, null, 2));
+      // Atomic write: write to temp file, then rename
+      const tmpFile = CB_STATE_FILE + ".tmp";
+      fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2));
+      fs.renameSync(tmpFile, CB_STATE_FILE);
     } catch (err) {
       addLog(`[circuit-breaker] Failed to save state: ${err.message}`, "error");
     }
@@ -1188,21 +1220,50 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
     }
 
     // ── Layer 3: Peak drawdown (check first — most severe) ──
+    // Auto-recovery with escalating cooldowns:
+    //   1st halt → 1 hour cooldown, then auto-reset
+    //   2nd halt → 4 hours cooldown, then auto-reset
+    //   3rd+ halt → manual reset required (persistent problem)
     if (circuitBreaker.peakHalted) {
-      return {
-        safe: false,
-        reason: `Peak drawdown halt active (peak $${circuitBreaker.peakValue.toFixed(0)} on ${circuitBreaker.peakDate}, current $${currentValue.toFixed(0)}, DD ${((1 - currentValue / circuitBreaker.peakValue) * 100).toFixed(1)}%). Manual reset required.`,
-        layer: "peak",
-        details: getCircuitBreakerDetails(currentValue),
-      };
+      const haltCount = circuitBreaker.peakHaltCount || 1;
+      const haltedAt = circuitBreaker.peakHaltedAt ? new Date(circuitBreaker.peakHaltedAt).getTime() : 0;
+      const elapsedMs = Date.now() - haltedAt;
+      const cooldownMs = haltCount === 1 ? 60 * 60 * 1000    // 1 hour
+                       : haltCount === 2 ? 4 * 60 * 60 * 1000 // 4 hours
+                       : Infinity;                              // manual only
+      const cooldownLabel = haltCount === 1 ? "1h" : haltCount === 2 ? "4h" : "manual";
+
+      if (haltedAt > 0 && elapsedMs >= cooldownMs && cooldownMs < Infinity) {
+        // Auto-recovery: cooldown elapsed
+        circuitBreaker.peakHalted = false;
+        circuitBreaker._peakNotified = false;
+        circuitBreaker.peakValue = currentValue;
+        circuitBreaker.peakDate = todayDate;
+        saveCircuitBreakerState();
+        addLog(`[circuit-breaker] Peak halt AUTO-RESET after ${cooldownLabel} cooldown (halt #${haltCount}). New peak $${currentValue.toFixed(0)}.`, "system");
+        notify.send(`✅ CIRCUIT BREAKER — Peak drawdown halt auto-reset after ${cooldownLabel} cooldown (halt #${haltCount}). New peak: $${currentValue.toFixed(0)}. Next halt will use ${haltCount >= 2 ? "manual reset" : "4h cooldown"}.`, { immediate: true });
+      } else {
+        const remaining = cooldownMs < Infinity ? Math.ceil((cooldownMs - elapsedMs) / 60000) : 0;
+        const resetMsg = cooldownMs < Infinity ? `Auto-reset in ${remaining}min (${cooldownLabel} cooldown, halt #${haltCount}).` : `Manual reset required (halt #${haltCount}, 3+ consecutive).`;
+        return {
+          safe: false,
+          reason: `Peak drawdown halt active (peak $${circuitBreaker.peakValue.toFixed(0)} on ${circuitBreaker.peakDate}, current $${currentValue.toFixed(0)}, DD ${((1 - currentValue / circuitBreaker.peakValue) * 100).toFixed(1)}%). ${resetMsg}`,
+          layer: "peak",
+          details: getCircuitBreakerDetails(currentValue),
+        };
+      }
     }
 
     const peakDD = circuitBreaker.peakValue > 0 ? 1 - currentValue / circuitBreaker.peakValue : 0;
     if (peakDD >= CB_PEAK_DD_LIMIT) {
       circuitBreaker.peakHalted = true;
+      circuitBreaker.peakHaltedAt = new Date().toISOString();
+      circuitBreaker.peakHaltCount = (circuitBreaker.peakHaltCount || 0) + 1;
+      const haltNum = circuitBreaker.peakHaltCount;
       const ddPct = (peakDD * 100).toFixed(1);
-      addLog(`[circuit-breaker] *** LAYER 3: PEAK DRAWDOWN ${ddPct}% *** Peak $${circuitBreaker.peakValue.toFixed(0)} → $${currentValue.toFixed(0)}. Manual reset required.`, "error");
-      notify.send(`🚨🚨 CIRCUIT BREAKER LAYER 3: PEAK DRAWDOWN ${ddPct}% — Peak $${circuitBreaker.peakValue.toFixed(0)} → Current $${currentValue.toFixed(0)}. All new trades HALTED. Manual reset required.`, { deduplicate: false, immediate: true });
+      const recoveryMsg = haltNum === 1 ? "Auto-reset in 1h." : haltNum === 2 ? "Auto-reset in 4h." : "Manual reset required (3+ consecutive halts).";
+      addLog(`[circuit-breaker] *** LAYER 3: PEAK DRAWDOWN ${ddPct}% *** Peak $${circuitBreaker.peakValue.toFixed(0)} → $${currentValue.toFixed(0)}. Halt #${haltNum}. ${recoveryMsg}`, "error");
+      notify.send(`🚨🚨 CIRCUIT BREAKER LAYER 3: PEAK DRAWDOWN ${ddPct}% — Peak $${circuitBreaker.peakValue.toFixed(0)} → Current $${currentValue.toFixed(0)}. Halt #${haltNum}. ${recoveryMsg}`, { deduplicate: false, immediate: true });
       try { journal.logEvent({ event_type: "circuit_breaker", severity: "critical", message: `Peak DD ${ddPct}%`, metadata: { layer: "peak", dd_pct: peakDD, peak: circuitBreaker.peakValue, current: currentValue }, portfolio_value: currentValue }); } catch (_) {}
       saveCircuitBreakerState();
       return {
@@ -2300,7 +2361,13 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         addLog("ML server offline -- using consensus engine (fallback mode)", "system");
       }
 
+      // Include both held positions AND pending buy orders to prevent duplicate buys.
+      // Without this, a second ML signal for the same stock can fire before the first
+      // fill is journaled, causing a double buy.
       const heldSymbols = new Set(currentPositions.map(p => p.symbol));
+      for (const o of pendingOrders) {
+        if (o.side === "buy") heldSymbols.add(fromAlpacaSymbol(o.symbol));
+      }
       const activePositionCount = currentPositions.filter(p => p.symbol !== "SPY").length;
       const opportunities = [];
 
@@ -3235,6 +3302,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
     const oldPeak = circuitBreaker.peakValue;
     circuitBreaker.peakHalted = false;
     circuitBreaker._peakNotified = false;
+    circuitBreaker.peakHaltedAt = null;
+    circuitBreaker.peakHaltCount = 0; // manual reset clears escalation
     // Reset peak to current value so it doesn't immediately re-trigger
     circuitBreaker.peakValue = portfolioValue || circuitBreaker.peakValue;
     circuitBreaker.peakDate = new Date().toISOString().split("T")[0];
