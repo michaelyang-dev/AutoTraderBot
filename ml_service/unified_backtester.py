@@ -1555,8 +1555,17 @@ class PortfolioManager:
                     cooldowns[(sym, pos.strategy_name)] = i + COOLDOWN_DAYS
 
             # ── 3. Gather signals from all strategies ────────────────────
+            # Skip strategies that have 0 primary slots and no flex available
+            # to avoid polluting the candidate window with un-openable signals.
+            strat_counts = {}
+            for p in positions.values():
+                strat_counts[p.strategy_name] = strat_counts.get(p.strategy_name, 0) + 1
+            total_open = len(positions)
+
             all_signals = []
             for strat in self.strategies.values():
+                if self.slot_config.available_for(strat.name, strat_counts, total_open) <= 0:
+                    continue
                 all_signals.extend(strat.generate_signals(date, None))
 
             # Exclude held symbols and blacklisted symbols
@@ -1826,6 +1835,7 @@ SLOT_LIVE = SlotConfig(
     flex_slots=0,
     max_positions=8,
 )
+SLOT_LIVE_V2 = SLOT_LIVE  # alias used by some research scripts
 
 # TSMOM only: 2 primary, no flex
 SLOT_TSMOM_ONLY = SlotConfig(

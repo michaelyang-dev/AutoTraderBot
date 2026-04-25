@@ -158,15 +158,16 @@ def main():
     parser.add_argument("--cautious-filter", action="store_true",
                         help="Enable CAUTIOUS regime ML filter: only top 2 picks during CAUTIOUS (matches live)")
     parser.add_argument("--live", action="store_true",
-                        help="Match live production config: --no-spy-parking + --cautious-filter")
+                        help="Match live production config: --no-spy-parking + --cautious-filter + --momentum-regime-filter")
     parser.add_argument("--export-logs", default=None, metavar="DIR",
                         help="Export equity_curve.parquet and trade_log.parquet to DIR")
     args = parser.parse_args()
 
-    # --live is a convenience shortcut
+    # --live is a convenience shortcut — must match wf_live_validation.py exactly
     if args.live:
         args.no_spy_parking = True
         args.cautious_filter = True
+        args.momentum_regime_filter = True
 
     # Set vol-sizing global flag before any strategy instantiation
     import unified_backtester

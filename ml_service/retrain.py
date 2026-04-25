@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-Monthly Retrain Pipeline — V5d LGBM+XGB Ensemble
-=================================================
+Monthly Retrain Pipeline — V6 Dual-Ensemble 40/60 Blend
+========================================================
 Automated monthly retraining with deploy gate validation,
 model backup, atomic swap, and Telegram notifications.
+
+Trains the SAME dual-ensemble as train_production_model.py:
+  - Base ensemble:   83 features (no sector-relative), LGBM+XGB 50/50
+  - Sector ensemble: 87 features (with sector-relative), LGBM+XGB 50/50
+  - Final blend:     0.4 * base + 0.6 * sector
 
 Steps:
   1. Update market data (yfinance via data_pipeline, FMP, FRED)
   2. Regenerate features.parquet
-  3. Train LGBM + XGB (same hyperparameters as train_production_model.py)
-  4. Generate 50/50 ensemble predictions
+  3. Train dual LGBM+XGB ensemble (base 83-feat + sector 87-feat)
+  4. Generate 40/60 blended predictions
   5. Run deploy gate (90-day backtest validation)
   6. Backup old models → timestamped directory
-  7. Atomic swap: write to tmp, verify, rename to production
+  7. Atomic swap: write all 9 files to tmp, verify, rename to production
   8. Reload signal server via pm2, verify /health
   9. Notify via Telegram
 
@@ -186,9 +191,13 @@ def step1_update_data(test_mode: bool = False):
 
 def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     """
-    Train LGBM + XGB ensemble with same hyperparameters as train_production_model.py.
+    Train v6 dual LGBM+XGB ensemble (40/60 base/sector blend).
+    Matches train_production_model.py exactly:
+      - Base ensemble:   83 features (no sector-relative)
+      - Sector ensemble: 87 features (with sector-relative)
+      - Final:           0.4 * base + 0.6 * sector
     Uses rolling 12-year training window.
-    Writes models to TMP_DIR for atomic swap.
+    Writes all 6 model files + predictions to TMP_DIR for atomic swap.
     """
     import warnings
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -202,12 +211,13 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
 
     from train_production_model import (
         LGB_PARAMS, XGB_PARAMS, RANK_FEATURES, FUNDAMENTAL_FEATURE_COLS,
-        CALIB_FRAC, N_TREES, EARLY_STOP_ROUNDS,
+        SECTOR_FEATURE_COLS, CALIB_FRAC, N_TREES, EARLY_STOP_ROUNDS,
+        BLEND_WEIGHT_BASE, BLEND_WEIGHT_SECTOR,
         get_feature_cols,
     )
 
     log(f"\n{'='*70}")
-    log("STEP 2: TRAIN LGBM + XGB ENSEMBLE")
+    log("STEP 2: TRAIN V6 DUAL ENSEMBLE (40/60 BASE/SECTOR BLEND)")
     log(f"{'='*70}")
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -237,15 +247,18 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     valid_df["target_v5"] = (valid_df["pct_rank"] >= 0.80).astype(int)
     df.loc[valid_df.index, "target_v5"] = valid_df["target_v5"]
 
-    feature_cols = get_feature_cols(df)
-    log(f"  Feature columns: {len(feature_cols)}")
-    non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
+    # Feature columns for BOTH ensembles
+    all_feature_cols = get_feature_cols(df)
+    base_feature_cols = get_feature_cols(df, exclude_cols=set(SECTOR_FEATURE_COLS))
+    log(f"  Sector features: {len(all_feature_cols)} columns")
+    log(f"  Base features:   {len(base_feature_cols)} columns")
+
+    non_fund_cols = [c for c in all_feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
     df = df.dropna(subset=non_fund_cols + ["target_v5"])
 
     # Survivorship filter
     train_df = df[df["in_sp500"] == True].copy()
     log(f"  Total rows: {len(df):,}  |  SP500 filtered: {len(train_df):,}")
-    log(f"  Features: {len(feature_cols)}")
 
     # Rolling window: only use last N years for training
     max_date = train_df["date"].max()
@@ -255,7 +268,6 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     log(f"  Rows after windowing: {len(train_df):,}")
 
     if test_mode:
-        # Subsample for quick test
         sample_dates = sorted(train_df["date"].unique())[-60:]
         train_df = train_df[train_df["date"].isin(sample_dates)]
         df = df[df["date"].isin(sample_dates)]
@@ -265,101 +277,123 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     df = df.sort_values(["symbol", "date"])
     df["fwd_ret"] = df["fwd_10d_ret"]
 
-    X_all = df[feature_cols].values
-    X_filtered = train_df[feature_cols].values
     y_filtered = train_df["target_v5"].values
 
     # Date-based split
-    all_dates = np.sort(train_df["date"].unique())
-    split_idx = int(len(all_dates) * (1 - CALIB_FRAC))
-    calib_start = pd.Timestamp(all_dates[split_idx])
+    all_dates_arr = np.sort(train_df["date"].unique())
+    split_idx = int(len(all_dates_arr) * (1 - CALIB_FRAC))
+    calib_start = pd.Timestamp(all_dates_arr[split_idx])
 
     train_mask = train_df["date"] < calib_start
     calib_mask = train_df["date"] >= calib_start
 
-    X_train, y_train = X_filtered[train_mask], y_filtered[train_mask]
-    X_calib, y_calib = X_filtered[calib_mask], y_filtered[calib_mask]
+    y_train = y_filtered[train_mask]
+    y_calib = y_filtered[calib_mask]
 
     log(f"  Train: {train_mask.sum():,} rows | Calib: {calib_mask.sum():,} rows")
 
     scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
 
-    # Imputer
-    imp = SimpleImputer(strategy="median")
-    X_train_imp = imp.fit_transform(X_train)
-    X_calib_imp = imp.transform(X_calib)
-    X_all_imp = imp.transform(X_all)
-
-    # Train LGBM
-    log(f"  Training LGBMClassifier ({N_TREES} trees) ...")
-    t0 = time.perf_counter()
-    model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
-    model_lgb.fit(
-        X_train, y_train,
-        eval_set=[(X_calib, y_calib)],
-        callbacks=[
-            lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
-            lgb.log_evaluation(period=-1),
-        ],
-    )
-    n_trees = model_lgb.booster_.num_trees()
-    log(f"  LGBM: {n_trees} trees in {time.perf_counter() - t0:.0f}s")
-
-    calib_lgbm = CalibratedClassifierCV(model_lgb, method="isotonic", cv="prefit")
-    calib_lgbm.fit(X_calib, y_calib)
-    lgbm_auc = roc_auc_score(y_calib, calib_lgbm.predict_proba(X_calib)[:, 1])
-    log(f"  LGBM AUC: {lgbm_auc:.4f}")
-
-    # Train XGBoost
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-    log(f"  Training XGBClassifier ({XGB_PARAMS['n_estimators']} trees) ...")
-    t0 = time.perf_counter()
-    model_xgb = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
-    model_xgb.fit(X_train_imp, y_train)
-    log(f"  XGB trained in {time.perf_counter() - t0:.0f}s")
 
-    calib_xgb = CalibratedClassifierCV(model_xgb, method="isotonic", cv="prefit")
-    calib_xgb.fit(X_calib_imp, y_calib)
-    xgb_auc = roc_auc_score(y_calib, calib_xgb.predict_proba(X_calib_imp)[:, 1])
-    log(f"  XGB AUC: {xgb_auc:.4f}")
+    def _train_one_ensemble(feature_cols, label):
+        """Train LGBM + XGB ensemble on given features, return (calib_lgbm, calib_xgb, imputer)."""
+        X_train_raw = train_df.loc[train_mask, feature_cols].values
+        X_calib_raw = train_df.loc[calib_mask, feature_cols].values
+        X_all_raw = df[feature_cols].values
 
-    # Ensemble predictions
-    lgbm_all = calib_lgbm.predict_proba(X_all)[:, 1]
-    xgb_all = calib_xgb.predict_proba(X_all_imp)[:, 1]
-    ensemble_probs = 0.5 * lgbm_all + 0.5 * xgb_all
+        imp = SimpleImputer(strategy="median")
+        X_train_imp = imp.fit_transform(X_train_raw)
+        X_calib_imp = imp.transform(X_calib_raw)
 
-    df["prob_lgbm"] = lgbm_all
-    df["prob_xgb"] = xgb_all
-    df["prob_ensemble"] = ensemble_probs
+        # LGBM
+        log(f"  Training {label} LGBM ({N_TREES} trees) ...")
+        t0 = time.perf_counter()
+        model_lgb_inner = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
+        model_lgb_inner.fit(
+            X_train_raw, y_train,
+            eval_set=[(X_calib_raw, y_calib)],
+            callbacks=[
+                lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
+                lgb.log_evaluation(period=-1),
+            ],
+        )
+        n_trees_inner = model_lgb_inner.booster_.num_trees()
+        calib_lgbm_inner = CalibratedClassifierCV(model_lgb_inner, method="isotonic", cv="prefit")
+        calib_lgbm_inner.fit(X_calib_raw, y_calib)
+        lgbm_auc_inner = roc_auc_score(y_calib, calib_lgbm_inner.predict_proba(X_calib_raw)[:, 1])
+        log(f"    {label} LGBM: {n_trees_inner} trees, AUC={lgbm_auc_inner:.4f} ({time.perf_counter() - t0:.0f}s)")
 
-    ens_auc = roc_auc_score(
-        y_calib,
-        0.5 * calib_lgbm.predict_proba(X_calib)[:, 1] +
-        0.5 * calib_xgb.predict_proba(X_calib_imp)[:, 1],
-    )
-    log(f"  Ensemble AUC: {ens_auc:.4f}")
+        # XGB
+        log(f"  Training {label} XGB ({XGB_PARAMS['n_estimators']} trees) ...")
+        t0 = time.perf_counter()
+        model_xgb_inner = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
+        model_xgb_inner.fit(X_train_imp, y_train)
+        calib_xgb_inner = CalibratedClassifierCV(model_xgb_inner, method="isotonic", cv="prefit")
+        calib_xgb_inner.fit(X_calib_imp, y_calib)
+        xgb_auc_inner = roc_auc_score(y_calib, calib_xgb_inner.predict_proba(X_calib_imp)[:, 1])
+        log(f"    {label} XGB: AUC={xgb_auc_inner:.4f} ({time.perf_counter() - t0:.0f}s)")
+
+        # Ensemble AUC
+        ens_probs_inner = 0.5 * calib_lgbm_inner.predict_proba(X_calib_raw)[:, 1] + \
+                          0.5 * calib_xgb_inner.predict_proba(X_calib_imp)[:, 1]
+        ens_auc_inner = roc_auc_score(y_calib, ens_probs_inner)
+        log(f"    {label} Ensemble AUC={ens_auc_inner:.4f}")
+
+        # All-data predictions
+        X_all_imp = imp.transform(X_all_raw)
+        all_probs = 0.5 * calib_lgbm_inner.predict_proba(X_all_raw)[:, 1] + \
+                    0.5 * calib_xgb_inner.predict_proba(X_all_imp)[:, 1]
+
+        return calib_lgbm_inner, calib_xgb_inner, imp, all_probs, ens_auc_inner
+
+    # ── Train BASE ensemble (83 features, no sector-relative) ──
+    calib_base_lgbm, calib_base_xgb, imp_base, base_probs, base_auc = \
+        _train_one_ensemble(base_feature_cols, "Base")
+
+    # ── Train SECTOR ensemble (87 features, with sector-relative) ──
+    calib_sect_lgbm, calib_sect_xgb, imp_sect, sect_probs, sect_auc = \
+        _train_one_ensemble(all_feature_cols, "Sector")
+
+    # ── 40/60 blend ──
+    ensemble_probs = BLEND_WEIGHT_BASE * base_probs + BLEND_WEIGHT_SECTOR * sect_probs
+    log(f"\n  Blended ({BLEND_WEIGHT_BASE:.0%} base + {BLEND_WEIGHT_SECTOR:.0%} sector)")
     log(f"  Prob range: [{ensemble_probs.min():.4f}, {ensemble_probs.max():.4f}]")
 
-    # Save to tmp
-    joblib.dump(calib_lgbm, str(TMP_DIR / "model.lgb"))
-    joblib.dump(calib_xgb, str(TMP_DIR / "model_xgb.pkl"))
-    joblib.dump(imp, str(TMP_DIR / "imputer.pkl"))
+    df["prob_base"] = base_probs
+    df["prob_sector"] = sect_probs
+    df["prob_ensemble"] = ensemble_probs
 
-    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_xgb",
+    # ── Save ALL 6 model files to tmp ──
+    # Base ensemble
+    joblib.dump(calib_base_lgbm, str(TMP_DIR / "model_base_lgbm.pkl"))
+    joblib.dump(calib_base_xgb,  str(TMP_DIR / "model_base_xgb.pkl"))
+    joblib.dump(imp_base,        str(TMP_DIR / "imputer_base.pkl"))
+
+    # Sector ensemble
+    joblib.dump(calib_sect_lgbm, str(TMP_DIR / "model_sector_lgbm.pkl"))
+    joblib.dump(calib_sect_xgb,  str(TMP_DIR / "model_sector_xgb.pkl"))
+    joblib.dump(imp_sect,        str(TMP_DIR / "imputer_sector.pkl"))
+
+    # Legacy compatibility: signal_server also checks these paths
+    joblib.dump(calib_sect_lgbm, str(TMP_DIR / "model.lgb"))
+    joblib.dump(calib_sect_xgb,  str(TMP_DIR / "model_xgb.pkl"))
+    joblib.dump(imp_sect,        str(TMP_DIR / "imputer.pkl"))
+
+    save_cols = ["date", "symbol", "target_v5", "prob_base", "prob_sector",
                  "prob_ensemble", "fwd_ret", "in_sp500"]
     df[save_cols].to_parquet(TMP_DIR / "predictions.parquet", index=False,
                              engine="pyarrow", compression="snappy")
 
-    log(f"  Models saved to {TMP_DIR}")
-    log(f"  LGBM: {(TMP_DIR / 'model.lgb').stat().st_size / 1024:.0f}KB")
-    log(f"  XGB: {(TMP_DIR / 'model_xgb.pkl').stat().st_size / 1024:.0f}KB")
+    log(f"\n  Models saved to {TMP_DIR}")
+    log(f"  Base:   LGBM={base_feature_cols.__len__()} feat, "
+        f"Sector: LGBM={all_feature_cols.__len__()} feat")
 
     return {
-        "lgbm_auc": round(lgbm_auc, 4),
-        "xgb_auc": round(xgb_auc, 4),
-        "ensemble_auc": round(ens_auc, 4),
-        "n_trees_lgbm": n_trees,
-        "n_features": len(feature_cols),
+        "base_auc": round(base_auc, 4),
+        "sector_auc": round(sect_auc, 4),
+        "n_base_features": len(base_feature_cols),
+        "n_sector_features": len(all_feature_cols),
         "n_rows": len(df),
     }
 
@@ -415,7 +449,14 @@ def step4_backup_and_swap(dry_run: bool = False):
         return backup_path
 
     # Verify new files exist and are non-empty
-    model_files = ["model.lgb", "model_xgb.pkl", "imputer.pkl", "predictions.parquet"]
+    model_files = [
+        # v6 dual-ensemble files
+        "model_base_lgbm.pkl", "model_base_xgb.pkl", "imputer_base.pkl",
+        "model_sector_lgbm.pkl", "model_sector_xgb.pkl", "imputer_sector.pkl",
+        # Legacy compatibility (copies of sector models)
+        "model.lgb", "model_xgb.pkl", "imputer.pkl",
+        "predictions.parquet",
+    ]
     for fname in model_files:
         tmp_file = TMP_DIR / fname
         if not tmp_file.exists() or tmp_file.stat().st_size == 0:

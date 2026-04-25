@@ -91,16 +91,31 @@ Save and exit (`Ctrl+X`, then `Y`, then `Enter`).
 
 ---
 
-## 5. Upload the ML Model
+## 5. Upload the ML Models
 
-The trained LightGBM model (`model.lgb`) is not stored in git. Upload it from your local machine:
+The v6 dual-ensemble uses 6 model files (base 83-feat + sector 87-feat, blended 40/60). These are not stored in git. Upload them from your local machine:
 
 ```bash
 # Run this from your LOCAL machine (not EC2)
-scp -i your-key.pem ml_service/data/model.lgb ubuntu@<EC2-IP>:~/AutoTraderBot/ml_service/data/model.lgb
+# All 6 model files for dual-ensemble mode:
+scp -i your-key.pem \
+  ml_service/data/model_base_lgbm.pkl \
+  ml_service/data/model_base_xgb.pkl \
+  ml_service/data/imputer_base.pkl \
+  ml_service/data/model_sector_lgbm.pkl \
+  ml_service/data/model_sector_xgb.pkl \
+  ml_service/data/imputer_sector.pkl \
+  ubuntu@<EC2-IP>:~/AutoTraderBot/ml_service/data/
+
+# Legacy compatibility files (copies of sector models):
+scp -i your-key.pem \
+  ml_service/data/model.lgb \
+  ml_service/data/model_xgb.pkl \
+  ml_service/data/imputer.pkl \
+  ubuntu@<EC2-IP>:~/AutoTraderBot/ml_service/data/
 ```
 
-> The bot will still run without the model — it falls back to the consensus engine (5-strategy voting). ML-driven trades require the model file.
+> The signal server requires the base model files (`model_base_*.pkl`) for dual-ensemble mode. If only `model.lgb` is present, it falls back to single-ensemble mode (lower accuracy). The monthly `retrain.py` cron will regenerate all files automatically.
 
 ---
 
