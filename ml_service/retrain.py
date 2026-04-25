@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Monthly Retrain Pipeline — V5c LGBM+RF Ensemble
+Monthly Retrain Pipeline — V5d LGBM+XGB Ensemble
 =================================================
 Automated monthly retraining with deploy gate validation,
 model backup, atomic swap, and Telegram notifications.
@@ -8,7 +8,7 @@ model backup, atomic swap, and Telegram notifications.
 Steps:
   1. Update market data (yfinance via data_pipeline, FMP, FRED)
   2. Regenerate features.parquet
-  3. Train LGBM + RF (same hyperparameters as train_production_model.py)
+  3. Train LGBM + XGB (same hyperparameters as train_production_model.py)
   4. Generate 50/50 ensemble predictions
   5. Run deploy gate (90-day backtest validation)
   6. Backup old models → timestamped directory
@@ -186,7 +186,7 @@ def step1_update_data(test_mode: bool = False):
 
 def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     """
-    Train LGBM + RF ensemble with same hyperparameters as train_production_model.py.
+    Train LGBM + XGB ensemble with same hyperparameters as train_production_model.py.
     Uses rolling 12-year training window.
     Writes models to TMP_DIR for atomic swap.
     """
@@ -195,19 +195,19 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
 
     import joblib
     import lightgbm as lgb
+    import xgboost as xgb
     from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.ensemble import RandomForestClassifier
     from sklearn.impute import SimpleImputer
     from sklearn.metrics import roc_auc_score
 
     from train_production_model import (
-        LGB_PARAMS, RF_PARAMS, RANK_FEATURES, FUNDAMENTAL_FEATURE_COLS,
+        LGB_PARAMS, XGB_PARAMS, RANK_FEATURES, FUNDAMENTAL_FEATURE_COLS,
         CALIB_FRAC, N_TREES, EARLY_STOP_ROUNDS,
         get_feature_cols,
     )
 
     log(f"\n{'='*70}")
-    log("STEP 2: TRAIN LGBM + RF ENSEMBLE")
+    log("STEP 2: TRAIN LGBM + XGB ENSEMBLE")
     log(f"{'='*70}")
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -238,7 +238,7 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     df.loc[valid_df.index, "target_v5"] = valid_df["target_v5"]
 
     feature_cols = get_feature_cols(df)
-    assert len(feature_cols) == 83, f"Expected 83 features, got {len(feature_cols)}"
+    log(f"  Feature columns: {len(feature_cols)}")
     non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
     df = df.dropna(subset=non_fund_cols + ["target_v5"])
 
@@ -310,52 +310,53 @@ def step2_train_models(test_mode: bool = False, rolling_years: int = 12):
     lgbm_auc = roc_auc_score(y_calib, calib_lgbm.predict_proba(X_calib)[:, 1])
     log(f"  LGBM AUC: {lgbm_auc:.4f}")
 
-    # Train RF
-    log(f"  Training RandomForestClassifier ({RF_PARAMS['n_estimators']} trees) ...")
+    # Train XGBoost
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    log(f"  Training XGBClassifier ({XGB_PARAMS['n_estimators']} trees) ...")
     t0 = time.perf_counter()
-    model_rf = RandomForestClassifier(**RF_PARAMS)
-    model_rf.fit(X_train_imp, y_train)
-    log(f"  RF trained in {time.perf_counter() - t0:.0f}s")
+    model_xgb = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
+    model_xgb.fit(X_train_imp, y_train)
+    log(f"  XGB trained in {time.perf_counter() - t0:.0f}s")
 
-    calib_rf = CalibratedClassifierCV(model_rf, method="isotonic", cv="prefit")
-    calib_rf.fit(X_calib_imp, y_calib)
-    rf_auc = roc_auc_score(y_calib, calib_rf.predict_proba(X_calib_imp)[:, 1])
-    log(f"  RF AUC: {rf_auc:.4f}")
+    calib_xgb = CalibratedClassifierCV(model_xgb, method="isotonic", cv="prefit")
+    calib_xgb.fit(X_calib_imp, y_calib)
+    xgb_auc = roc_auc_score(y_calib, calib_xgb.predict_proba(X_calib_imp)[:, 1])
+    log(f"  XGB AUC: {xgb_auc:.4f}")
 
     # Ensemble predictions
     lgbm_all = calib_lgbm.predict_proba(X_all)[:, 1]
-    rf_all = calib_rf.predict_proba(X_all_imp)[:, 1]
-    ensemble_probs = 0.5 * lgbm_all + 0.5 * rf_all
+    xgb_all = calib_xgb.predict_proba(X_all_imp)[:, 1]
+    ensemble_probs = 0.5 * lgbm_all + 0.5 * xgb_all
 
     df["prob_lgbm"] = lgbm_all
-    df["prob_rf"] = rf_all
+    df["prob_xgb"] = xgb_all
     df["prob_ensemble"] = ensemble_probs
 
     ens_auc = roc_auc_score(
         y_calib,
         0.5 * calib_lgbm.predict_proba(X_calib)[:, 1] +
-        0.5 * calib_rf.predict_proba(X_calib_imp)[:, 1],
+        0.5 * calib_xgb.predict_proba(X_calib_imp)[:, 1],
     )
     log(f"  Ensemble AUC: {ens_auc:.4f}")
     log(f"  Prob range: [{ensemble_probs.min():.4f}, {ensemble_probs.max():.4f}]")
 
     # Save to tmp
     joblib.dump(calib_lgbm, str(TMP_DIR / "model.lgb"))
-    joblib.dump(calib_rf, str(TMP_DIR / "model_rf.pkl"))
+    joblib.dump(calib_xgb, str(TMP_DIR / "model_xgb.pkl"))
     joblib.dump(imp, str(TMP_DIR / "imputer.pkl"))
 
-    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_rf",
+    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_xgb",
                  "prob_ensemble", "fwd_ret", "in_sp500"]
     df[save_cols].to_parquet(TMP_DIR / "predictions.parquet", index=False,
                              engine="pyarrow", compression="snappy")
 
     log(f"  Models saved to {TMP_DIR}")
     log(f"  LGBM: {(TMP_DIR / 'model.lgb').stat().st_size / 1024:.0f}KB")
-    log(f"  RF: {(TMP_DIR / 'model_rf.pkl').stat().st_size / 1024 / 1024:.1f}MB")
+    log(f"  XGB: {(TMP_DIR / 'model_xgb.pkl').stat().st_size / 1024:.0f}KB")
 
     return {
         "lgbm_auc": round(lgbm_auc, 4),
-        "rf_auc": round(rf_auc, 4),
+        "xgb_auc": round(xgb_auc, 4),
         "ensemble_auc": round(ens_auc, 4),
         "n_trees_lgbm": n_trees,
         "n_features": len(feature_cols),
@@ -414,7 +415,7 @@ def step4_backup_and_swap(dry_run: bool = False):
         return backup_path
 
     # Verify new files exist and are non-empty
-    model_files = ["model.lgb", "model_rf.pkl", "imputer.pkl", "predictions.parquet"]
+    model_files = ["model.lgb", "model_xgb.pkl", "imputer.pkl", "predictions.parquet"]
     for fname in model_files:
         tmp_file = TMP_DIR / fname
         if not tmp_file.exists() or tmp_file.stat().st_size == 0:
@@ -481,7 +482,7 @@ def step5_reload_and_verify(dry_run: bool = False):
 # ── Main pipeline ────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Monthly retrain pipeline for V5c ensemble")
+    parser = argparse.ArgumentParser(description="Monthly retrain pipeline for V5d LGBM+XGB ensemble")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run all steps except atomic swap and pm2 restart")
     parser.add_argument("--test", action="store_true",

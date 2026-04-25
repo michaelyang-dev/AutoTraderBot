@@ -264,7 +264,7 @@ def _load_fred_macro() -> pd.DataFrame:
 # ── Server state ──────────────────────────────────────────────────────────────
 class State:
     model:          object                 = None
-    model_rf:       object                 = None
+    model_xgb:      object                 = None
     imputer:        object                 = None
     cache:          list                   = []
     last_update:    Optional[datetime]     = None
@@ -809,8 +809,8 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
 
     lgbm_probs = state.model.predict_proba(X)[:, 1]
     X_imp = state.imputer.transform(X) if state.imputer is not None else X
-    rf_probs = state.model_rf.predict_proba(X_imp)[:, 1]
-    probs = 0.5 * lgbm_probs + 0.5 * rf_probs
+    xgb_probs = state.model_xgb.predict_proba(X_imp)[:, 1]
+    probs = 0.5 * lgbm_probs + 0.5 * xgb_probs
 
     # ── Regime-adaptive signal generation ─────────────────────────────────
     ml_mode = state.ml_mode
@@ -957,15 +957,23 @@ async def lifespan(app: FastAPI):
     n_lgbm = state.model.calibrated_classifiers_[0].estimator.n_features_in_
     log.info("LGBM loaded (calibrated) — %d features", n_lgbm)
 
-    # Load RF model
-    rf_file = DATA_DIR / "model_rf.pkl"
-    if rf_file.exists():
-        log.info("Loading RF model from %s ...", rf_file)
-        state.model_rf = joblib.load(str(rf_file))
-        n_rf = state.model_rf.calibrated_classifiers_[0].estimator.n_features_in_
-        log.info("RF loaded (calibrated) — %d features", n_rf)
+    # Load XGBoost model
+    xgb_file = DATA_DIR / "model_xgb.pkl"
+    if xgb_file.exists():
+        log.info("Loading XGB model from %s ...", xgb_file)
+        state.model_xgb = joblib.load(str(xgb_file))
+        n_xgb = state.model_xgb.calibrated_classifiers_[0].estimator.n_features_in_
+        log.info("XGB loaded (calibrated) — %d features", n_xgb)
     else:
-        log.warning("RF model not found: %s — using LGBM only", rf_file)
+        # Fall back to RF model if XGB not yet trained
+        rf_file = DATA_DIR / "model_rf.pkl"
+        if rf_file.exists():
+            log.info("XGB not found, falling back to RF model from %s ...", rf_file)
+            state.model_xgb = joblib.load(str(rf_file))
+            n_rf = state.model_xgb.calibrated_classifiers_[0].estimator.n_features_in_
+            log.info("RF loaded as fallback — %d features", n_rf)
+        else:
+            log.warning("No XGB or RF model found — using LGBM only")
 
     # Load imputer
     imp_file = DATA_DIR / "imputer.pkl"

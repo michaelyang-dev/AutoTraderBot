@@ -1,23 +1,21 @@
 #!/usr/bin/env python3
 """
-Train Production Model v5c (LGBM + RF Ensemble)
+Train Production Model v5d (LGBM + XGB Ensemble)
 =================================================
-Trains two models (LightGBM + Random Forest) with 83 bug-fixed features,
+Trains two models (LightGBM + XGBoost) with bug-fixed features,
 generates 50/50 ensemble predictions, and verifies consistency.
 
-v5c changes from v4:
-  - Removed days_until_earnings (look-ahead bug)
-  - Fixed fundamentals to use filing_date (no future data leakage)
-  - Added Random Forest as second model (50/50 ensemble)
-  - 83 features: 79 from parquet + 4 cross-sectional ranks at runtime
+v5d changes from v5c:
+  - Swapped RandomForest for XGBoost (walk-forward validated)
+  - Added 4 sector-relative features (87 total)
 
 Pipeline:
-  1. Load features.parquet (79 features, no days_until_earnings)
+  1. Load features.parquet (83 features, no days_until_earnings)
   2. Add 4 cross-sectional rank features (vol_rank_20d, momentum_rank_60d, rsi_rank, dist_sma50_rank)
   3. Split by date: first 80% → train, last 20% → calibration
-  4. Train LGBMClassifier + RandomForestClassifier
+  4. Train LGBMClassifier + XGBClassifier
   5. Calibrate both with IsotonicRegression
-  6. Generate ensemble predictions: 0.5 * LGBM + 0.5 * RF
+  6. Generate ensemble predictions: 0.5 * LGBM + 0.5 * XGB
   7. Verify: load models, re-predict 20 random rows, compare
 
 Run with:
@@ -33,8 +31,8 @@ import joblib
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
+import xgboost as xgb
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import roc_auc_score
 
@@ -44,7 +42,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 DATA_DIR     = Path(__file__).resolve().parent / "data"
 INPUT_FILE   = DATA_DIR / "features.parquet"
 MODEL_FILE   = DATA_DIR / "model.lgb"
-RF_MODEL_FILE = DATA_DIR / "model_rf.pkl"
+XGB_MODEL_FILE = DATA_DIR / "model_xgb.pkl"
 PRED_FILE    = DATA_DIR / "predictions.parquet"
 
 CALIB_FRAC   = 0.20   # last 20% of dates for calibration
@@ -89,14 +87,14 @@ RANK_FEATURES = [
     ("dist_sma50", "dist_sma50_rank"),
 ]
 
-RF_PARAMS = dict(
-    n_estimators=500,
-    max_depth=12,
-    min_samples_leaf=50,
-    max_features="sqrt",
+XGB_PARAMS = dict(
+    n_estimators=300,
+    max_depth=8,
+    learning_rate=0.1,
+    tree_method="hist",
+    n_jobs=1,
     random_state=42,
-    n_jobs=-1,
-    class_weight="balanced",
+    eval_metric="auc",
 )
 
 # V1 baseline (from prior backtest)
@@ -118,7 +116,7 @@ def get_feature_cols(df: pd.DataFrame) -> list:
 # ── STEP 1: Load data and train ──────────────────────────────────────────────
 
 def train_production_model():
-    """Train LGBM + RF ensemble on all data with date-based calibration split."""
+    """Train LGBM + XGB ensemble on all data with date-based calibration split."""
     log(f"Loading {INPUT_FILE} ...")
     if not INPUT_FILE.exists():
         sys.exit(f"ERROR: {INPUT_FILE} not found — run data_pipeline.py first.")
@@ -186,7 +184,7 @@ def train_production_model():
     log(f"    Train pos/neg: {int(y_train.sum()):,} / {int(len(y_train) - y_train.sum()):,}  "
         f"(scale_pos_weight={scale:.2f})")
 
-    # Imputer for RF (can't handle NaN)
+    # Imputer for XGBoost
     imp = SimpleImputer(strategy="median")
     X_train_imp = imp.fit_transform(X_train)
     X_calib_imp = imp.transform(X_calib)
@@ -212,28 +210,28 @@ def train_production_model():
     lgbm_auc = roc_auc_score(y_calib, lgbm_calib_probs)
     log(f"  LGBM Calibration AUC: {lgbm_auc:.4f}")
 
-    # ── Train Random Forest ──
-    log(f"\n  Training RandomForestClassifier ({RF_PARAMS['n_estimators']} trees) ...")
-    model_rf = RandomForestClassifier(**RF_PARAMS)
-    model_rf.fit(X_train_imp, y_train)
+    # ── Train XGBoost ──
+    log(f"\n  Training XGBClassifier ({XGB_PARAMS['n_estimators']} trees) ...")
+    model_xgb = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
+    model_xgb.fit(X_train_imp, y_train)
 
-    calib_rf = CalibratedClassifierCV(model_rf, method="isotonic", cv="prefit")
-    calib_rf.fit(X_calib_imp, y_calib)
-    rf_calib_probs = calib_rf.predict_proba(X_calib_imp)[:, 1]
-    rf_auc = roc_auc_score(y_calib, rf_calib_probs)
-    log(f"  RF Calibration AUC: {rf_auc:.4f}")
+    calib_xgb = CalibratedClassifierCV(model_xgb, method="isotonic", cv="prefit")
+    calib_xgb.fit(X_calib_imp, y_calib)
+    xgb_calib_probs = calib_xgb.predict_proba(X_calib_imp)[:, 1]
+    xgb_auc = roc_auc_score(y_calib, xgb_calib_probs)
+    log(f"  XGB Calibration AUC: {xgb_auc:.4f}")
 
     # ── Ensemble predictions ──
     log(f"\n  Generating ensemble predictions for ALL {len(df):,} rows ...")
     lgbm_all = calib_lgbm.predict_proba(X_all)[:, 1]
-    rf_all = calib_rf.predict_proba(X_all_imp)[:, 1]
-    ensemble_probs = 0.5 * lgbm_all + 0.5 * rf_all
+    xgb_all = calib_xgb.predict_proba(X_all_imp)[:, 1]
+    ensemble_probs = 0.5 * lgbm_all + 0.5 * xgb_all
 
     df["prob_lgbm"] = lgbm_all
-    df["prob_rf"] = rf_all
+    df["prob_xgb"] = xgb_all
     df["prob_ensemble"] = ensemble_probs
 
-    ens_auc = roc_auc_score(y_calib, 0.5 * lgbm_calib_probs + 0.5 * rf_calib_probs)
+    ens_auc = roc_auc_score(y_calib, 0.5 * lgbm_calib_probs + 0.5 * xgb_calib_probs)
     log(f"  Ensemble Calibration AUC: {ens_auc:.4f}")
     log(f"  Ensemble range: [{ensemble_probs.min():.4f}, {ensemble_probs.max():.4f}]")
     log(f"  Mean: {ensemble_probs.mean():.4f}  Median: {np.median(ensemble_probs):.4f}")
@@ -243,22 +241,22 @@ def train_production_model():
     joblib.dump(calib_lgbm, str(MODEL_FILE))
     log(f"  LGBM size: {MODEL_FILE.stat().st_size / 1024:.1f} KB")
 
-    log(f"  Saving RF → {RF_MODEL_FILE.name}")
-    joblib.dump(calib_rf, str(RF_MODEL_FILE))
-    log(f"  RF size: {RF_MODEL_FILE.stat().st_size / 1024:.1f} KB")
+    log(f"  Saving XGB → {XGB_MODEL_FILE.name}")
+    joblib.dump(calib_xgb, str(XGB_MODEL_FILE))
+    log(f"  XGB size: {XGB_MODEL_FILE.stat().st_size / 1024:.1f} KB")
 
-    # Save imputer (needed at inference for RF)
+    # Save imputer (needed at inference for XGB)
     imputer_file = DATA_DIR / "imputer.pkl"
     joblib.dump(imp, str(imputer_file))
     log(f"  Imputer → {imputer_file.name}")
 
     # Save predictions
-    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_rf",
+    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_xgb",
                  "prob_ensemble", "fwd_ret", "in_sp500"]
     df[save_cols].to_parquet(PRED_FILE, index=False, engine="pyarrow", compression="snappy")
     log(f"  Predictions → {PRED_FILE.name} ({len(df):,} rows)")
 
-    return calib_lgbm, calib_rf, imp, df, feature_cols
+    return calib_lgbm, calib_xgb, imp, df, feature_cols
 
 
 # ── STEP 2: Verify match ────────────────────────────────────────────────────
@@ -271,7 +269,7 @@ def verify_predictions(feature_cols):
 
     # Load independently
     loaded_lgbm = joblib.load(str(MODEL_FILE))
-    loaded_rf = joblib.load(str(RF_MODEL_FILE))
+    loaded_xgb = joblib.load(str(XGB_MODEL_FILE))
     loaded_imp = joblib.load(str(DATA_DIR / "imputer.pkl"))
     preds_df = pd.read_parquet(PRED_FILE)
     features_df = pd.read_parquet(INPUT_FILE)
@@ -309,8 +307,8 @@ def verify_predictions(feature_cols):
         X_single_imp = loaded_imp.transform(X_single)
 
         re_lgbm = loaded_lgbm.predict_proba(X_single)[:, 1][0]
-        re_rf = loaded_rf.predict_proba(X_single_imp)[:, 1][0]
-        re_ensemble = 0.5 * re_lgbm + 0.5 * re_rf
+        re_xgb = loaded_xgb.predict_proba(X_single_imp)[:, 1][0]
+        re_ensemble = 0.5 * re_lgbm + 0.5 * re_xgb
         stored = row["prob_ensemble"]
         delta = abs(re_ensemble - stored)
         match = delta < 0.001
@@ -460,33 +458,31 @@ def print_recommendation(metrics: dict):
 def main():
     t0 = time.perf_counter()
     log("=" * 70)
-    log("  PRODUCTION MODEL v5c TRAINING")
-    log("  LGBM + RF ensemble, 83 features, bug-fixed")
+    log("  PRODUCTION MODEL v5d TRAINING")
+    log("  LGBM + XGB ensemble, bug-fixed")
     log("=" * 70)
 
     # STEP 1: Train
     log(f"\n{'='*70}")
-    log("STEP 1: TRAIN LGBM + RF ENSEMBLE")
+    log("STEP 1: TRAIN LGBM + XGB ENSEMBLE")
     log(f"{'='*70}")
-    calib_lgbm, calib_rf, imp, df, feature_cols = train_production_model()
+    calib_lgbm, calib_xgb, imp, df, feature_cols = train_production_model()
 
     # STEP 2: Verify (20 random rows)
     verify_predictions(feature_cols)
 
     n_lgbm = calib_lgbm.calibrated_classifiers_[0].estimator.n_features_in_
-    n_rf = calib_rf.calibrated_classifiers_[0].estimator.n_features_in_
-    log(f"\n  LGBM features: {n_lgbm}  |  RF features: {n_rf}")
+    n_xgb = calib_xgb.calibrated_classifiers_[0].estimator.n_features_in_
+    log(f"\n  LGBM features: {n_lgbm}  |  XGB features: {n_xgb}")
     log(f"  Feature columns: {len(feature_cols)}")
     assert n_lgbm == len(feature_cols), f"LGBM feature count mismatch: LGBM={n_lgbm}, cols={len(feature_cols)}"
-    assert n_rf <= len(feature_cols), f"RF has more features than expected: RF={n_rf}, cols={len(feature_cols)}"
-    if n_rf < len(feature_cols):
-        log(f"  Note: RF reports {n_rf} features (imputer may have reduced dimensionality) — OK")
+    assert n_xgb <= len(feature_cols), f"XGB has more features than expected: XGB={n_xgb}, cols={len(feature_cols)}"
 
     elapsed = time.perf_counter() - t0
     log(f"\nTotal runtime: {elapsed:.0f}s ({elapsed/60:.1f} min)")
     log(f"\nFiles created:")
     log(f"  {MODEL_FILE}")
-    log(f"  {RF_MODEL_FILE}")
+    log(f"  {XGB_MODEL_FILE}")
     log(f"  {PRED_FILE}")
     log(f"  {DATA_DIR / 'imputer.pkl'}")
 
