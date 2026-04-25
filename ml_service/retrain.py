@@ -446,9 +446,9 @@ def step5_reload_and_verify(dry_run: bool = False):
         return True
 
     # Restart signal server
-    log("  Restarting signal-server via pm2 ...")
+    log("  Restarting ml-server via pm2 ...")
     result = subprocess.run(
-        ["pm2", "restart", "signal-server"],
+        ["pm2", "restart", "ml-server"],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
@@ -552,7 +552,7 @@ def main():
             if backup_path:
                 restore_from(backup_path, log_fn=log)
                 # Restart again with old models
-                subprocess.run(["pm2", "restart", "signal-server"],
+                subprocess.run(["pm2", "restart", "ml-server"],
                                capture_output=True, timeout=30)
             notify_telegram(
                 f"<b>AutoTrader Retrain: VERIFICATION FAILED</b>\n\n"
@@ -600,7 +600,7 @@ def main():
             log("  Attempting rollback ...")
             from backup_models import restore_from
             restore_from(backup_path, log_fn=log)
-            subprocess.run(["pm2", "restart", "signal-server"],
+            subprocess.run(["pm2", "restart", "ml-server"],
                            capture_output=True, timeout=30)
 
         notify_telegram(

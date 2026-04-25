@@ -80,6 +80,7 @@ log = logging.getLogger("signal_server")
 
 # ── Universe (loaded from sp500_universe module) ─────────────────────────────
 from sp500_universe import get_stock_symbols, get_full_universe, get_cross_asset, get_all_symbols
+from unified_backtester import SYMBOL_SECTOR
 
 STOCK_SYMBOLS = get_stock_symbols()
 UNIVERSE = get_full_universe()
@@ -124,6 +125,8 @@ FEATURE_COLS = [
     "pe_vs_universe_median","ps_vs_universe_median",
     # V4 cross-sectional rank features
     "vol_rank_20d","momentum_rank_60d","rsi_rank","dist_sma50_rank",
+    # Sector-relative features (v5d)
+    "ret_10d_vs_sector","ret_20d_vs_sector","rsi_14_vs_sector","vol_20d_vs_sector",
 ]
 
 FUNDAMENTAL_FEATURE_COLS = [
@@ -685,6 +688,8 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
     sym_vol_20d = {}   # V4 new rank features
     sym_rsi_14 = {}
     sym_dist_sma50 = {}
+    sym_ret_10d = {}   # V5d sector-relative features
+    sym_ret_20d = {}
     sym_pe = {}
     sym_ps = {}
 
@@ -708,7 +713,9 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         non_fund = [c for c in FEATURE_COLS if c not in FUNDAMENTAL_FEATURE_COLS
                     and c not in ("pe_vs_universe_median", "ps_vs_universe_median",
                                   "return_rank_3m","return_rank_6m","return_rank_12m",
-                                  "vol_rank_3m","vol_rank_6m")]
+                                  "vol_rank_3m","vol_rank_6m",
+                                  "ret_10d_vs_sector","ret_20d_vs_sector",
+                                  "rsi_14_vs_sector","vol_20d_vs_sector")]
         last_idx = feat.index[-1]
         row = feat.loc[last_idx]
 
@@ -723,7 +730,9 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
                                          "vol_rank_3m","vol_rank_6m",
                                          "pe_vs_universe_median","ps_vs_universe_median",
                                          "vol_rank_20d","momentum_rank_60d",
-                                         "rsi_rank","dist_sma50_rank")}
+                                         "rsi_rank","dist_sma50_rank",
+                                         "ret_10d_vs_sector","ret_20d_vs_sector",
+                                         "rsi_14_vs_sector","vol_20d_vs_sector")}
         # Store values for cross-sectional ranking
         sym_ret_60d[sym] = row.get("ret_60d", np.nan)
         sym_ret_126d[sym] = row.get("ret_126d", np.nan)
@@ -732,6 +741,8 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         sym_vol_126d[sym] = row.get("vol_126d", np.nan)
         sym_vol_20d[sym] = row.get("vol_20d", np.nan)
         sym_rsi_14[sym] = row.get("rsi_14", np.nan)
+        sym_ret_10d[sym] = row.get("ret_10d", np.nan)
+        sym_ret_20d[sym] = row.get("ret_20d", np.nan)
         sym_dist_sma50[sym] = row.get("dist_sma50", np.nan)
         sym_pe[sym] = fund_feats.get("pe_ratio", np.nan)
         sym_ps[sym] = fund_feats.get("ps_ratio", np.nan)
@@ -795,6 +806,29 @@ def build_signals(raw: dict[str, pd.DataFrame]) -> list[dict]:
         sym_features[sym]["momentum_rank_60d"] = mom_rank_60d.get(sym, np.nan)
         sym_features[sym]["rsi_rank"] = rsi_rank.get(sym, np.nan)
         sym_features[sym]["dist_sma50_rank"] = dist_sma50_rank.get(sym, np.nan)
+
+    # V5d sector-relative features: each stock's metric minus its sector median
+    sector_groups = {}  # sector → list of symbols
+    for sym in sym_features:
+        sector = SYMBOL_SECTOR.get(sym, "Other")
+        sector_groups.setdefault(sector, []).append(sym)
+
+    for src, dst, src_dict in [
+        ("ret_10d", "ret_10d_vs_sector", sym_ret_10d),
+        ("ret_20d", "ret_20d_vs_sector", sym_ret_20d),
+        ("rsi_14", "rsi_14_vs_sector", sym_rsi_14),
+        ("vol_20d", "vol_20d_vs_sector", sym_vol_20d),
+    ]:
+        sector_medians = {}
+        for sector, members in sector_groups.items():
+            vals = [src_dict.get(s, np.nan) for s in members]
+            vals = [v for v in vals if not np.isnan(v)]
+            sector_medians[sector] = np.median(vals) if vals else 0.0
+        for sym in sym_features:
+            sector = SYMBOL_SECTOR.get(sym, "Other")
+            val = src_dict.get(sym, np.nan)
+            med = sector_medians.get(sector, 0.0)
+            sym_features[sym][dst] = val - med if not np.isnan(val) else 0.0
 
     # ── Build feature matrix and run model ─────────────────────────────────
     rows = []
