@@ -19,8 +19,6 @@ Features computed at runtime:
   - 4 cross-asset ratio features (HYG/LQD, CPER/GLD)
   - 9 cross-sectional rank features (return/vol/momentum/RSI/SMA ranks)
   - 2 fundamental cross-sectional (PE/PS vs universe median)
-  - 2 always-NaN (eps_revision_30d, revenue_revision_30d)
-
 Endpoints
 ---------
 GET /health              — model status, last refresh time, staleness flag
@@ -552,10 +550,6 @@ def _compute_fundamental_features_for_symbol(symbol: str, today: pd.Timestamp) -
             est = last_earn.get("eps_estimated")
             if actual is not None and est is not None and abs(est) > 1e-9:
                 result["eps_surprise_last"] = np.clip((actual - est) / abs(est), -2.0, 2.0)
-
-    # Always NaN (no daily estimate snapshots)
-    result["eps_revision_30d"] = np.nan
-    result["revenue_revision_30d"] = np.nan
 
     # Insider activity (90-day window)
     sym_ins = insiders[insiders["symbol"] == symbol] if len(insiders) > 0 else pd.DataFrame()
