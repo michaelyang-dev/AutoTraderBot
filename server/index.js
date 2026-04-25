@@ -56,6 +56,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ── Grafana metrics API ──
+require("./grafanaMetrics")(app);
+
 // ── Validate env ──
 const { ALPACA_API_KEY, ALPACA_SECRET_KEY, FMP_API_KEY } = process.env;
 if (!FMP_API_KEY) {
