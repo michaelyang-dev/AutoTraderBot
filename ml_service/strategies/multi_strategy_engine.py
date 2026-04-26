@@ -371,7 +371,7 @@ def strategy4_index_inclusion(date, uni, day_idx, active_trades):
 
 
 def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
-    """Low-Vol Quality + Momentum. Top-15, 10-day rebal."""
+    """Low-Vol Quality + Momentum. Top-15, 10-day rebal. NO trend filter (defensive anchor)."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)
@@ -379,17 +379,15 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
     vol60 = uni.get_feature_map(date, "vol_60d", members)
     gm = uni.get_feature_map(date, "gross_margin", members)
     dte = uni.get_feature_map(date, "debt_to_equity", members)
-
-    # Add 6-month momentum to quality screen
     ret_126 = uni.get_feature_map(date, "ret_126d", members)
+    eps = uni.get_feature_map(date, "eps_surprise_last", members)
 
     inv_vol = {s: -v for s, v in vol60.items() if v > 0}
     inv_dte = {s: -v for s, v in dte.items() if v >= 0}
     mom_6m = {s: v for s, v in ret_126.items() if not np.isnan(v)}
 
     def zscore(d):
-        if len(d) < 20:
-            return {}
+        if len(d) < 20: return {}
         vals = np.array(list(d.values()))
         mu, sig = vals.mean(), vals.std()
         return {s: (v - mu) / sig for s, v in d.items()} if sig > 1e-10 else {}
@@ -405,12 +403,9 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
         if len(zs) >= 2:
             composite[sym] = np.mean(zs)
 
-    if not composite:
-        return {}
-
+    if not composite: return {}
     sorted_syms = sorted(composite, key=composite.get, reverse=True)[:top_n]
-    w = 1.0 / len(sorted_syms)
-    return {s: w for s in sorted_syms}
+    return {s: 1.0 / len(sorted_syms) for s in sorted_syms}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -431,12 +426,12 @@ STRATEGY_CONFIG_BULL = [
 ]
 
 STRATEGY_CONFIG_BEAR = [
-    ("s1_momentum", 0.10),   # minimal, sector-tilted picks
+    ("s1_momentum", 0.10),   # sector-tilted picks
     ("s2_drift", 0.00),
     ("s3_sector", 0.20),     # sector momentum
     ("s4_inclusion", 0.00),
     ("s5_lowvol", 0.70),     # defensive anchor
-    ("s6_short", 0.00),      # disabled — accounting too complex for retail
+    ("s6_short", 0.00),
 ]
 
 # Use the same names so lookup works
