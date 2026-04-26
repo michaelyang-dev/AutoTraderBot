@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 """
-Train Production Model v6 (Dual-Ensemble 40/60 Blend)
-=====================================================
-Trains TWO LGBM+XGB ensembles and blends them 40/60:
+Train Production Model v7 — LambdaRank Dual-Ensemble 40/60 Blend
+=================================================================
+Trains TWO LGBMRanker+XGBRanker ensembles and blends them 40/60:
   - Base ensemble:   83 features (no sector-relative)
   - Sector ensemble: 87 features (with sector-relative)
   - Final:           0.4 * base + 0.6 * sector
 
-Walk-forward validated across 2015-2025 (11 OOS years):
-  - Mean CAGR:   +28.2%  (vs +22.5% single model)
-  - Mean Sharpe: 1.29    (vs 1.04)
-  - Worst DD:    -34.6%  (vs -37.0%)
-  - Bear markets: 2018 -0.6% (vs -9.5%), 2022 -8.1% (vs -19.5%)
-  - Wins 8/11 years vs single model
+Key change from v6: ranking objective (LambdaMART / NDCG) instead of
+binary classification. The model directly optimizes NDCG@5, which is
+what we actually care about (picking the best 5 stocks per day).
+
+Labels: cross-sectional decile (0-9) of forward 10-day return, where
+9 = top decile. This replaces the binary "top 20% = 1" target.
 
 Pipeline:
   1. Load features.parquet (83 base + 4 sector-relative = 87 columns)
-  2. Add 4 cross-sectional rank features → 87 total features for sector model
-  3. Split by date: first 80% → train, last 20% → calibration
-  4. Train base ensemble:   LGBM + XGB on 83 features (sector cols excluded)
-  5. Train sector ensemble: LGBM + XGB on 87 features (all)
-  6. Calibrate all 4 models with IsotonicRegression
-  7. Generate blended predictions: 0.4 * base + 0.6 * sector
-  8. Verify: load models, re-predict 20 random rows, compare
+  2. Add 4 cross-sectional rank features
+  3. Compute decile relevance labels (0-9) per trading day
+  4. Split by date with purge gap
+  5. Train base ensemble:   LGBMRanker + XGBRanker on 83 features
+  6. Train sector ensemble: LGBMRanker + XGBRanker on 87 features
+  7. Wrap rankers in RankerWrapper (predict_proba compatibility)
+  8. Generate blended predictions: 0.4 * base + 0.6 * sector
+  9. Verify: load models, re-predict 20 random rows, compare
 
 Run with:
     python3 train_production_model.py
@@ -38,10 +39,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.frozen import FrozenEstimator
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import roc_auc_score
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -61,18 +59,20 @@ MODEL_SECT_XGB  = DATA_DIR / "model_sector_xgb.pkl"
 IMPUTER_SECT    = DATA_DIR / "imputer_sector.pkl"
 
 # Legacy model paths (signal_server also checks these)
-MODEL_FILE     = DATA_DIR / "model.lgb"          # symlink/copy of sector LGBM
-XGB_MODEL_FILE = DATA_DIR / "model_xgb.pkl"      # symlink/copy of sector XGB
-IMPUTER_FILE   = DATA_DIR / "imputer.pkl"         # symlink/copy of sector imputer
+MODEL_FILE     = DATA_DIR / "model.lgb"
+XGB_MODEL_FILE = DATA_DIR / "model_xgb.pkl"
+IMPUTER_FILE   = DATA_DIR / "imputer.pkl"
 
 # Blend weight: 0.4 * base + 0.6 * sector
 BLEND_WEIGHT_BASE   = 0.4
 BLEND_WEIGHT_SECTOR = 0.6
 
 CALIB_FRAC   = 0.20   # last 20% of dates for calibration
+PURGE_TRADING_DAYS = 10  # must match label horizon (10-day forward return)
 
 N_TREES = 500
 EARLY_STOP_ROUNDS = 100
+N_DECILES = 10  # graded relevance labels 0..(N_DECILES-1)
 
 LGB_PARAMS = dict(
     n_estimators      = N_TREES,
@@ -84,8 +84,9 @@ LGB_PARAMS = dict(
     colsample_bytree  = 0.8,
     reg_alpha         = 0.1,
     reg_lambda        = 0.1,
-    objective         = "binary",
-    metric            = "auc",
+    objective         = "lambdarank",
+    metric            = "ndcg",
+    eval_at           = [5],
     random_state      = 42,
     n_jobs            = -1,
     verbose           = -1,
@@ -98,7 +99,8 @@ XGB_PARAMS = dict(
     tree_method="hist",
     n_jobs=1,
     random_state=42,
-    eval_metric="auc",
+    objective="rank:ndcg",
+    eval_metric="ndcg@5",
 )
 
 FUNDAMENTAL_FEATURE_COLS = [
@@ -123,12 +125,38 @@ RANK_FEATURES = [
 ]
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  RankerWrapper — backward-compatible predict_proba() for signal_server
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RankerWrapper:
+    """
+    Wraps LGBMRanker/XGBRanker to provide predict_proba() interface.
+
+    signal_server.py calls model.predict_proba(X)[:, 1]. This wrapper
+    normalizes raw ranker scores to [0,1] via sigmoid so the signal
+    server works unchanged. Ranking order is preserved.
+    """
+
+    def __init__(self, ranker):
+        self.ranker = ranker
+
+    def predict_proba(self, X):
+        scores = self.ranker.predict(X)
+        probs = 1.0 / (1.0 + np.exp(-scores))
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X):
+        return self.ranker.predict(X)
+
+
 def log(msg: str):
     print(msg, flush=True)
 
 
 def get_feature_cols(df: pd.DataFrame, exclude_cols: set = None) -> list:
-    exclude = {"date", "symbol", "target", "target_v5", "in_sp500", "pct_rank"}
+    exclude = {"date", "symbol", "target", "target_v5", "target_rank",
+               "in_sp500", "pct_rank"}
     if exclude_cols:
         exclude.update(exclude_cols)
     forward_keywords = {"fwd", "forward", "future"}
@@ -136,41 +164,60 @@ def get_feature_cols(df: pd.DataFrame, exclude_cols: set = None) -> list:
             if c not in exclude and not any(kw in c.lower() for kw in forward_keywords)]
 
 
-def train_ensemble(X_train, y_train, X_calib, y_calib, scale, label):
-    """Train LGBM + XGB ensemble, return calibrated models."""
-    # LGBM
-    model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
+def compute_groups(dates_series: pd.Series) -> np.ndarray:
+    """Compute group sizes for LGBMRanker from a date-sorted Series."""
+    return dates_series.groupby(dates_series).size().values
+
+
+def compute_qids(dates_series: pd.Series) -> np.ndarray:
+    """Compute query IDs for XGBRanker from a date-sorted Series."""
+    unique_dates = dates_series.unique()
+    date_to_qid = {d: i for i, d in enumerate(unique_dates)}
+    return dates_series.map(date_to_qid).values
+
+
+def train_ensemble(X_train, y_train, X_calib, y_calib,
+                   train_groups, calib_groups,
+                   train_qids, calib_qids, label):
+    """Train LGBMRanker + XGBRanker ensemble, return wrapped models."""
+    # ── LGBMRanker ──
+    model_lgb = lgb.LGBMRanker(**LGB_PARAMS)
     model_lgb.fit(
         X_train, y_train,
+        group=train_groups,
         eval_set=[(X_calib, y_calib)],
+        eval_group=[calib_groups],
         callbacks=[
             lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
             lgb.log_evaluation(period=-1),
         ],
     )
     n_trees = model_lgb.booster_.num_trees()
-    calib_lgbm = CalibratedClassifierCV(FrozenEstimator(model_lgb), method="isotonic")
-    calib_lgbm.fit(X_calib, y_calib)
-    lgbm_auc = roc_auc_score(y_calib, calib_lgbm.predict_proba(X_calib)[:, 1])
-    log(f"    {label} LGBM: {n_trees} trees, AUC={lgbm_auc:.4f}")
+    wrapped_lgbm = RankerWrapper(model_lgb)
+    lgbm_scores = wrapped_lgbm.predict_proba(X_calib)[:, 1]
+    log(f"    {label} LGBM: {n_trees} trees, score range=[{lgbm_scores.min():.3f}, {lgbm_scores.max():.3f}]")
 
-    # XGBoost
-    model_xgb = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
-    model_xgb.fit(X_train, y_train)
-    calib_xgb = CalibratedClassifierCV(FrozenEstimator(model_xgb), method="isotonic")
-    calib_xgb.fit(X_calib, y_calib)
-    xgb_auc = roc_auc_score(y_calib, calib_xgb.predict_proba(X_calib)[:, 1])
-    log(f"    {label} XGB:  {XGB_PARAMS['n_estimators']} trees, AUC={xgb_auc:.4f}")
+    # ── XGBRanker ──
+    model_xgb = xgb.XGBRanker(**XGB_PARAMS)
+    model_xgb.fit(
+        X_train, y_train,
+        qid=train_qids,
+        eval_set=[(X_calib, y_calib)],
+        eval_qid=[calib_qids],
+        verbose=False,
+    )
+    wrapped_xgb = RankerWrapper(model_xgb)
+    xgb_scores = wrapped_xgb.predict_proba(X_calib)[:, 1]
+    log(f"    {label} XGB:  {XGB_PARAMS['n_estimators']} trees, score range=[{xgb_scores.min():.3f}, {xgb_scores.max():.3f}]")
 
-    ens_probs = 0.5 * calib_lgbm.predict_proba(X_calib)[:, 1] + 0.5 * calib_xgb.predict_proba(X_calib)[:, 1]
-    ens_auc = roc_auc_score(y_calib, ens_probs)
-    log(f"    {label} Ensemble AUC={ens_auc:.4f}")
+    ens_scores = 0.5 * lgbm_scores + 0.5 * xgb_scores
+    log(f"    {label} Ensemble score range=[{ens_scores.min():.3f}, {ens_scores.max():.3f}]")
 
-    return calib_lgbm, calib_xgb
+    return wrapped_lgbm, wrapped_xgb
 
 
 def train_production_model():
-    """Train dual LGBM+XGB ensemble (base + sector) on all data."""
+    """Train dual LGBMRanker+XGBRanker ensemble (base + sector) on all data."""
     log(f"Loading {INPUT_FILE} ...")
     if not INPUT_FILE.exists():
         sys.exit(f"ERROR: {INPUT_FILE} not found — run data_pipeline.py first.")
@@ -186,14 +233,20 @@ def train_production_model():
         if base_col in df.columns:
             df[rank_col] = df.groupby("date")[base_col].rank(pct=True)
 
-    # Cross-sectional target: top 20% of S&P 500 by forward 10-day return
+    # Cross-sectional decile target (0-9) for ranking
     df["fwd_10d_ret"] = df.groupby("symbol")["ret_10d"].shift(-10)
     sp500_mask = df["in_sp500"] == True
     has_fwd = df["fwd_10d_ret"].notna()
-    df["target_v5"] = np.nan
+    df["target_rank"] = np.nan
     valid_df = df[sp500_mask & has_fwd].copy()
-    valid_df["pct_rank"] = valid_df.groupby("date")["fwd_10d_ret"].rank(pct=True)
+    pct = valid_df.groupby("date")["fwd_10d_ret"].rank(pct=True)
+    valid_df["target_rank"] = np.clip((pct * N_DECILES).astype(int), 0, N_DECILES - 1)
+    df.loc[valid_df.index, "target_rank"] = valid_df["target_rank"]
+
+    # Also keep binary target for compatibility (predictions output)
+    valid_df["pct_rank"] = pct
     valid_df["target_v5"] = (valid_df["pct_rank"] >= 0.80).astype(int)
+    df["target_v5"] = np.nan
     df.loc[valid_df.index, "target_v5"] = valid_df["target_v5"]
 
     # Feature columns for both ensembles
@@ -202,7 +255,7 @@ def train_production_model():
 
     non_fund_cols = [c for c in all_feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
     before = len(df)
-    df = df.dropna(subset=non_fund_cols + ["target_v5"])
+    df = df.dropna(subset=non_fund_cols + ["target_rank"])
     log(f"Loaded {before:,} → {len(df):,} rows after dropping NaN")
 
     # Survivorship bias filter
@@ -217,25 +270,38 @@ def train_production_model():
     df = df.sort_values(["symbol", "date"])
     df["fwd_ret"] = df["fwd_10d_ret"]
 
-    y_filtered = train_df["target_v5"].values
+    # ── Sort train_df by date for proper ranking groups ──
+    train_df = train_df.sort_values("date").reset_index(drop=True)
 
     # Date-based split
     all_dates = np.sort(train_df["date"].unique())
     split_idx = int(len(all_dates) * (1 - CALIB_FRAC))
     calib_start = pd.Timestamp(all_dates[split_idx])
 
-    train_mask = train_df["date"] < calib_start
-    calib_mask = train_df["date"] >= calib_start
+    # Purge gap
+    purge_train_end = pd.Timestamp(all_dates[max(0, split_idx - PURGE_TRADING_DAYS)])
+    purge_calib_start = pd.Timestamp(all_dates[min(len(all_dates) - 1, split_idx + PURGE_TRADING_DAYS)])
 
-    y_train = y_filtered[train_mask]
-    y_calib = y_filtered[calib_mask]
+    train_mask = train_df["date"] < purge_train_end
+    calib_mask = train_df["date"] >= purge_calib_start
 
-    log(f"\n  Split by date (survivorship-filtered):")
-    log(f"    Train: {train_mask.sum():,} rows  ({train_df[train_mask]['date'].min().date()} → {train_df[train_mask]['date'].max().date()})")
-    log(f"    Calib: {calib_mask.sum():,} rows  ({train_df[calib_mask]['date'].min().date()} → {train_df[calib_mask]['date'].max().date()})")
+    y_train = train_df.loc[train_mask, "target_rank"].values.astype(int)
+    y_calib = train_df.loc[calib_mask, "target_rank"].values.astype(int)
 
-    scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
-    log(f"    scale_pos_weight={scale:.2f}")
+    # Compute group/qid arrays for rankers
+    train_dates = train_df.loc[train_mask, "date"]
+    calib_dates = train_df.loc[calib_mask, "date"]
+    train_groups = compute_groups(train_dates)
+    calib_groups = compute_groups(calib_dates)
+    train_qids = compute_qids(train_dates)
+    calib_qids = compute_qids(calib_dates)
+
+    purged_rows = (~train_mask & ~calib_mask).sum()
+    log(f"\n  Split by date with {PURGE_TRADING_DAYS}-day purge gap:")
+    log(f"    Train: {train_mask.sum():,} rows  ({train_dates.min().date()} → {train_dates.max().date()})  [{len(train_groups)} groups]")
+    log(f"    Purge: {purged_rows:,} rows dropped")
+    log(f"    Calib: {calib_mask.sum():,} rows  ({calib_dates.min().date()} → {calib_dates.max().date()})  [{len(calib_groups)} groups]")
+    log(f"    Target: decile labels 0-{N_DECILES-1}")
 
     # ── Train base ensemble (no sector features) ──
     log(f"\n  Training BASE ensemble ({len(base_feature_cols)} features) ...")
@@ -246,8 +312,9 @@ def train_production_model():
     X_train_base_imp = imp_base.fit_transform(X_train_base)
     X_calib_base_imp = imp_base.transform(X_calib_base)
 
-    calib_base_lgbm, calib_base_xgb = train_ensemble(
-        X_train_base_imp, y_train, X_calib_base_imp, y_calib, scale, "Base")
+    wrapped_base_lgbm, wrapped_base_xgb = train_ensemble(
+        X_train_base_imp, y_train, X_calib_base_imp, y_calib,
+        train_groups, calib_groups, train_qids, calib_qids, "Base")
 
     # ── Train sector ensemble (all features) ──
     log(f"\n  Training SECTOR ensemble ({len(all_feature_cols)} features) ...")
@@ -258,18 +325,19 @@ def train_production_model():
     X_train_sect_imp = imp_sect.fit_transform(X_train_sect)
     X_calib_sect_imp = imp_sect.transform(X_calib_sect)
 
-    calib_sect_lgbm, calib_sect_xgb = train_ensemble(
-        X_train_sect_imp, y_train, X_calib_sect_imp, y_calib, scale, "Sector")
+    wrapped_sect_lgbm, wrapped_sect_xgb = train_ensemble(
+        X_train_sect_imp, y_train, X_calib_sect_imp, y_calib,
+        train_groups, calib_groups, train_qids, calib_qids, "Sector")
 
     # ── Generate blended predictions ──
     log(f"\n  Generating 40/60 blended predictions for ALL {len(df):,} rows ...")
     X_all_base = imp_base.transform(df[base_feature_cols].values)
     X_all_sect = imp_sect.transform(df[all_feature_cols].values)
 
-    base_probs = 0.5 * calib_base_lgbm.predict_proba(X_all_base)[:, 1] + \
-                 0.5 * calib_base_xgb.predict_proba(X_all_base)[:, 1]
-    sect_probs = 0.5 * calib_sect_lgbm.predict_proba(X_all_sect)[:, 1] + \
-                 0.5 * calib_sect_xgb.predict_proba(X_all_sect)[:, 1]
+    base_probs = 0.5 * wrapped_base_lgbm.predict_proba(X_all_base)[:, 1] + \
+                 0.5 * wrapped_base_xgb.predict_proba(X_all_base)[:, 1]
+    sect_probs = 0.5 * wrapped_sect_lgbm.predict_proba(X_all_sect)[:, 1] + \
+                 0.5 * wrapped_sect_xgb.predict_proba(X_all_sect)[:, 1]
     blended = BLEND_WEIGHT_BASE * base_probs + BLEND_WEIGHT_SECTOR * sect_probs
 
     df["prob_base"] = base_probs
@@ -282,19 +350,19 @@ def train_production_model():
     # ── Save models ──
     log(f"\n  Saving models ...")
     for path, obj, label in [
-        (MODEL_BASE_LGBM, calib_base_lgbm, "Base LGBM"),
-        (MODEL_BASE_XGB,  calib_base_xgb,  "Base XGB"),
-        (IMPUTER_BASE,    imp_base,         "Base Imputer"),
-        (MODEL_SECT_LGBM, calib_sect_lgbm, "Sector LGBM"),
-        (MODEL_SECT_XGB,  calib_sect_xgb,  "Sector XGB"),
-        (IMPUTER_SECT,    imp_sect,         "Sector Imputer"),
+        (MODEL_BASE_LGBM, wrapped_base_lgbm, "Base LGBM"),
+        (MODEL_BASE_XGB,  wrapped_base_xgb,  "Base XGB"),
+        (IMPUTER_BASE,    imp_base,           "Base Imputer"),
+        (MODEL_SECT_LGBM, wrapped_sect_lgbm, "Sector LGBM"),
+        (MODEL_SECT_XGB,  wrapped_sect_xgb,  "Sector XGB"),
+        (IMPUTER_SECT,    imp_sect,           "Sector Imputer"),
     ]:
         joblib.dump(obj, str(path))
         log(f"    {label} → {path.name} ({path.stat().st_size / 1024:.1f} KB)")
 
-    # Legacy compatibility: copy sector models to old paths for signal_server fallback
-    joblib.dump(calib_sect_lgbm, str(MODEL_FILE))
-    joblib.dump(calib_sect_xgb, str(XGB_MODEL_FILE))
+    # Legacy compatibility
+    joblib.dump(wrapped_sect_lgbm, str(MODEL_FILE))
+    joblib.dump(wrapped_sect_xgb, str(XGB_MODEL_FILE))
     joblib.dump(imp_sect, str(IMPUTER_FILE))
     log(f"    Legacy copies: model.lgb, model_xgb.pkl, imputer.pkl")
 
@@ -305,8 +373,8 @@ def train_production_model():
     log(f"  Predictions → {PRED_FILE.name} ({len(df):,} rows)")
 
     return {
-        "base_lgbm": calib_base_lgbm, "base_xgb": calib_base_xgb, "imp_base": imp_base,
-        "sect_lgbm": calib_sect_lgbm, "sect_xgb": calib_sect_xgb, "imp_sect": imp_sect,
+        "base_lgbm": wrapped_base_lgbm, "base_xgb": wrapped_base_xgb, "imp_base": imp_base,
+        "sect_lgbm": wrapped_sect_lgbm, "sect_xgb": wrapped_sect_xgb, "imp_sect": imp_sect,
         "base_feature_cols": base_feature_cols, "all_feature_cols": all_feature_cols,
         "df": df,
     }
@@ -390,9 +458,9 @@ def verify_predictions(result):
 def main():
     t0 = time.perf_counter()
     log("=" * 70)
-    log("  PRODUCTION MODEL v6 TRAINING")
+    log("  PRODUCTION MODEL v7 TRAINING — LambdaRank")
     log("  Dual-ensemble 40/60 blend (base + sector)")
-    log("  Walk-forward validated: +28.2% mean CAGR, 1.29 Sharpe")
+    log("  Objective: lambdarank (NDCG@5) on decile labels")
     log("=" * 70)
 
     result = train_production_model()

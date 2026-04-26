@@ -35,10 +35,7 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.frozen import FrozenEstimator
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import roc_auc_score
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -56,9 +53,12 @@ from backtest_utils import calc_metrics, calc_alpha_beta
 WF_DIR = DATA_DIR / "walkforward"
 INPUT_FILE = DATA_DIR / "features.parquet"
 
-YEARS = list(range(2015, 2026))  # 2015..2025
+YEARS = list(range(2022, 2026))  # 2022..2025 (ensures >4yr training depth per fold)
+MIN_TRAIN_SAMPLES = 300_000     # halt if any fold has fewer training samples
 
 # Same model params as train_validation_model_fast.py
+N_DECILES = 10  # graded relevance labels 0..(N_DECILES-1)
+
 LGB_PARAMS = dict(
     n_estimators=500,
     learning_rate=0.05,
@@ -69,8 +69,9 @@ LGB_PARAMS = dict(
     colsample_bytree=0.8,
     reg_alpha=0.1,
     reg_lambda=0.1,
-    objective="binary",
-    metric="auc",
+    objective="lambdarank",
+    metric="ndcg",
+    eval_at=[5],
     random_state=42,
     n_jobs=-1,
     verbose=-1,
@@ -83,11 +84,21 @@ XGB_PARAMS = dict(
     tree_method="hist",
     n_jobs=1,  # single-threaded to avoid macOS deadlock
     random_state=42,
-    eval_metric="auc",
-    use_label_encoder=False,
+    objective="rank:ndcg",
+    eval_metric="ndcg@5",
 )
 
 EARLY_STOP_ROUNDS = 100
+PURGE_TRADING_DAYS = 10  # must match label horizon (10-day forward return)
+
+# Dual-ensemble blend weights (must match train_production_model.py)
+BLEND_WEIGHT_BASE   = 0.4
+BLEND_WEIGHT_SECTOR = 0.6
+
+SECTOR_FEATURE_COLS = [
+    "ret_10d_vs_sector", "ret_20d_vs_sector",
+    "rsi_14_vs_sector", "vol_20d_vs_sector",
+]
 
 RANK_FEATURES = [
     ("vol_20d", "vol_rank_20d"),
@@ -114,8 +125,11 @@ def log(msg: str):
     print(msg, flush=True)
 
 
-def get_feature_cols(df: pd.DataFrame) -> list:
-    exclude = {"date", "symbol", "target", "target_v5", "in_sp500", "pct_rank"}
+def get_feature_cols(df: pd.DataFrame, exclude_cols: set = None) -> list:
+    exclude = {"date", "symbol", "target", "target_v5", "target_rank",
+               "in_sp500", "pct_rank"}
+    if exclude_cols:
+        exclude.update(exclude_cols)
     forward_keywords = {"fwd", "forward", "future"}
     return [c for c in df.columns
             if c not in exclude and not any(kw in c.lower() for kw in forward_keywords)]
@@ -128,15 +142,19 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         if base_col in df.columns:
             df[rank_col] = df.groupby("date")[base_col].rank(pct=True)
 
-    # Cross-sectional target: top 20% by forward 10-day return
+    # Cross-sectional targets
     df["fwd_10d_ret"] = df.groupby("symbol")["ret_10d"].shift(-10)
     sp500_mask = df["in_sp500"] == True
     has_fwd = df["fwd_10d_ret"].notna()
     df["target_v5"] = np.nan
+    df["target_rank"] = np.nan
     valid = df[sp500_mask & has_fwd].copy()
-    valid["pct_rank"] = valid.groupby("date")["fwd_10d_ret"].rank(pct=True)
-    valid["target_v5"] = (valid["pct_rank"] >= 0.80).astype(int)
+    pct = valid.groupby("date")["fwd_10d_ret"].rank(pct=True)
+    valid["pct_rank"] = pct
+    valid["target_v5"] = (pct >= 0.80).astype(int)
+    valid["target_rank"] = np.clip((pct * N_DECILES).astype(int), 0, N_DECILES - 1)
     df.loc[valid.index, "target_v5"] = valid["target_v5"]
+    df.loc[valid.index, "target_rank"] = valid["target_rank"]
 
     # Forward return for predictions
     df["fwd_ret"] = df["fwd_10d_ret"]
@@ -144,15 +162,31 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def train_year_model(df_full, feature_cols, year):
+class RankerWrapper:
+    """Wraps LGBMRanker/XGBRanker to provide predict_proba() for signal_server compatibility."""
+
+    def __init__(self, ranker):
+        self.ranker = ranker
+
+    def predict_proba(self, X):
+        scores = self.ranker.predict(X)
+        probs = 1.0 / (1.0 + np.exp(-scores))
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X):
+        return self.ranker.predict(X)
+
+
+def train_year_model(df_full, base_feature_cols, all_feature_cols, year):
     """
-    Train LGBM + XGB for a single walk-forward year.
+    Train dual LGBMRanker+XGBRanker ensemble (40/60 base/sector blend) for a
+    single walk-forward year.  Uses LambdaRank (NDCG@5) on decile labels.
 
     Training data: all dates < year
-    Calibration: last year of training data (year-1)
+    Calibration: last year of training data (year-1), with purge gaps
     Prediction: year Y only
 
-    Returns (predictions_df, auc_dict) or None if insufficient data.
+    Returns (predictions_df, metric_dict) or None if insufficient data.
     """
     train_end = pd.Timestamp(f"{year - 1}-12-31")
     calib_start = pd.Timestamp(f"{year - 2}-01-01")
@@ -163,88 +197,124 @@ def train_year_model(df_full, feature_cols, year):
     train_all = df_full[df_full["date"] <= train_end].copy()
     sp500_train = train_all[train_all["in_sp500"] == True].copy()
 
-    # Calibration = last year of training period
-    calib_mask = sp500_train["date"] >= calib_start
-    pure_train_mask = sp500_train["date"] < calib_start
+    # Sort by date for proper ranking groups
+    sp500_train = sp500_train.sort_values("date").reset_index(drop=True)
+
+    # Purge gaps
+    train_dates_arr = pd.DatetimeIndex(sp500_train["date"].unique()).sort_values()
+    calib_boundary_idx = train_dates_arr.searchsorted(calib_start)
+    purge_train_end = pd.Timestamp(train_dates_arr[max(0, calib_boundary_idx - PURGE_TRADING_DAYS)])
+    purge_calib_start = pd.Timestamp(train_dates_arr[min(len(train_dates_arr) - 1, calib_boundary_idx + PURGE_TRADING_DAYS)])
+    calib_end_idx = len(train_dates_arr) - 1
+    purge_calib_end = pd.Timestamp(train_dates_arr[max(0, calib_end_idx - PURGE_TRADING_DAYS)])
+
+    pure_train_mask = sp500_train["date"] < purge_train_end
+    calib_mask = (sp500_train["date"] >= purge_calib_start) & (sp500_train["date"] <= purge_calib_end)
 
     # Year to predict
     year_mask = (df_full["date"] >= year_start) & (df_full["date"] <= year_end)
     df_year = df_full[year_mask].copy()
 
-    if pure_train_mask.sum() < 1000 or calib_mask.sum() < 100 or len(df_year) < 50:
+    n_train = pure_train_mask.sum()
+    if n_train < 1000 or calib_mask.sum() < 100 or len(df_year) < 50:
         log(f"  [SKIP] Insufficient data for year {year}")
         return None
+    if n_train < MIN_TRAIN_SAMPLES:
+        log(f"  [HALT] Training fold has {n_train:,} samples (minimum: {MIN_TRAIN_SAMPLES:,})")
+        log(f"         Increase training window or adjust YEARS range.")
+        raise RuntimeError(f"Training fold too small: {n_train:,} < {MIN_TRAIN_SAMPLES:,}")
 
-    X_train = sp500_train.loc[pure_train_mask, feature_cols].values
-    y_train = sp500_train.loc[pure_train_mask, "target_v5"].values
-    X_calib = sp500_train.loc[calib_mask, feature_cols].values
-    y_calib = sp500_train.loc[calib_mask, "target_v5"].values
+    y_train = sp500_train.loc[pure_train_mask, "target_rank"].values.astype(int)
+    y_calib = sp500_train.loc[calib_mask, "target_rank"].values.astype(int)
 
-    scale = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
+    # Compute group/qid arrays for rankers (data is sorted by date)
+    train_dates_s = sp500_train.loc[pure_train_mask, "date"]
+    calib_dates_s = sp500_train.loc[calib_mask, "date"]
+    train_groups = train_dates_s.groupby(train_dates_s).size().values
+    calib_groups = calib_dates_s.groupby(calib_dates_s).size().values
+    train_unique = train_dates_s.unique()
+    calib_unique = calib_dates_s.unique()
+    train_qids = train_dates_s.map({d: i for i, d in enumerate(train_unique)}).values
+    calib_qids = calib_dates_s.map({d: i for i, d in enumerate(calib_unique)}).values
 
-    log(f"  Train: {pure_train_mask.sum():,} rows | Calib: {calib_mask.sum():,} rows | "
-        f"Predict: {len(df_year):,} rows | scale_pos_weight={scale:.2f}")
+    log(f"  Train: {pure_train_mask.sum():,} rows [{len(train_groups)} groups] | "
+        f"Calib: {calib_mask.sum():,} rows [{len(calib_groups)} groups] | "
+        f"Predict: {len(df_year):,} rows")
 
-    # ── LGBM ──
-    model_lgb = lgb.LGBMClassifier(**LGB_PARAMS, scale_pos_weight=scale)
-    model_lgb.fit(
-        X_train, y_train,
-        eval_set=[(X_calib, y_calib)],
-        callbacks=[
-            lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
-            lgb.log_evaluation(period=-1),
-        ],
-    )
-    n_trees = model_lgb.booster_.num_trees()
+    def _train_ensemble(feat_cols, label):
+        """Train LGBMRanker + XGBRanker on given feature set."""
+        X_tr = sp500_train.loc[pure_train_mask, feat_cols].values
+        X_cal = sp500_train.loc[calib_mask, feat_cols].values
 
-    calib_lgbm = CalibratedClassifierCV(FrozenEstimator(model_lgb), method="isotonic")
-    calib_lgbm.fit(X_calib, y_calib)
+        imp = SimpleImputer(strategy="median")
+        X_tr_imp = imp.fit_transform(X_tr)
+        X_cal_imp = imp.transform(X_cal)
 
-    lgbm_calib_probs = calib_lgbm.predict_proba(X_calib)[:, 1]
-    lgbm_auc = roc_auc_score(y_calib, lgbm_calib_probs) if len(np.unique(y_calib)) > 1 else float("nan")
+        # LGBMRanker
+        m_lgb = lgb.LGBMRanker(**LGB_PARAMS)
+        m_lgb.fit(
+            X_tr_imp, y_train, group=train_groups,
+            eval_set=[(X_cal_imp, y_calib)], eval_group=[calib_groups],
+            callbacks=[
+                lgb.early_stopping(EARLY_STOP_ROUNDS, verbose=False),
+                lgb.log_evaluation(period=-1),
+            ],
+        )
+        n_trees = m_lgb.booster_.num_trees()
+        w_lgbm = RankerWrapper(m_lgb)
 
-    # ── XGBoost ──
-    xgb_ok = True
-    try:
-        model_xgb = xgb.XGBClassifier(**XGB_PARAMS, scale_pos_weight=scale)
-        model_xgb.fit(X_train, y_train)
-        calib_xgb = CalibratedClassifierCV(FrozenEstimator(model_xgb), method="isotonic")
-        calib_xgb.fit(X_calib, y_calib)
-        xgb_calib_probs = calib_xgb.predict_proba(X_calib)[:, 1]
-        xgb_auc = roc_auc_score(y_calib, xgb_calib_probs) if len(np.unique(y_calib)) > 1 else float("nan")
-    except Exception as e:
-        log(f"  [WARN] XGBoost failed: {e} — using LGBM-only")
-        xgb_ok = False
-        xgb_auc = float("nan")
+        # XGBRanker
+        m_xgb = xgb.XGBRanker(**XGB_PARAMS)
+        m_xgb.fit(
+            X_tr_imp, y_train, qid=train_qids,
+            eval_set=[(X_cal_imp, y_calib)], eval_qid=[calib_qids],
+            verbose=False,
+        )
+        w_xgb = RankerWrapper(m_xgb)
 
-    # ── Generate predictions for year Y ──
-    X_year = df_year[feature_cols].values
-    lgbm_probs = calib_lgbm.predict_proba(X_year)[:, 1]
+        # Report score ranges on calib
+        lgb_scores = w_lgbm.predict_proba(X_cal_imp)[:, 1]
+        xgb_scores = w_xgb.predict_proba(X_cal_imp)[:, 1]
+        ens_scores = 0.5 * lgb_scores + 0.5 * xgb_scores
 
-    if xgb_ok:
-        xgb_probs = calib_xgb.predict_proba(X_year)[:, 1]
-        ensemble_probs = 0.5 * lgbm_probs + 0.5 * xgb_probs
-    else:
-        xgb_probs = lgbm_probs  # fallback
-        ensemble_probs = lgbm_probs
+        log(f"    {label}: LGBM {n_trees} trees | "
+            f"Ens score range=[{ens_scores.min():.3f}, {ens_scores.max():.3f}]")
 
-    df_year["prob_lgbm"] = lgbm_probs
-    df_year["prob_rf"] = xgb_probs
+        return w_lgbm, w_xgb, imp
+
+    # ── Train BASE ensemble (no sector features) ──
+    base_lgbm, base_xgb, imp_base = _train_ensemble(base_feature_cols, "Base")
+
+    # ── Train SECTOR ensemble (all features) ──
+    sect_lgbm, sect_xgb, imp_sect = _train_ensemble(all_feature_cols, "Sector")
+
+    # ── Generate 40/60 blended predictions for year Y ──
+    X_year_base = imp_base.transform(df_year[base_feature_cols].values)
+    X_year_sect = imp_sect.transform(df_year[all_feature_cols].values)
+
+    base_probs = 0.5 * base_lgbm.predict_proba(X_year_base)[:, 1] + \
+                 0.5 * base_xgb.predict_proba(X_year_base)[:, 1]
+    sect_probs = 0.5 * sect_lgbm.predict_proba(X_year_sect)[:, 1] + \
+                 0.5 * sect_xgb.predict_proba(X_year_sect)[:, 1]
+    ensemble_probs = BLEND_WEIGHT_BASE * base_probs + BLEND_WEIGHT_SECTOR * sect_probs
+
+    df_year["prob_base"] = base_probs
+    df_year["prob_sector"] = sect_probs
     df_year["prob_ensemble"] = ensemble_probs
 
-    log(f"  LGBM: {n_trees} trees, AUC={lgbm_auc:.4f} | "
-        f"XGB: {'OK' if xgb_ok else 'SKIP'} AUC={xgb_auc:.4f} | "
-        f"Ensemble range=[{ensemble_probs.min():.3f}, {ensemble_probs.max():.3f}]")
+    log(f"    Blend ({BLEND_WEIGHT_BASE:.0%}/{BLEND_WEIGHT_SECTOR:.0%}): "
+        f"range=[{ensemble_probs.min():.3f}, {ensemble_probs.max():.3f}]")
 
-    save_cols = ["date", "symbol", "target_v5", "prob_lgbm", "prob_rf",
+    save_cols = ["date", "symbol", "target_v5", "prob_base", "prob_sector",
                  "prob_ensemble", "fwd_ret", "in_sp500"]
     preds_df = df_year[save_cols].copy()
 
-    auc_dict = {"lgbm_calib_auc": lgbm_auc, "xgb_calib_auc": xgb_auc, "xgb_ok": xgb_ok}
-    return preds_df, auc_dict
+    metric_dict = {"base": "ok", "sector": "ok"}
+    return preds_df, metric_dict
 
 
-def run_backtest_for_year(preds_df, year, momentum_regime_filter=False):
+def run_backtest_for_year(preds_df, year, momentum_regime_filter=False,
+                          preloaded_prices=None):
     """Run combined_live backtest for a single year using provided predictions."""
     all_dates = sorted(preds_df["date"].unique().tolist())
     universe_syms = sorted(preds_df["symbol"].unique().tolist())
@@ -256,19 +326,30 @@ def run_backtest_for_year(preds_df, year, momentum_regime_filter=False):
     if years_span <= 0:
         years_span = len(all_dates) / 252.0
 
-    # Fetch price bars
-    start_str = (pd.Timestamp(all_dates[0]) - pd.Timedelta(days=250)).strftime("%Y-%m-%d")
-    end_str = (pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
-    close = load_bars_cached(universe_syms, start_str, end_str)
+    # Use preloaded prices if available, otherwise fetch
+    if preloaded_prices is not None:
+        # Slice to relevant date range (with lookback for momentum strategies)
+        lookback_start = pd.Timestamp(all_dates[0]) - pd.Timedelta(days=250)
+        close = preloaded_prices[
+            (preloaded_prices.index >= lookback_start) &
+            (preloaded_prices.index <= pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5))
+        ].copy()
+    else:
+        start_str = (pd.Timestamp(all_dates[0]) - pd.Timedelta(days=250)).strftime("%Y-%m-%d")
+        end_str = (pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+        close = load_bars_cached(universe_syms, start_str, end_str)
 
     sim_index = pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates])
     close = close.reindex(sim_index, method="ffill")
 
     spy_px = close["SPY"].dropna()
     if spy_px.empty:
-        close = load_bars_cached(universe_syms, start_str, end_str, no_cache=True)
-        close = close.reindex(sim_index, method="ffill")
-        spy_px = close["SPY"].dropna()
+        if preloaded_prices is None:
+            start_str = (pd.Timestamp(all_dates[0]) - pd.Timedelta(days=250)).strftime("%Y-%m-%d")
+            end_str = (pd.Timestamp(all_dates[-1]) + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+            close = load_bars_cached(universe_syms, start_str, end_str, no_cache=True)
+            close = close.reindex(sim_index, method="ffill")
+            spy_px = close["SPY"].dropna()
         if spy_px.empty:
             log(f"  [WARN] No SPY data for {year}")
             return None
@@ -299,7 +380,7 @@ def run_backtest_for_year(preds_df, year, momentum_regime_filter=False):
     return metrics
 
 
-def generate_report(results_no_filter, results_with_filter, auc_by_year):
+def generate_report(results_no_filter, results_with_filter, metrics_by_year):
     """Generate REPORT.md with consistency analysis."""
     lines = []
     lines.append("# Walk-Forward Validation Report")
@@ -308,25 +389,19 @@ def generate_report(results_no_filter, results_with_filter, auc_by_year):
     lines.append("\n## Per-Year Results (combined_live, no momentum filter)\n")
 
     # Table header
-    lines.append("| Year | CAGR | Sharpe | Sortino | Max DD | Trades | Win% | Alpha | LGBM AUC | XGB AUC |")
-    lines.append("|------|------|--------|---------|--------|--------|------|-------|----------|---------|")
+    lines.append("| Year | CAGR | Sharpe | Sortino | Max DD | Trades | Win% | Alpha |")
+    lines.append("|------|------|--------|---------|--------|--------|------|-------|")
 
     for m in results_no_filter:
-        y = m["year"]
-        auc = auc_by_year.get(y, {})
-        lgbm_auc = auc.get("lgbm_calib_auc", float("nan"))
-        xgb_auc = auc.get("xgb_calib_auc", float("nan"))
         lines.append(
-            f"| {y} "
+            f"| {m['year']} "
             f"| {m['cagr']:+.1%} "
             f"| {m['sharpe']:.2f} "
             f"| {m['sortino']:.2f} "
             f"| {m['max_dd']:.1%} "
             f"| {m['n_trades']} "
             f"| {m['win_rate']:.1%} "
-            f"| {'+' if m.get('alpha') and m['alpha'] > 0 else ''}{m.get('alpha', 0) or 0:.1%} "
-            f"| {lgbm_auc:.3f} "
-            f"| {xgb_auc:.3f} |"
+            f"| {'+' if m.get('alpha') and m['alpha'] > 0 else ''}{m.get('alpha', 0) or 0:.1%} |"
         )
 
     # Summary stats
@@ -418,7 +493,7 @@ def main():
     log("=" * 70)
     log("  WALK-FORWARD VALIDATION")
     log(f"  {len(YEARS)} annual models ({YEARS[0]}-{YEARS[-1]})")
-    log(f"  LGBM + XGBoost ensemble, combined_live backtest")
+    log(f"  LambdaRank dual ensemble, 40/60 base/sector blend")
     log("=" * 70)
 
     # Create output directory
@@ -436,19 +511,29 @@ def main():
     assert "days_until_earnings" not in df.columns
 
     df = prepare_features(df)
-    feature_cols = get_feature_cols(df)
+    all_feature_cols = get_feature_cols(df)
+    base_feature_cols = get_feature_cols(df, exclude_cols=set(SECTOR_FEATURE_COLS))
 
     # Drop NaN on non-fundamental columns
-    non_fund_cols = [c for c in feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
-    df = df.dropna(subset=non_fund_cols + ["target_v5"])
+    non_fund_cols = [c for c in all_feature_cols if c not in FUNDAMENTAL_FEATURE_COLS]
+    df = df.dropna(subset=non_fund_cols + ["target_rank"])
 
     log(f"  {len(df):,} rows | {df['symbol'].nunique()} symbols | "
         f"{df['date'].min().date()} -> {df['date'].max().date()}")
-    log(f"  Features: {len(feature_cols)} columns")
+    log(f"  Base features: {len(base_feature_cols)} | Sector features: {len(all_feature_cols)}")
+
+    # ── Pre-download price data once (avoids 22 yfinance calls) ──
+    all_symbols = sorted(df["symbol"].unique().tolist())
+    price_start = (df["date"].min() - pd.Timedelta(days=300)).strftime("%Y-%m-%d")
+    price_end = (df["date"].max() + pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    log(f"\n  Pre-downloading prices for {len(all_symbols)} symbols ...")
+    t_dl = time.perf_counter()
+    preloaded_prices = load_bars_cached(all_symbols, price_start, price_end)
+    log(f"  Prices loaded: {preloaded_prices.shape} in {time.perf_counter() - t_dl:.0f}s")
 
     # ── Train models and generate predictions per year ──
     all_preds = []
-    auc_by_year = {}
+    metrics_by_year = {}
     results_no_filter = []
     results_with_filter = []
 
@@ -458,14 +543,14 @@ def main():
         log(f"{'─'*70}")
 
         t_year = time.perf_counter()
-        result = train_year_model(df, feature_cols, year)
+        result = train_year_model(df, base_feature_cols, all_feature_cols, year)
 
         if result is None:
             log(f"  Skipped year {year}")
             continue
 
-        preds_df, auc_dict = result
-        auc_by_year[year] = auc_dict
+        preds_df, year_metrics = result
+        metrics_by_year[year] = year_metrics
 
         # Save per-year predictions
         pred_file = WF_DIR / f"predictions_{year}.parquet"
@@ -476,7 +561,9 @@ def main():
 
         # Run backtest without momentum filter
         log(f"  Running backtest (no filter) ...")
-        metrics = run_backtest_for_year(preds_df.copy(), year, momentum_regime_filter=False)
+        metrics = run_backtest_for_year(preds_df.copy(), year,
+                                        momentum_regime_filter=False,
+                                        preloaded_prices=preloaded_prices)
         if metrics:
             results_no_filter.append(metrics)
             log(f"  -> CAGR={metrics['cagr']:+.1%}  Sharpe={metrics['sharpe']:.2f}  "
@@ -484,7 +571,9 @@ def main():
 
         # Run backtest with momentum filter
         log(f"  Running backtest (momentum filter) ...")
-        metrics_f = run_backtest_for_year(preds_df.copy(), year, momentum_regime_filter=True)
+        metrics_f = run_backtest_for_year(preds_df.copy(), year,
+                                          momentum_regime_filter=True,
+                                          preloaded_prices=preloaded_prices)
         if metrics_f:
             results_with_filter.append(metrics_f)
             log(f"  -> CAGR={metrics_f['cagr']:+.1%}  Sharpe={metrics_f['sharpe']:.2f}  "
@@ -504,14 +593,14 @@ def main():
     metrics_out = {
         "no_filter": results_no_filter,
         "with_filter": results_with_filter,
-        "auc_by_year": {str(k): v for k, v in auc_by_year.items()},
+        "metrics_by_year": {str(k): v for k, v in metrics_by_year.items()},
     }
     metrics_file = WF_DIR / "metrics.json"
     metrics_file.write_text(json.dumps(metrics_out, indent=2, default=str))
     log(f"Metrics saved to {metrics_file}")
 
     # ── Generate report ──
-    report = generate_report(results_no_filter, results_with_filter, auc_by_year)
+    report = generate_report(results_no_filter, results_with_filter, metrics_by_year)
     report_file = WF_DIR / "REPORT.md"
     report_file.write_text(report)
     log(f"Report saved to {report_file}")
