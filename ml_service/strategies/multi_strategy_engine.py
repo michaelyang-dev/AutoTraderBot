@@ -210,6 +210,7 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     ret_252 = uni.get_feature_map(date, "ret_252d", members)
     gross_m = uni.get_feature_map(date, "gross_margin", members)
     dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
+    eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
 
     composite = {}
     for sym in members:
@@ -229,7 +230,12 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
         # Quality boost
         gm = gross_m.get(sym)
         if gm is not None and not np.isnan(gm) and gm > 0.3:
-            score *= 1.2
+            score *= 1.15
+
+        # Earnings surprise boost
+        es = eps_surp.get(sym)
+        if es is not None and not np.isnan(es) and es > 0:
+            score *= 1.15  # recent positive earnings surprise
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
@@ -416,9 +422,9 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
 # Bull: heavy momentum + sector
 # Bear: heavy low-vol quality + sector (which goes to cash in bear)
 STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.75),
+    ("s1_momentum", 0.80),
     ("s2_drift", 0.00),
-    ("s3_sector", 0.15),
+    ("s3_sector", 0.10),
     ("s4_inclusion", 0.00),
     ("s5_lowvol", 0.10),
     ("s6_short", 0.00),
