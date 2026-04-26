@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from massive_data_provider import MassiveDataProvider
 from sp500_history import get_sp500_on_date, load_sp500_changes
 from strategies.portfolio_combiner import PortfolioCombiner
+from strategies.s6_bear_short import strategy6_bear_short
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INITIAL_CASH = 100_000.0
@@ -459,14 +460,16 @@ STRATEGY_CONFIG_BULL = [
     ("s3_sector", 0.15),
     ("s4_inclusion", 0.00),
     ("s5_lowvol", 0.10),
+    ("s6_short", 0.00),
 ]
 
 STRATEGY_CONFIG_BEAR = [
-    ("s1_momentum", 0.10),   # minimal, reversal-mode
+    ("s1_momentum", 0.10),   # minimal, sector-tilted picks
     ("s2_drift", 0.00),
     ("s3_sector", 0.20),     # sector momentum
     ("s4_inclusion", 0.00),
     ("s5_lowvol", 0.70),     # defensive anchor
+    ("s6_short", 0.00),      # disabled — accounting too complex for retail
 ]
 
 # Use the same names so lookup works
@@ -516,6 +519,7 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
         t3 = strategy3_sector_rotation(date, uni, day_idx)
         t4 = strategy4_index_inclusion(date, uni, day_idx, s4_active)
         t5 = strategy5_lowvol_quality(date, uni, day_idx)
+        t6 = strategy6_bear_short(date, uni, day_idx)
 
         # Update targets (None = no rebalance, keep last)
         if t1 is not None:
@@ -527,9 +531,11 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
         last_targets["s4_inclusion"] = t4 if t4 else {}
         if t5 is not None:
             last_targets["s5_lowvol"] = t5
+        if t6 is not None:
+            last_targets["s6_short"] = t6
 
-        # Only rebalance when a major strategy triggers (not S4 daily check)
-        major_rebal = any(x is not None for x in [t1, t2, t3, t5])
+        # Only rebalance when a major strategy triggers
+        major_rebal = any(x is not None for x in [t1, t2, t3, t5, t6])
         s4_changed = t4 is not None and t4 != last_targets.get("s4_inclusion_prev", {})
         if t4:
             last_targets["s4_inclusion_prev"] = dict(t4)
@@ -568,28 +574,40 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
                 scaled = w * cap_pct
                 combined[sym] = combined.get(sym, 0) + scaled
 
-        # Apply constraints
-        for sym in list(combined):
-            if combined[sym] > 0.15:
-                combined[sym] = 0.15
+        # Separate longs and shorts
+        longs = {s: w for s, w in combined.items() if w > 0}
+        shorts = {s: w for s, w in combined.items() if w < 0}
+
+        # Apply constraints to longs
+        for sym in list(longs):
+            if longs[sym] > 0.15:
+                longs[sym] = 0.15
 
         sector_totals = {}
-        for sym, w in combined.items():
+        for sym, w in longs.items():
             sec = uni.sector_map.get(sym, "X")
             sector_totals[sec] = sector_totals.get(sec, 0) + w
         for sec, total in sector_totals.items():
             if total > 0.35:
                 scale = 0.35 / total
-                for sym in list(combined):
+                for sym in list(longs):
                     if uni.sector_map.get(sym, "X") == sec:
-                        combined[sym] *= scale
+                        longs[sym] *= scale
 
-        gross = sum(combined.values())
-        if gross > 1.0:
-            for sym in combined:
-                combined[sym] /= gross
+        gross_long = sum(longs.values())
+        if gross_long > 1.0:
+            for sym in longs:
+                longs[sym] /= gross_long
 
-        combined = {s: w for s, w in combined.items() if w >= 0.005}
+        # Cap short exposure at 20%
+        gross_short = sum(abs(w) for w in shorts.values())
+        if gross_short > 0.20:
+            scale = 0.20 / gross_short
+            shorts = {s: w * scale for s, w in shorts.items()}
+
+        # Merge
+        combined = {s: w for s, w in longs.items() if w >= 0.005}
+        combined.update({s: w for s, w in shorts.items() if abs(w) >= 0.005})
 
         # Current equity
         equity = cash
@@ -598,7 +616,7 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
             equity += h["shares"] * px
 
         # Differential rebalance: only trade the changes
-        target_dollars = {sym: w * equity for sym, w in combined.items()}
+        target_dollars = {sym: w * equity for sym, w in combined.items() if w > 0}
         current_dollars = {}
         for sym, h in holdings.items():
             px = today_prices.get(sym, h["entry_px"])
@@ -609,7 +627,7 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
             if sym not in target_dollars:
                 px = today_prices.get(sym, holdings[sym]["entry_px"])
                 proceeds = holdings[sym]["shares"] * px
-                cost = proceeds * cost_frac
+                cost = abs(proceeds) * cost_frac
                 cash += proceeds - cost
                 total_costs += cost
                 trade_count += 1
@@ -620,37 +638,26 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
             px = today_prices.get(sym)
             if px is None or px <= 0:
                 continue
-
             current_val = current_dollars.get(sym, 0)
             delta = target_val - current_val
-
-            # Only trade if change is >0.5% of equity (reduce churn)
             if abs(delta) < equity * 0.005:
                 continue
-
             cost = abs(delta) * cost_frac
             total_costs += cost
             trade_count += 1
-
-            if delta > 0:
-                # Buy more
-                buy_amount = delta - cost
-                if buy_amount > 0 and cash >= delta:
-                    new_shares = buy_amount / px
-                    if sym in holdings:
-                        holdings[sym]["shares"] += new_shares
-                    else:
-                        holdings[sym] = {"shares": new_shares, "entry_px": px}
-                    cash -= delta
-            else:
-                # Sell some
+            if delta > 0 and cash >= delta:
+                new_shares = (delta - cost) / px
                 if sym in holdings:
-                    sell_val = abs(delta)
-                    sell_shares = min(sell_val / px, holdings[sym]["shares"])
-                    cash += sell_shares * px - cost
-                    holdings[sym]["shares"] -= sell_shares
-                    if holdings[sym]["shares"] < 0.01:
-                        del holdings[sym]
+                    holdings[sym]["shares"] += new_shares
+                else:
+                    holdings[sym] = {"shares": new_shares, "entry_px": px}
+                cash -= delta
+            elif delta < 0 and sym in holdings:
+                sell_shares = min(abs(delta) / px, holdings[sym]["shares"])
+                cash += sell_shares * px - cost
+                holdings[sym]["shares"] -= sell_shares
+                if holdings[sym]["shares"] < 0.01:
+                    del holdings[sym]
 
         # Mark to market
         equity = cash
