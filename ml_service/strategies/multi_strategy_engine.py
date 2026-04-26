@@ -273,8 +273,18 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
         return {}
 
     sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
-    w = 1.0 / len(sorted_syms)
-    return {s: w for s in sorted_syms}
+
+    # Signal-weighted: higher score = more capital (but capped at 2x equal weight)
+    scores = [max(composite[s], 0.001) for s in sorted_syms]
+    total = sum(scores)
+    if total > 0:
+        weights = {s: min(sc / total, 2.0 / len(sorted_syms)) for s, sc in zip(sorted_syms, scores)}
+        # Renormalize
+        wt = sum(weights.values())
+        if wt > 0:
+            weights = {s: w / wt for s, w in weights.items()}
+        return weights
+    return {s: 1.0 / len(sorted_syms) for s in sorted_syms}
 
 
 def strategy2_drift_reversal(date, uni, day_idx, top_n=10, rebal_days=5):
