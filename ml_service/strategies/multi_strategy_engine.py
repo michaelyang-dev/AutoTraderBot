@@ -185,8 +185,11 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     vix = regime.get("vix", 20)
     vix_ts = regime.get("vix_term_structure", 1.0)
     spy_bull = regime.get("spy_above_sma200", True)
+    # Also check SPY vs 50d SMA for faster bear detection
+    dist_sma50_spy = uni.get_feature_map(date, "dist_sma50").get("SPY", 0)
+    fast_bear = dist_sma50_spy is not None and dist_sma50_spy < -0.03  # SPY >3% below 50d SMA
     stress = vix > 30 or vix_ts < 0.95
-    bear = not spy_bull
+    bear = not spy_bull or fast_bear
     n = max(top_n // 2, 5) if stress else top_n
 
     # Signals
@@ -218,15 +221,32 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     z_earn = zscore(eps_surp)
     z_qual = zscore(gross_m)
 
+    # In bear: add sector momentum signal (stocks in top sectors get a boost)
+    z_secmom = {}
+    if bear:
+        sec_rets = {}
+        for etf in ["XLK","XLF","XLE","XLV","XLI","XLY","XLP","XLB","XLRE","XLU","XLC"]:
+            close = uni.get_close_series(etf, date, 65)
+            if len(close) >= 60:
+                sec_rets[etf] = (close.iloc[-1] / close.iloc[-60]) - 1.0
+        # Map ETF to sector name for matching
+        etf_to_sec = {"XLK":"Technology","XLF":"Financial Services","XLE":"Energy",
+                      "XLV":"Healthcare","XLI":"Industrials","XLY":"Consumer Cyclical",
+                      "XLP":"Consumer Defensive","XLB":"Basic Materials","XLRE":"Real Estate",
+                      "XLU":"Utilities","XLC":"Communication Services"}
+        if sec_rets:
+            best_etfs = sorted(sec_rets, key=sec_rets.get, reverse=True)[:4]
+            best_secs = {etf_to_sec.get(e, "") for e in best_etfs}
+            for sym in members:
+                sym_sec = uni.sector_map.get(sym, "")
+                z_secmom[sym] = 1.0 if sym_sec in best_secs else -0.5
+
     composite = {}
     for sym in members:
         if bear:
-            # Bear market: heavy reversal + quality, skip momentum
-            zs = [z for z in [z_rev.get(sym), z_qual.get(sym),
-                               z_earn.get(sym)] if z is not None]
-            if z_rev.get(sym) is not None:
-                # Double-weight reversal in bear
-                zs.append(z_rev[sym])
+            # Bear: momentum + quality + sector momentum (skip reversal, it fails)
+            zs = [z for z in [z_mom.get(sym), z_qual.get(sym),
+                               z_earn.get(sym), z_secmom.get(sym)] if z is not None]
         else:
             zs = [z for z in [z_mom.get(sym), z_rev.get(sym),
                                z_earn.get(sym), z_qual.get(sym)] if z is not None]
@@ -404,11 +424,11 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
 # Bull: heavy momentum + sector
 # Bear: heavy low-vol quality + sector (which goes to cash in bear)
 STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.70),
+    ("s1_momentum", 0.75),
     ("s2_drift", 0.00),
     ("s3_sector", 0.15),
     ("s4_inclusion", 0.00),
-    ("s5_lowvol", 0.15),
+    ("s5_lowvol", 0.10),
 ]
 
 STRATEGY_CONFIG_BEAR = [
