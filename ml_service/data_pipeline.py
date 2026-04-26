@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
+import yfinance as yf  # kept as fallback only
+from massive_data_provider import MassiveDataProvider
 from dotenv import load_dotenv
 
 # ── FMP credentials ───────────────────────────────────────────────────────────
@@ -29,11 +30,75 @@ from unified_backtester import SYMBOL_SECTOR
 STOCK_SYMBOLS = get_stock_symbols()
 UNIVERSE = get_full_universe()
 CROSS_ASSET = get_cross_asset()
-ALL_SYMBOLS = get_all_symbols()
+_BASE_SYMBOLS = get_all_symbols()
 
-# ── Date range: 15 years + 220-day warmup for long SMAs ──────────────────────
+# ── Date range: 10 years + 220-day warmup for long SMAs ──────────────────────
+# Massive (Polygon) Stocks Starter plan provides 10 years of history
 END_DATE   = datetime.today().strftime("%Y-%m-%d")
-START_DATE = (datetime.today() - timedelta(days=365 * 15 + 220)).strftime("%Y-%m-%d")
+START_DATE = (datetime.today() - timedelta(days=365 * 10 + 220)).strftime("%Y-%m-%d")
+
+
+# ── Ticker format normalization ──────────────────────────────────────────────
+# sp500_history uses dashes (BRK-B), Massive uses dots (BRK.B),
+# features.parquet uses dashes (matching sp500_history).
+
+def _ticker_to_massive(sym: str) -> str:
+    """Convert sp500_history format (BRK-B) to Massive/Polygon format (BRK.B)."""
+    return sym.replace("-", ".")
+
+
+def _ticker_from_massive(sym: str) -> str:
+    """Convert Massive/Polygon format (BRK.B) to sp500_history format (BRK-B)."""
+    # Only convert class-share dots (single letter after dot)
+    parts = sym.rsplit(".", 1)
+    if len(parts) == 2 and len(parts[1]) == 1:
+        return f"{parts[0]}-{parts[1]}"
+    return sym
+
+
+# ── Historical S&P 500 universe (survivorship bias fix) ──────────────────────
+# Build the union of ALL tickers that were ever in the S&P 500 during the
+# training window. This ensures delisted/acquired/bankrupt stocks are fetched
+# and included in training data.
+
+def _build_historical_universe() -> list:
+    """
+    Build the complete set of tickers that were in the S&P 500 at any point
+    during the training window. Samples every 30 days for efficiency.
+    """
+    print("Building historical S&P 500 universe (survivorship bias fix) ...")
+    load_sp500_changes()
+
+    historical = set()
+    start = pd.Timestamp(START_DATE)
+    end = pd.Timestamp(END_DATE)
+
+    # Sample every 30 days (constituent changes happen monthly at most)
+    d = start
+    n_dates = 0
+    while d <= end:
+        members = get_sp500_on_date(d)
+        historical |= members
+        d += pd.Timedelta(days=30)
+        n_dates += 1
+
+    # Also include current symbols and cross-asset
+    base = set(_BASE_SYMBOLS)
+    new_from_history = historical - base
+    all_combined = sorted(base | historical)
+
+    print(f"  Current universe: {len(base)} symbols")
+    print(f"  Historical S&P 500 members found: {len(historical)} unique tickers")
+    print(f"  New tickers from history: {len(new_from_history)}")
+    if new_from_history:
+        sample = sorted(new_from_history)[:20]
+        print(f"  Examples: {', '.join(sample)}")
+    print(f"  Total download universe: {len(all_combined)} symbols")
+
+    return all_combined
+
+
+ALL_SYMBOLS = _build_historical_universe()
 
 OUTPUT_DIR           = Path(__file__).resolve().parent / "data"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -42,25 +107,40 @@ EARNINGS_CACHE_DIR   = OUTPUT_DIR / "earnings_cache"
 EARNINGS_CACHE_DIR.mkdir(exist_ok=True)
 EARNINGS_CACHE_TTL   = 7   # days before re-fetching from FMP
 
-def fetch_bars(symbol: str) -> pd.DataFrame:
-    """Fetch daily OHLCV bars for one symbol from Yahoo Finance.
+_massive_provider = None
 
-    yfinance returns split- and dividend-adjusted closes automatically
-    when auto_adjust=True (the default). Downloads are batched internally
-    so no manual rate-limit sleep is needed for individual calls.
-    """
+def _get_massive():
+    global _massive_provider
+    if _massive_provider is None:
+        _massive_provider = MassiveDataProvider(validate_vs_yfinance=False)
+    return _massive_provider
+
+
+def fetch_bars(symbol: str) -> pd.DataFrame:
+    """Fetch daily OHLCV bars for one symbol from Massive (Polygon).
+    Handles ticker format normalization (BRK-B -> BRK.B for Massive).
+    Falls back to yfinance if Massive fails."""
+    massive_sym = _ticker_to_massive(symbol)
+    try:
+        provider = _get_massive()
+        df = provider.fetch_ticker_bars(massive_sym, START_DATE, END_DATE, adjusted=True)
+        if len(df) > 0:
+            return df
+    except Exception as exc:
+        print(f"  WARNING: Massive fetch failed for {symbol} (as {massive_sym}): {exc}")
+
+    # Fallback to yfinance (uses original symbol format)
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(start=START_DATE, end=END_DATE, auto_adjust=True)
     except Exception as exc:
-        print(f"  WARNING: could not fetch {symbol}: {exc}")
+        print(f"  WARNING: yfinance fallback failed for {symbol}: {exc}")
         return pd.DataFrame()
 
     if df.empty:
-        print(f"  WARNING: no bars returned for {symbol}")
         return pd.DataFrame()
 
-    df.index = pd.to_datetime(df.index).tz_localize(None)   # strip tz
+    df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "date"
     df = df.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]]
     return df.sort_index()
@@ -575,40 +655,26 @@ def main():
     print(f"Symbols    : {len(ALL_SYMBOLS)} total ({len(UNIVERSE)} universe + cross-asset)")
     print("=" * 60)
 
-    # 1. Fetch all raw bars — batch download in chunks for 500+ symbols
-    CHUNK_SIZE = 100
-    n_chunks = (len(ALL_SYMBOLS) + CHUNK_SIZE - 1) // CHUNK_SIZE
-    print(f"Batch-downloading {len(ALL_SYMBOLS)} symbols in {n_chunks} chunks ...")
+    # 1. Fetch all raw bars from Massive (Polygon) with disk caching
+    # Convert ticker formats: sp500_history uses BRK-B, Massive uses BRK.B
+    massive_syms = [_ticker_to_massive(s) for s in ALL_SYMBOLS]
+    massive_to_orig = {_ticker_to_massive(s): s for s in ALL_SYMBOLS}
 
-    raw: dict[str, pd.DataFrame] = {}
-    for ci in range(0, len(ALL_SYMBOLS), CHUNK_SIZE):
-        chunk = ALL_SYMBOLS[ci:ci + CHUNK_SIZE]
-        chunk_num = ci // CHUNK_SIZE + 1
-        print(f"  Chunk {chunk_num}/{n_chunks} ({len(chunk)} symbols) ...", flush=True)
-        try:
-            batch = yf.download(
-                chunk, start=START_DATE, end=END_DATE,
-                auto_adjust=True, progress=False, threads=True,
-            )
-        except Exception as exc:
-            print(f"    Chunk {chunk_num} FAILED: {exc}")
-            for sym in chunk:
-                raw[sym] = pd.DataFrame()
-            continue
+    print(f"Fetching {len(massive_syms)} symbols from Massive (Polygon) ...")
+    provider = _get_massive()
+    warmup_cal_days = (datetime.today() - datetime.strptime(START_DATE, "%Y-%m-%d")).days + 30
+    raw_massive = provider.fetch_bars_batch(massive_syms, warmup_days=warmup_cal_days, adjusted=True)
 
-        for sym in chunk:
-            try:
-                if isinstance(batch.columns, pd.MultiIndex):
-                    sym_df = batch.xs(sym, axis=1, level=1).copy()
-                else:
-                    sym_df = batch.copy()
-                sym_df.columns = sym_df.columns.str.lower()
-                sym_df = sym_df[["open", "high", "low", "close", "volume"]].dropna(how="all")
-                sym_df.index = pd.to_datetime(sym_df.index).tz_localize(None)
-                sym_df.index.name = "date"
-                raw[sym] = sym_df.sort_index()
-            except (KeyError, Exception):
-                raw[sym] = pd.DataFrame()
+    # Map back to original ticker format (BRK.B -> BRK-B)
+    raw = {}
+    for massive_sym, df in raw_massive.items():
+        orig_sym = massive_to_orig.get(massive_sym, _ticker_from_massive(massive_sym))
+        raw[orig_sym] = df
+
+    # Quality gate (using original ticker names)
+    quality = provider.run_quality_gate(raw, expected_symbols=ALL_SYMBOLS)
+    if not quality["passed"]:
+        print(f"  WARNING: data quality issues: {quality['issues']}")
 
     # Fall back: re-fetch individually any symbol that came back empty
     missing = [s for s in ALL_SYMBOLS if s not in raw or raw[s].empty]
@@ -641,13 +707,18 @@ def main():
     # Trading-day ordinal map: {Timestamp → int}, used for days_since_earnings
     td_map = {ts: i for i, ts in enumerate(date_index)}
 
-    # 2b. Fetch earnings surprise history (stock symbols only; ETFs get zeros)
-    print(f"\nFetching earnings surprise data from FMP API ({len(STOCK_SYMBOLS)} stocks) ...")
+    # Build feature universe: all symbols with data (used for feature computation + FMP fetch)
+    feature_universe = [s for s in ALL_SYMBOLS if s in raw and not raw[s].empty]
+
+    # 2b. Fetch earnings surprise history (all stocks including historical; ETFs get zeros)
+    etf_set = set(get_etf_symbols())
+    earnings_symbols = [s for s in feature_universe if s not in etf_set]
+    print(f"\nFetching earnings surprise data from FMP API ({len(earnings_symbols)} stocks) ...")
     earnings_data: dict = {}
     if FMP_API_KEY:
         cached_count = 0
         api_count = 0
-        for idx_s, sym in enumerate(STOCK_SYMBOLS, 1):
+        for idx_s, sym in enumerate(earnings_symbols, 1):
             cache_file = EARNINGS_CACHE_DIR / f"{sym}.json"
             source = "cache" if (cache_file.exists() and
                                   (datetime.today() - datetime.fromtimestamp(
@@ -658,10 +729,10 @@ def main():
                 cached_count += 1
             else:
                 api_count += 1
-                time.sleep(0.3)   # gentle rate-limit when hitting FMP
+                time.sleep(0.05)  # FMP Premium: 750 calls/min
             # Progress every 50 symbols
-            if idx_s % 50 == 0 or idx_s == len(STOCK_SYMBOLS):
-                print(f"  [{idx_s}/{len(STOCK_SYMBOLS)}] processed ({cached_count} cached, {api_count} API)")
+            if idx_s % 50 == 0 or idx_s == len(earnings_symbols):
+                print(f"  [{idx_s}/{len(earnings_symbols)}] processed ({cached_count} cached, {api_count} API)")
     else:
         print("  FMP_API_KEY not set — earnings features will be zero for all symbols")
 
@@ -682,8 +753,18 @@ def main():
     # CURRENT share basis.  Compute cumulative forward-adjustment factor
     # from the split history and apply it.
     print("\n  Adjusting VIXY for reverse splits ...")
-    vixy_ticker = yf.Ticker("VIXY")
-    vixy_splits = vixy_ticker.splits
+    try:
+        vixy_splits_df = _get_massive().fetch_splits("VIXY")
+        if len(vixy_splits_df) > 0:
+            vixy_splits = pd.Series(
+                vixy_splits_df["ratio"].values,
+                index=vixy_splits_df["date"].values)
+        else:
+            vixy_splits = pd.Series(dtype=float)
+    except Exception:
+        # Fallback to yfinance
+        vixy_ticker = yf.Ticker("VIXY")
+        vixy_splits = vixy_ticker.splits
     if len(vixy_splits) > 0:
         # Build a cumulative forward-adjustment factor for each date:
         # For date d, factor = product of all split ratios AFTER d
@@ -791,7 +872,7 @@ def main():
     all_frames = []
 
     skipped = 0
-    for i, sym in enumerate(UNIVERSE, 1):
+    for i, sym in enumerate(feature_universe, 1):
         df = raw.get(sym, pd.DataFrame())
         if df.empty:
             skipped += 1
@@ -869,6 +950,28 @@ def main():
     n_out = len(master) - n_in
     print(f"  in_sp500=True: {n_in:,} rows  |  in_sp500=False: {n_out:,} rows")
 
+    # ── Survivorship coverage quality gate ───────────────────────────────
+    # For sampled dates, verify that the number of tickers with data matches
+    # the point-in-time S&P 500 count within 5%
+    print("Running survivorship coverage check ...")
+    sample_dates = unique_dates[::60]  # every ~3 months
+    coverage_issues = 0
+    for d in sample_dates:
+        expected = len(sp500_by_date[d])
+        actual = master[(master["date"] == d) & (master["in_sp500"] == True)]["symbol"].nunique()
+        coverage = actual / expected if expected > 0 else 1.0
+        if coverage < 0.95:
+            coverage_issues += 1
+            if coverage_issues <= 3:
+                print(f"  WARNING: {pd.Timestamp(d).date()}: {actual}/{expected} "
+                      f"SP500 tickers have data ({coverage:.1%})")
+    if coverage_issues == 0:
+        print(f"  Survivorship coverage PASSED: all {len(sample_dates)} sampled dates "
+              f"have >95% SP500 ticker coverage")
+    else:
+        print(f"  Survivorship coverage: {coverage_issues}/{len(sample_dates)} dates "
+              f"below 95% threshold")
+
     # ── Cross-sectional rank features ────────────────────────────────────
     # Compute percentile ranks across all stocks on each date
     print("Computing cross-sectional rank features ...")
@@ -903,7 +1006,7 @@ def main():
     # More efficient: compute vol_126d per symbol then merge
     print("  Computing 126-day volatility ...")
     vol_126d_series = {}
-    for sym in UNIVERSE:
+    for sym in feature_universe:
         df_sym = raw.get(sym, pd.DataFrame())
         if df_sym.empty:
             continue

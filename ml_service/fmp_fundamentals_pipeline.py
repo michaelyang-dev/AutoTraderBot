@@ -42,8 +42,28 @@ OUTPUT_FILE = DATA_DIR / "fundamentals.parquet"
 CACHE_TTL = 3  # days before re-fetching
 
 # Individual stocks with fundamental data (ETFs excluded)
-from sp500_universe import get_stock_symbols
-STOCK_SYMBOLS = get_stock_symbols()
+# Use historical S&P 500 union to include delisted/acquired stocks
+from sp500_universe import get_stock_symbols, get_etf_symbols
+from sp500_history import get_sp500_on_date, load_sp500_changes
+
+def _build_stock_universe():
+    """Build union of all historical S&P 500 stock members (excludes ETFs)."""
+    load_sp500_changes()
+    etf_set = set(get_etf_symbols())
+    historical = set()
+    d = pd.Timestamp.today() - pd.Timedelta(days=365 * 10 + 220)
+    end = pd.Timestamp.today()
+    while d <= end:
+        members = get_sp500_on_date(d)
+        historical |= members
+        d += pd.Timedelta(days=30)
+    # Exclude ETFs — they don't have fundamentals
+    stocks_only = sorted((historical | set(get_stock_symbols())) - etf_set)
+    print(f"  FMP universe: {len(stocks_only)} stocks "
+          f"(current SP500 + {len(stocks_only) - len(get_stock_symbols())} historical)")
+    return stocks_only
+
+STOCK_SYMBOLS = _build_stock_universe()
 
 # SSL context (Mac Python sometimes lacks certs)
 _SSL_CTX = ssl.create_default_context()
@@ -319,7 +339,7 @@ def main():
             cached_count += 1
         else:
             api_count += 1
-            time.sleep(0.5)  # rate limit buffer
+            time.sleep(0.05)  # FMP Premium: 750 calls/min
 
         # Progress every 50 symbols
         if i % 50 == 0 or i == len(STOCK_SYMBOLS):
