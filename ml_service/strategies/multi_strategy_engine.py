@@ -265,11 +265,17 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
                       "XLP":"Consumer Defensive","XLB":"Basic Materials","XLRE":"Real Estate",
                       "XLU":"Utilities","XLC":"Communication Services"}
         if sec_rets:
-            best_etfs = sorted(sec_rets, key=sec_rets.get, reverse=True)[:4]
-            best_secs = {etf_to_sec.get(e, "") for e in best_etfs}
+            ranked = sorted(sec_rets, key=sec_rets.get, reverse=True)
+            top_secs = {etf_to_sec.get(e, "") for e in ranked[:3]}
+            bot_secs = {etf_to_sec.get(e, "") for e in ranked[-3:]}
             for sym in members:
                 sym_sec = uni.sector_map.get(sym, "")
-                z_secmom[sym] = 1.0 if sym_sec in best_secs else -0.5
+                if sym_sec in top_secs:
+                    z_secmom[sym] = 2.0  # strong boost for top sectors
+                elif sym_sec in bot_secs:
+                    z_secmom[sym] = -2.0  # strong penalty for bottom sectors
+                else:
+                    z_secmom[sym] = 0.0
 
     composite = {}
     for sym in members:
@@ -350,7 +356,7 @@ def strategy2_drift_reversal(date, uni, day_idx, top_n=10, rebal_days=5):
 
 
 def strategy3_sector_rotation(date, uni, day_idx, rebal_days=21):
-    """Sector Momentum Rotation. Top 3 sectors, monthly."""
+    """Sector Momentum Rotation. Top 4 sectors, monthly."""
     if day_idx % rebal_days != 0:
         return None
 
@@ -458,7 +464,7 @@ STRATEGY_CONFIG_BULL = [
 STRATEGY_CONFIG_BEAR = [
     ("s1_momentum", 0.10),   # minimal, reversal-mode
     ("s2_drift", 0.00),
-    ("s3_sector", 0.20),     # defensive sectors in bear
+    ("s3_sector", 0.20),     # sector momentum
     ("s4_inclusion", 0.00),
     ("s5_lowvol", 0.70),     # defensive anchor
 ]
