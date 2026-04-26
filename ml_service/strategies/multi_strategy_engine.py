@@ -190,7 +190,7 @@ class FastUniverse:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
-    """Momentum + Reversal + Trend + ML Ensemble. Top-10, 10-day rebal."""
+    """Adaptive Momentum with consistency weighting + sector tilt. Top-10, 10d."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)
@@ -200,67 +200,50 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     regime = uni.get_regime(date)
     vix = regime.get("vix", 20)
     vix_ts = regime.get("vix_term_structure", 1.0)
-    spy_bull = regime.get("spy_above_sma200", True)
-    # Also check SPY vs 50d SMA for faster bear detection
-    dist_sma50_spy = uni.get_feature_map(date, "dist_sma50").get("SPY", 0)
-    fast_bear = dist_sma50_spy is not None and dist_sma50_spy < -0.03  # SPY >3% below 50d SMA
     stress = vix > 30 or vix_ts < 0.95
-    bear = not spy_bull or fast_bear
     n = max(top_n // 2, 5) if stress else top_n
 
-    # Signals
-    ret_252 = uni.get_feature_map(date, "ret_252d", members)
-    ret_126 = uni.get_feature_map(date, "ret_126d", members)
-    ret_60 = uni.get_feature_map(date, "ret_60d", members)
+    # Multi-timeframe momentum
     ret_20 = uni.get_feature_map(date, "ret_20d", members)
-    ret_5d = uni.get_feature_map(date, "ret_5d", members)
-    eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
+    ret_60 = uni.get_feature_map(date, "ret_60d", members)
+    ret_126 = uni.get_feature_map(date, "ret_126d", members)
+    ret_252 = uni.get_feature_map(date, "ret_252d", members)
     gross_m = uni.get_feature_map(date, "gross_margin", members)
+    dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
 
-    # 12-1 momentum
-    mom = {s: ret_252[s] - ret_20[s] for s in members
-           if s in ret_252 and s in ret_20}
+    composite = {}
+    for sym in members:
+        rets = []
+        for rd in [ret_20, ret_60, ret_126, ret_252]:
+            v = rd.get(sym)
+            if v is not None and not np.isnan(v):
+                rets.append(v)
+        if len(rets) < 2:
+            continue
 
-    # Momentum acceleration: 3m return - 6m return (rising momentum)
-    mom_accel = {}
-    for s in members:
-        r60 = ret_60.get(s)
-        r126 = ret_126.get(s)
-        if r60 is not None and r126 is not None and not np.isnan(r60) and not np.isnan(r126):
-            mom_accel[s] = r60 - (r126 - r60)  # recent 3m vs prior 3m
+        # Momentum consistency: fraction of lookbacks positive
+        consistency = sum(1 for r in rets if r > 0) / len(rets)
+        avg_ret = np.mean(rets)
+        score = avg_ret * (consistency ** 2)
 
-    # 5d reversal
-    rev = {s: -ret_5d[s] for s in ret_5d}
+        # Quality boost
+        gm = gross_m.get(sym)
+        if gm is not None and not np.isnan(gm) and gm > 0.3:
+            score *= 1.2
 
-    # Z-score and combine
-    def zscore(d):
-        if len(d) < 10:
-            return {}
-        vals = np.array(list(d.values()))
-        mu, sig = vals.mean(), vals.std()
-        if sig < 1e-10:
-            return {}
-        return {s: (v - mu) / sig for s, v in d.items()}
+        # Trend filter: above 50d SMA
+        d50 = dist_sma50.get(sym, 0)
+        if d50 is not None and d50 > 0:
+            composite[sym] = score
 
-    z_mom = zscore(mom)
-    z_accel = zscore(mom_accel)
-    z_rev = zscore(rev)
-    z_earn = zscore(eps_surp)
-    z_qual = zscore(gross_m)
-
-    # ML model scores (from LambdaRank walk-forward predictions)
-    ml_scores = uni.get_ml_scores(date, members)
-    z_ml = zscore(ml_scores)
-
-    # In bear: add sector momentum signal (stocks in top sectors get a boost)
-    z_secmom = {}
-    if bear:
+    # Bear: sector tilt
+    spy_bull = regime.get("spy_above_sma200", True)
+    if not spy_bull and composite:
         sec_rets = {}
         for etf in ["XLK","XLF","XLE","XLV","XLI","XLY","XLP","XLB","XLRE","XLU","XLC"]:
             close = uni.get_close_series(etf, date, 65)
             if len(close) >= 60:
                 sec_rets[etf] = (close.iloc[-1] / close.iloc[-60]) - 1.0
-        # Map ETF to sector name for matching
         etf_to_sec = {"XLK":"Technology","XLF":"Financial Services","XLE":"Energy",
                       "XLV":"Healthcare","XLI":"Industrials","XLY":"Consumer Cyclical",
                       "XLP":"Consumer Defensive","XLB":"Basic Materials","XLRE":"Real Estate",
@@ -269,41 +252,19 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
             ranked = sorted(sec_rets, key=sec_rets.get, reverse=True)
             top_secs = {etf_to_sec.get(e, "") for e in ranked[:3]}
             bot_secs = {etf_to_sec.get(e, "") for e in ranked[-3:]}
-            for sym in members:
+            boosted = {}
+            for sym, score in composite.items():
                 sym_sec = uni.sector_map.get(sym, "")
                 if sym_sec in top_secs:
-                    z_secmom[sym] = 2.0  # strong boost for top sectors
+                    boosted[sym] = score * 2.0
                 elif sym_sec in bot_secs:
-                    z_secmom[sym] = -2.0  # strong penalty for bottom sectors
+                    continue
                 else:
-                    z_secmom[sym] = 0.0
-
-    composite = {}
-    for sym in members:
-        if bear:
-            # Bear: momentum + quality + sector momentum
-            zs = [z for z in [z_mom.get(sym), z_qual.get(sym),
-                               z_earn.get(sym), z_secmom.get(sym)] if z is not None]
-        else:
-            # Bull: momentum + reversal + earnings + quality
-            zs = [z for z in [z_mom.get(sym), z_rev.get(sym),
-                               z_earn.get(sym), z_qual.get(sym)] if z is not None]
-        if len(zs) >= 2:
-            composite[sym] = np.mean(zs)
+                    boosted[sym] = score
+            composite = boosted
 
     if not composite:
         return {}
-
-    # Trend filter: only include stocks above their 50-day SMA
-    if not bear:
-        trend_filtered = {}
-        dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
-        for sym in composite:
-            d50 = dist_sma50.get(sym, 0)
-            if d50 is not None and d50 > 0:  # above 50d SMA
-                trend_filtered[sym] = composite[sym]
-        if len(trend_filtered) >= 5:
-            composite = trend_filtered
 
     sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
     w = 1.0 / len(sorted_syms)
