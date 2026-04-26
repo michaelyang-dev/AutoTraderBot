@@ -45,7 +45,8 @@ def log(msg):
 class FastUniverse:
     """Pre-indexed universe data for fast strategy computation."""
 
-    def __init__(self, features_df, prices_df, sector_map, sp500_changes, vix_data):
+    def __init__(self, features_df, prices_df, sector_map, sp500_changes, vix_data,
+                 ml_predictions=None):
         log("  Building fast index ...")
         t0 = time.time()
 
@@ -99,7 +100,14 @@ class FastUniverse:
             except (ValueError, TypeError):
                 pass
 
-        log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates")
+        # ML predictions index: {date: {symbol: score}}
+        self._ml_preds = {}
+        if ml_predictions is not None:
+            for date, grp in ml_predictions.groupby("date"):
+                self._ml_preds[date] = dict(zip(grp["symbol"], grp["prob_ensemble"]))
+
+        log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
+            f"{len(self._ml_preds)} ML prediction dates")
 
     def get_sp500(self, date):
         if date not in self._sp500_cache:
@@ -160,6 +168,13 @@ class FastUniverse:
             return 0.0
         return (rets > 0).mean()
 
+    def get_ml_scores(self, date, members=None):
+        """Get ML model scores for a date. {symbol: score}."""
+        preds = self._ml_preds.get(date, {})
+        if members:
+            return {s: preds[s] for s in members if s in preds}
+        return preds
+
     def get_additions(self, date, lookback_days=4):
         """Get SP500 additions announced in last N calendar days."""
         result = []
@@ -174,7 +189,7 @@ class FastUniverse:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
-    """Momentum + Reversal + Trend Ensemble. Top-10, 10-day rebal."""
+    """Momentum + Reversal + Trend + ML Ensemble. Top-10, 10-day rebal."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)
@@ -194,6 +209,8 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
 
     # Signals
     ret_252 = uni.get_feature_map(date, "ret_252d", members)
+    ret_126 = uni.get_feature_map(date, "ret_126d", members)
+    ret_60 = uni.get_feature_map(date, "ret_60d", members)
     ret_20 = uni.get_feature_map(date, "ret_20d", members)
     ret_5d = uni.get_feature_map(date, "ret_5d", members)
     eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
@@ -202,6 +219,14 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     # 12-1 momentum
     mom = {s: ret_252[s] - ret_20[s] for s in members
            if s in ret_252 and s in ret_20}
+
+    # Momentum acceleration: 3m return - 6m return (rising momentum)
+    mom_accel = {}
+    for s in members:
+        r60 = ret_60.get(s)
+        r126 = ret_126.get(s)
+        if r60 is not None and r126 is not None and not np.isnan(r60) and not np.isnan(r126):
+            mom_accel[s] = r60 - (r126 - r60)  # recent 3m vs prior 3m
 
     # 5d reversal
     rev = {s: -ret_5d[s] for s in ret_5d}
@@ -217,9 +242,14 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
         return {s: (v - mu) / sig for s, v in d.items()}
 
     z_mom = zscore(mom)
+    z_accel = zscore(mom_accel)
     z_rev = zscore(rev)
     z_earn = zscore(eps_surp)
     z_qual = zscore(gross_m)
+
+    # ML model scores (from LambdaRank walk-forward predictions)
+    ml_scores = uni.get_ml_scores(date, members)
+    z_ml = zscore(ml_scores)
 
     # In bear: add sector momentum signal (stocks in top sectors get a boost)
     z_secmom = {}
@@ -244,10 +274,11 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     composite = {}
     for sym in members:
         if bear:
-            # Bear: momentum + quality + sector momentum (skip reversal, it fails)
+            # Bear: momentum + quality + sector momentum
             zs = [z for z in [z_mom.get(sym), z_qual.get(sym),
                                z_earn.get(sym), z_secmom.get(sym)] if z is not None]
         else:
+            # Bull: momentum + reversal + earnings + quality
             zs = [z for z in [z_mom.get(sym), z_rev.get(sym),
                                z_earn.get(sym), z_qual.get(sym)] if z is not None]
         if len(zs) >= 2:
@@ -326,14 +357,7 @@ def strategy3_sector_rotation(date, uni, day_idx, rebal_days=21):
     regime = uni.get_regime(date)
     bear = not regime.get("spy_above_sma200", True)
 
-    if bear:
-        # Bear market: rotate into defensive sectors
-        defensive = ["XLU", "XLP", "XLV"]
-        avail = [e for e in defensive if uni.get_close_at(date, e) is not None]
-        if avail:
-            return {e: 1.0 / len(avail) for e in avail}
-        return {}
-
+    # In bear: still use momentum ranking but favor defensive sectors
     sector_rets = {}
     for etf in SECTOR_ETFS:
         close = uni.get_close_series(etf, date, 130)
@@ -696,7 +720,16 @@ def main():
     except Exception:
         pass
 
-    uni = FastUniverse(features, prices, sector_map, sp500_changes, vix_data)
+    # Load ML predictions if available
+    ml_preds = None
+    wf_file = DATA_DIR / "walkforward" / "predictions_walkforward_all.parquet"
+    if wf_file.exists():
+        ml_preds = pd.read_parquet(wf_file)
+        ml_preds["date"] = pd.to_datetime(ml_preds["date"])
+        log(f"  ML predictions: {len(ml_preds):,} rows")
+
+    uni = FastUniverse(features, prices, sector_map, sp500_changes, vix_data,
+                       ml_predictions=ml_preds)
 
     # Full period
     log("\n2. Running full-period backtest (2022-2025) ...")
