@@ -89,12 +89,11 @@ def _bars_cache_key(symbols: list[str], start: str, end: str) -> str:
 def load_bars_cached(symbols: list[str], start: str, end: str,
                      no_cache: bool = False) -> pd.DataFrame:
     """
-    Download close prices via yfinance, with 24-hour disk cache.
+    Download close prices via Massive (Polygon) with disk cache.
+    Falls back to yfinance if Massive fails.
 
     Returns a DataFrame with columns=symbols, index=dates (close prices).
     """
-    import yfinance as yf
-
     name = "bars"
     key = _bars_cache_key(symbols, start, end)
     cache_file = _cache_path(name)
@@ -106,6 +105,35 @@ def load_bars_cached(symbols: list[str], start: str, end: str,
             return pd.read_parquet(cache_file)
 
     syms = list(set(["SPY"] + symbols))
+
+    try:
+        from massive_data_provider import MassiveDataProvider
+        provider = MassiveDataProvider(validate_vs_yfinance=False)
+        bars_dict = provider.fetch_bars_batch(syms, warmup_days=max(
+            (pd.Timestamp(end) - pd.Timestamp(start)).days + 30, 60))
+
+        # Extract close prices into a DataFrame
+        close_frames = {}
+        for sym, df in bars_dict.items():
+            if len(df) > 0:
+                close_frames[sym] = df["close"]
+
+        if close_frames:
+            close = pd.DataFrame(close_frames)
+            close.index = pd.to_datetime(close.index).tz_localize(None)
+            # Filter to requested date range
+            close = close[(close.index >= pd.Timestamp(start)) &
+                          (close.index <= pd.Timestamp(end))]
+
+            _ensure_cache_dir()
+            close.to_parquet(cache_file)
+            _write_meta(name, key)
+            return close
+    except Exception as exc:
+        warnings.warn(f"Massive fetch failed, falling back to yfinance: {exc}")
+
+    # Fallback to yfinance
+    import yfinance as yf
     raw = yf.download(syms, start=start, end=end,
                       auto_adjust=True, progress=False, threads=True)
     close = raw["Close"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Close"]]
@@ -1477,9 +1505,10 @@ class PortfolioManager:
         # {date → {symbol → price}}
         px_lookup = {}
         if price_data is not None:
-            for date in all_dates:
-                if date in price_data.index:
-                    px_lookup[date] = price_data.loc[date].to_dict()
+            # Vectorized: build all lookups at once using to_dict(orient="index")
+            dates_in_data = price_data.index.intersection(all_dates)
+            if len(dates_in_data) > 0:
+                px_lookup = price_data.loc[dates_in_data].to_dict(orient="index")
 
         # -- per-run state (local, so PortfolioManager is reusable) --------
         cash            = float(self.initial_cash)

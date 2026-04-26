@@ -48,7 +48,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import uvicorn
-import yfinance as yf
+import yfinance as yf  # kept as fallback only
+from massive_data_provider import fetch_bars_batch_massive, get_provider
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -570,17 +571,29 @@ def _compute_fundamental_features_for_symbol(symbol: str, today: pd.Timestamp) -
 
 def _fetch_bars_batch() -> dict[str, pd.DataFrame]:
     """Batch-download WARMUP_DAYS of history for all symbols.
-    Splits into chunks of 100 to avoid yfinance/Yahoo timeouts with 500+ symbols."""
+    Uses Massive (Polygon) as primary source with yfinance fallback."""
+    try:
+        raw = fetch_bars_batch_massive(ALL_SYMBOLS, warmup_days=WARMUP_DAYS)
+        loaded = sum(1 for s in raw if len(raw[s]) > 0)
+        log.info("  Massive: %d/%d symbols loaded", loaded, len(ALL_SYMBOLS))
+        return raw
+    except Exception as exc:
+        log.error("  Massive provider failed: %s — falling back to yfinance", exc)
+        return _fetch_bars_yfinance(ALL_SYMBOLS)
+
+
+def _fetch_bars_yfinance(symbols: list) -> dict[str, pd.DataFrame]:
+    """Legacy yfinance fetcher (fallback only)."""
     start = (datetime.today() - timedelta(days=WARMUP_DAYS)).strftime("%Y-%m-%d")
     end   = datetime.today().strftime("%Y-%m-%d")
     CHUNK_SIZE = 100
 
     raw = {}
-    for i in range(0, len(ALL_SYMBOLS), CHUNK_SIZE):
-        chunk = ALL_SYMBOLS[i:i + CHUNK_SIZE]
-        log.info("  Downloading bars chunk %d/%d (%d symbols) ...",
+    for i in range(0, len(symbols), CHUNK_SIZE):
+        chunk = symbols[i:i + CHUNK_SIZE]
+        log.info("  yfinance chunk %d/%d (%d symbols) ...",
                  i // CHUNK_SIZE + 1,
-                 (len(ALL_SYMBOLS) + CHUNK_SIZE - 1) // CHUNK_SIZE,
+                 (len(symbols) + CHUNK_SIZE - 1) // CHUNK_SIZE,
                  len(chunk))
         try:
             batch = yf.download(
@@ -601,14 +614,13 @@ def _fetch_bars_batch() -> dict[str, pd.DataFrame]:
                 df = df[["open", "high", "low", "close", "volume"]].dropna(how="all")
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 df.index.name = "date"
-                # Use float32 to save memory with 500+ symbols
                 for c in ["open", "high", "low", "close"]:
                     df[c] = df[c].astype(np.float32)
                 raw[sym] = df.sort_index()
             except Exception:
                 raw[sym] = pd.DataFrame()
 
-    log.info("  Downloaded bars for %d/%d symbols", len([s for s in raw if len(raw[s]) > 0]), len(ALL_SYMBOLS))
+    log.info("  Downloaded bars for %d/%d symbols", len([s for s in raw if len(raw[s]) > 0]), len(symbols))
     return raw
 
 
