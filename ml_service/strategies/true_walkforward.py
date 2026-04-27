@@ -227,7 +227,26 @@ def main():
     except Exception:
         pass
 
-    uni = FastUniverse(features, prices, sector_map, sp500_changes, vix_data)
+    # Load enhanced data
+    enhanced_data = {}
+    enhanced_dir = DATA_DIR / "enhanced_data"
+    if enhanced_dir.exists():
+        for fname, key in [("price_targets.parquet", "price_targets"),
+                            ("dcf_values.parquet", "dcf"),
+                            ("financial_growth.parquet", "financial_growth"),
+                            ("enterprise_values.parquet", "enterprise_values"),
+                            ("company_profiles.parquet", "profiles"),
+                            ("crypto_forex_extended.parquet", "crypto_forex")]:
+            fpath = enhanced_dir / fname
+            if fpath.exists():
+                enhanced_data[key] = pd.read_parquet(fpath)
+                if "date" in enhanced_data[key].columns:
+                    enhanced_data[key]["date"] = pd.to_datetime(enhanced_data[key]["date"])
+        if enhanced_data:
+            log(f"  Enhanced data: {', '.join(enhanced_data.keys())}")
+
+    uni = FastUniverse(features, prices, sector_map, sp500_changes, vix_data,
+                       enhanced_data=enhanced_data)
 
     # ── PHASE 1: In-sample design period (2018-2021) ──
     log("\n" + "=" * 80)

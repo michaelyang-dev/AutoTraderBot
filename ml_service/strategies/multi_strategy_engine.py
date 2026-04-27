@@ -47,7 +47,7 @@ class FastUniverse:
     """Pre-indexed universe data for fast strategy computation."""
 
     def __init__(self, features_df, prices_df, sector_map, sp500_changes, vix_data,
-                 ml_predictions=None):
+                 ml_predictions=None, enhanced_data=None):
         log("  Building fast index ...")
         t0 = time.time()
 
@@ -107,8 +107,80 @@ class FastUniverse:
             for date, grp in ml_predictions.groupby("date"):
                 self._ml_preds[date] = dict(zip(grp["symbol"], grp["prob_ensemble"]))
 
+        # Enhanced data: price targets, DCF, financial growth, crypto/forex
+        self._price_targets = {}  # {symbol: {target_consensus, upside_pct}}
+        self._dcf = {}            # {symbol: {dcf, upside_pct}}
+        self._fin_growth = {}     # {symbol: [{date, revenue_growth, eps_growth, ...}]}
+        self._crypto_fx = {}      # {date: {btc_ret_20d, eth_ret_20d, ...}}
+        self._ev = {}             # {symbol: [{date, ev_to_revenue, market_cap}]}
+        self._profiles = {}       # {symbol: {beta, market_cap, sector, industry}}
+
+        if enhanced_data:
+            # Price targets
+            pt = enhanced_data.get("price_targets")
+            if pt is not None and len(pt) > 0:
+                for _, row in pt.iterrows():
+                    sym = row.get("symbol")
+                    tc = row.get("target_consensus")
+                    if sym and tc and not np.isnan(tc):
+                        self._price_targets[sym] = {"target": tc}
+
+            # DCF
+            dcf = enhanced_data.get("dcf")
+            if dcf is not None and len(dcf) > 0:
+                for _, row in dcf.iterrows():
+                    sym = row.get("symbol")
+                    d = row.get("dcf")
+                    if sym and d and not np.isnan(d):
+                        self._dcf[sym] = {"dcf": d}
+
+            # Financial growth (use most recent per symbol)
+            fg = enhanced_data.get("financial_growth")
+            if fg is not None and len(fg) > 0:
+                fg = fg.sort_values(["symbol", "date"])
+                for sym, grp in fg.groupby("symbol"):
+                    latest = grp.iloc[-1]
+                    self._fin_growth[sym] = {
+                        "rev_growth": latest.get("revenue_growth"),
+                        "eps_growth": latest.get("eps_growth"),
+                        "fcf_growth": latest.get("free_cf_growth"),
+                    }
+
+            # Enterprise values (most recent)
+            ev = enhanced_data.get("enterprise_values")
+            if ev is not None and len(ev) > 0:
+                ev = ev.sort_values(["symbol", "date"])
+                for sym, grp in ev.groupby("symbol"):
+                    latest = grp.iloc[-1]
+                    self._ev[sym] = {
+                        "ev_to_rev": latest.get("ev_to_revenue"),
+                        "market_cap": latest.get("market_cap"),
+                    }
+
+            # Profiles
+            prof = enhanced_data.get("profiles")
+            if prof is not None and len(prof) > 0:
+                for _, row in prof.iterrows():
+                    sym = row.get("symbol")
+                    if sym:
+                        self._profiles[sym] = {
+                            "beta": row.get("beta"),
+                            "market_cap": row.get("market_cap"),
+                            "industry": row.get("industry"),
+                        }
+
+            # Crypto/forex (date-level)
+            cfx = enhanced_data.get("crypto_forex")
+            if cfx is not None and len(cfx) > 0:
+                for date in cfx.index:
+                    row = cfx.loc[date]
+                    self._crypto_fx[date] = {
+                        col: row[col] for col in cfx.columns if not np.isnan(row[col])
+                    }
+
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
-            f"{len(self._ml_preds)} ML prediction dates")
+            f"{len(self._ml_preds)} ML prediction dates, "
+            f"{len(self._price_targets)} price targets, {len(self._dcf)} DCF values")
 
     def get_sp500(self, date):
         if date not in self._sp500_cache:
@@ -235,7 +307,37 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
         # Earnings surprise boost
         es = eps_surp.get(sym)
         if es is not None and not np.isnan(es) and es > 0:
-            score *= 1.15  # recent positive earnings surprise
+            score *= 1.15
+
+        # Analyst target upside boost (from FMP price targets)
+        pt = uni._price_targets.get(sym)
+        if pt:
+            px = uni.get_close_at(date, sym)
+            if px and px > 0 and pt["target"] > 0:
+                upside = (pt["target"] - px) / px
+                if upside > 0.15:      # >15% upside target
+                    score *= 1.10
+                elif upside < -0.10:   # analysts think it's overvalued
+                    score *= 0.90
+
+        # DCF value boost (intrinsic value vs price)
+        dcf_data = uni._dcf.get(sym)
+        if dcf_data:
+            px = uni.get_close_at(date, sym)
+            if px and px > 0 and dcf_data["dcf"] > 0:
+                dcf_upside = (dcf_data["dcf"] - px) / px
+                if dcf_upside > 0.20:  # >20% undervalued by DCF
+                    score *= 1.10
+
+        # Revenue/earnings acceleration (from FMP financial growth)
+        fg = uni._fin_growth.get(sym)
+        if fg:
+            rg = fg.get("rev_growth")
+            eg = fg.get("eps_growth")
+            if rg is not None and not np.isnan(rg) and rg > 0.10:
+                score *= 1.05  # growing revenue >10%
+            if eg is not None and not np.isnan(eg) and eg > 0.15:
+                score *= 1.05  # growing EPS >15%
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
@@ -543,6 +645,12 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
         # Blend factor: 0 = full bear config, 1 = full bull config
         blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
+        # Crypto risk-on boost: if BTC trending up strongly, tilt more bullish
+        cfx = uni._crypto_fx.get(date, {})
+        btc_ret = cfx.get("btc_ret_20d", 0)
+        if btc_ret and not np.isnan(btc_ret) and btc_ret > 0.15:
+            blend = min(1.0, blend + 0.10)  # slight bull tilt when crypto risk-on
+
         # Blended capital allocations
         blended_config = {}
         for name, bull_pct in STRATEGY_CONFIG_BULL:
@@ -726,8 +834,26 @@ def main():
         ml_preds["date"] = pd.to_datetime(ml_preds["date"])
         log(f"  ML predictions: {len(ml_preds):,} rows")
 
+    # Load enhanced data
+    enhanced_data = {}
+    enhanced_dir = DATA_DIR / "enhanced_data"
+    if enhanced_dir.exists():
+        for fname, key in [("price_targets.parquet", "price_targets"),
+                            ("dcf_values.parquet", "dcf"),
+                            ("financial_growth.parquet", "financial_growth"),
+                            ("enterprise_values.parquet", "enterprise_values"),
+                            ("company_profiles.parquet", "profiles"),
+                            ("crypto_forex_extended.parquet", "crypto_forex")]:
+            fpath = enhanced_dir / fname
+            if fpath.exists():
+                enhanced_data[key] = pd.read_parquet(fpath)
+                if "date" in enhanced_data[key].columns:
+                    enhanced_data[key]["date"] = pd.to_datetime(enhanced_data[key]["date"])
+        if enhanced_data:
+            log(f"  Enhanced data: {', '.join(enhanced_data.keys())}")
+
     uni = FastUniverse(features, prices, sector_map, sp500_changes, vix_data,
-                       ml_predictions=ml_preds)
+                       ml_predictions=ml_preds, enhanced_data=enhanced_data)
 
     # Full period
     log("\n2. Running full-period backtest (2022-2025) ...")
