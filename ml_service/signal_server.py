@@ -138,6 +138,33 @@ def _fetch_bars_yfinance(symbols: list) -> dict[str, pd.DataFrame]:
     return raw
 
 
+# ── Signal persistence (survive restarts) ────────────────────────────────────
+import json as _json
+
+_SIGNAL_CACHE_FILE = DATA_DIR / "signal_cache_v9.json"
+
+
+def _save_signal_cache(signals):
+    """Persist signals to disk so restarts don't serve stale data."""
+    try:
+        with open(_SIGNAL_CACHE_FILE, "w") as f:
+            _json.dump({"signals": signals, "ts": datetime.now(ET).isoformat()}, f)
+    except Exception:
+        pass
+
+
+def _load_signal_cache():
+    """Load last known signals from disk (for fast startup)."""
+    try:
+        if _SIGNAL_CACHE_FILE.exists():
+            with open(_SIGNAL_CACHE_FILE) as f:
+                data = _json.load(f)
+            return data.get("signals", []), data.get("ts")
+    except Exception:
+        pass
+    return [], None
+
+
 # ── Refresh logic ─────────────────────────────────────────────────────────────
 
 def _is_market_hours() -> bool:
@@ -160,6 +187,7 @@ async def _refresh() -> bool:
         state.cache       = new_signals
         state.last_update = datetime.now(ET)
         state.is_stale    = False
+        _save_signal_cache(new_signals)
 
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
@@ -219,6 +247,14 @@ async def lifespan(app: FastAPI):
         log.info("Enhanced data ready: %s", ", ".join(state.enhanced_data.keys()))
     else:
         log.warning("No enhanced data found — strategy will run without boosts")
+
+    # Load last known signals from disk (instant startup — serve immediately)
+    cached_signals, cached_ts = _load_signal_cache()
+    if cached_signals:
+        state.cache = cached_signals
+        state.is_stale = True  # mark stale until fresh refresh completes
+        log.info("Loaded %d cached signals from disk (ts=%s) — serving while refreshing",
+                 len(cached_signals), cached_ts)
 
     # Initial signal refresh
     await _refresh()
