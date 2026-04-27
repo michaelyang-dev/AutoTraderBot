@@ -345,6 +345,11 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
             if eg is not None and not np.isnan(eg) and eg > 0.15:
                 score *= 1.05  # growing EPS >15%
 
+        # Leverage penalty: highly leveraged companies blow up in bear markets
+        dte_val = uni.get_feature_map(date, "debt_to_equity").get(sym)
+        if dte_val is not None and not np.isnan(dte_val) and dte_val > 3.0:
+            score *= 0.85
+
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
         if d50 is not None and d50 > 0:
@@ -823,14 +828,21 @@ def main():
     with open(changes_file) as f:
         sp500_changes = json.load(f)
 
+    # Load cached VIX data for deterministic results
+    vix_cache = DATA_DIR / "enhanced_data" / "vix_cache.parquet"
     vix_data = None
-    try:
-        vix_raw = yf.download(["^VIX", "^VIX3M"], start="2016-01-01",
-                               end="2027-01-01", progress=False, auto_adjust=True)
-        vix_data = vix_raw["Close"]
-        vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
-    except Exception:
-        pass
+    if vix_cache.exists():
+        vix_data = pd.read_parquet(vix_cache)
+        vix_data.index = pd.to_datetime(vix_data.index)
+        log(f"  VIX data: {len(vix_data)} rows (cached)")
+    else:
+        try:
+            vix_raw = yf.download(["^VIX", "^VIX3M"], start="2016-01-01",
+                                   end="2027-01-01", progress=False, auto_adjust=True)
+            vix_data = vix_raw["Close"]
+            vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
+        except Exception:
+            pass
 
     # Load ML predictions if available
     ml_preds = None

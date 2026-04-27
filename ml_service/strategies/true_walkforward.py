@@ -218,14 +218,21 @@ def main():
     with open(DATA_DIR / "sp500_changes.json") as f:
         sp500_changes = json.load(f)
 
+    # Load cached VIX data for deterministic results
+    vix_cache = DATA_DIR / "enhanced_data" / "vix_cache.parquet"
     vix_data = None
-    try:
-        vix_raw = yf.download(["^VIX", "^VIX3M"], start="2016-01-01",
-                               end="2027-01-01", progress=False, auto_adjust=True)
-        vix_data = vix_raw["Close"]
-        vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
-    except Exception:
-        pass
+    if vix_cache.exists():
+        vix_data = pd.read_parquet(vix_cache)
+        vix_data.index = pd.to_datetime(vix_data.index)
+        log(f"  VIX data: {len(vix_data)} rows (cached)")
+    else:
+        try:
+            vix_raw = yf.download(["^VIX", "^VIX3M"], start="2016-01-01",
+                                   end="2027-01-01", progress=False, auto_adjust=True)
+            vix_data = vix_raw["Close"]
+            vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
+        except Exception:
+            pass
 
     # Load enhanced data
     enhanced_data = {}
