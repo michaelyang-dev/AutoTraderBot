@@ -261,8 +261,8 @@ class FastUniverse:
 #  Vectorized Strategy Implementations (no per-row loops)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
-    """Adaptive Momentum with consistency weighting + sector tilt. Top-10, 10d."""
+def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
+    """Adaptive Momentum with consistency weighting + sector tilt. Top-8, 10d."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)
