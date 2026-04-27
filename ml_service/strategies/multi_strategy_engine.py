@@ -513,6 +513,18 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
         if t4:
             last_targets["s4_inclusion_prev"] = dict(t4)
 
+        # Daily stop-loss: exit positions down > 15% from entry
+        STOP_LOSS = -0.15
+        for sym in list(holdings.keys()):
+            px = today_prices.get(sym, holdings[sym]["entry_px"])
+            ret = (px / holdings[sym]["entry_px"]) - 1.0 if holdings[sym]["entry_px"] > 0 else 0
+            if ret < STOP_LOSS:
+                cost = abs(holdings[sym]["shares"] * px) * cost_frac
+                cash += holdings[sym]["shares"] * px - cost
+                total_costs += cost
+                trade_count += 1
+                del holdings[sym]
+
         if not major_rebal and not s4_changed:
             # Mark to market only
             equity = cash
