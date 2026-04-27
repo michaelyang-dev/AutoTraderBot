@@ -319,7 +319,8 @@ class FastUniverse:
 #  Vectorized Strategy Implementations (no per-row loops)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
+def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
+                                ml_ranker=None, ml_blend_weight=0.4):
     """Adaptive Momentum with consistency weighting + sector tilt. Top-8, 10d."""
     if day_idx % rebal_days != 0:
         return None
@@ -475,7 +476,36 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
     if not composite:
         return {}
 
-    sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
+    # ML blend: if ranker available, expand candidates and re-rank
+    if ml_ranker is not None and ml_ranker.model is not None:
+        # Expand to top-20 candidates for ML to re-rank
+        candidate_n = min(20, len(composite))
+        candidates = sorted(composite, key=composite.get, reverse=True)[:candidate_n]
+
+        ml_scores = ml_ranker.predict(date, uni, candidates)
+
+        if len(ml_scores) >= n:
+            # Normalize both score sets to [0, 1] within candidates
+            f_vals = [composite[s] for s in candidates if s in ml_scores]
+            f_min, f_max = min(f_vals), max(f_vals)
+            f_range = f_max - f_min if f_max > f_min else 1.0
+
+            m_vals = list(ml_scores.values())
+            m_min, m_max = min(m_vals), max(m_vals)
+            m_range = m_max - m_min if m_max > m_min else 1.0
+
+            blended = {}
+            for s in candidates:
+                if s in ml_scores:
+                    f_norm = (composite[s] - f_min) / f_range
+                    m_norm = (ml_scores[s] - m_min) / m_range
+                    blended[s] = (1 - ml_blend_weight) * f_norm + ml_blend_weight * m_norm
+
+            sorted_syms = sorted(blended, key=blended.get, reverse=True)[:n]
+        else:
+            sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
+    else:
+        sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
 
     # Signal-weighted: higher score = more capital (but capped at 2x equal weight)
     scores = [max(composite[s], 0.001) for s in sorted_syms]
@@ -677,7 +707,8 @@ STRATEGY_CONFIG = STRATEGY_CONFIG_BULL  # default, overridden at runtime
 VIX_EXTREME = 40
 
 
-def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
+def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
+                 ml_ranker=None, ml_blend_weight=0.4):
     trading_dates = sorted(uni.prices.index)
     trading_dates = [d for d in trading_dates
                      if pd.Timestamp(start_date) <= d <= pd.Timestamp(end_date)]
@@ -713,7 +744,8 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31"):
         if vix > VIX_EXTREME:
             paused = {"s1_momentum", "s2_drift", "s4_inclusion"}
 
-        t1 = strategy1_momentum_reversal(date, uni, day_idx)
+        t1 = strategy1_momentum_reversal(date, uni, day_idx,
+                                             ml_ranker=ml_ranker, ml_blend_weight=ml_blend_weight)
         t2 = strategy2_drift_reversal(date, uni, day_idx)
         t3 = strategy3_sector_rotation(date, uni, day_idx)
         t4 = strategy4_index_inclusion(date, uni, day_idx, s4_active)

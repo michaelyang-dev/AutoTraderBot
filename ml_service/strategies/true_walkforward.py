@@ -44,7 +44,7 @@ def log(msg):
     print(msg, flush=True)
 
 
-def run_backtest(uni, start, end):
+def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4):
     """Run the strategy exactly as implemented in multi_strategy_engine."""
     trading_dates = [d for d in sorted(uni.prices.index)
                      if pd.Timestamp(start) <= d <= pd.Timestamp(end)]
@@ -73,7 +73,8 @@ def run_backtest(uni, start, end):
         regime = uni.get_regime(date)
         vix = regime.get("vix", 20)
 
-        t1 = strategy1_momentum_reversal(date, uni, day_idx)
+        t1 = strategy1_momentum_reversal(date, uni, day_idx,
+                                         ml_ranker=ml_ranker, ml_blend_weight=ml_blend_weight)
         t3 = strategy3_sector_rotation(date, uni, day_idx)
         t4 = strategy4_index_inclusion(date, uni, day_idx, s4_active)
         t5 = strategy5_lowvol_quality(date, uni, day_idx)
@@ -317,22 +318,51 @@ def main():
     log("=" * 80)
 
     if is_full and oos_full:
-        log(f"\n  {'Metric':<15} {'In-Sample':>12} {'Out-of-Sample':>15} {'Degradation':>12}")
-        log(f"  {'─'*15} {'─'*12} {'─'*15} {'─'*12}")
-        for metric, fmt in [("cagr", "+.1%"), ("sharpe", ".2f"), ("max_dd", ".1%"), ("alpha", "+.1%")]:
-            is_val = is_full[metric]
-            oos_val = oos_full[metric]
-            if metric in ("cagr", "alpha"):
-                degrad = oos_val - is_val
-                log(f"  {metric:<15} {is_val:>11{fmt}} {oos_val:>14{fmt}} {degrad:>11{fmt}}")
-            else:
-                log(f"  {metric:<15} {is_val:>11{fmt}} {oos_val:>14{fmt}}")
+        log(f"\n  IS CAGR: {is_full['cagr']:+.1%}  OOS CAGR: {oos_full['cagr']:+.1%}")
+        log(f"  IS Sharpe: {is_full['sharpe']:.2f}  OOS Sharpe: {oos_full['sharpe']:.2f}")
+        log(f"  IS DD: {is_full['max_dd']:.1%}  OOS DD: {oos_full['max_dd']:.1%}")
+        log(f"  IS Alpha: {is_full['alpha']:+.1%}  OOS Alpha: {oos_full['alpha']:+.1%}")
 
-        # Overfitting ratio
-        if is_full["cagr"] > 0 and oos_full["cagr"] > 0:
-            overfit_ratio = oos_full["sharpe"] / is_full["sharpe"] if is_full["sharpe"] > 0 else 0
+        if is_full["sharpe"] > 0:
+            overfit_ratio = oos_full["sharpe"] / is_full["sharpe"]
             log(f"\n  Sharpe retention ratio: {overfit_ratio:.2f} "
                 f"({'GOOD (>0.5)' if overfit_ratio > 0.5 else 'OVERFITTING CONCERN (<0.5)'})")
+
+    # ── PHASE 4: ML Blend Comparison ──
+    log("\n" + "=" * 80)
+    log("  PHASE 4: ML FACTOR BLEND COMPARISON (2022-2025)")
+    log("  Same OOS period, but strategy1 uses 60/40 factor/ML blend.")
+    log("=" * 80)
+
+    try:
+        from strategies.ml_factor_ranker import MLFactorRanker
+        ml_model_path = DATA_DIR / "ml_factor_model.pkl"
+
+        if ml_model_path.exists():
+            ml_ranker = MLFactorRanker(str(ml_model_path))
+            log(f"\n  ML model loaded: {ml_ranker.model.num_trees()} trees")
+
+            oos_ml = run_backtest(uni, "2022-01-01", "2025-12-31",
+                                  ml_ranker=ml_ranker, ml_blend_weight=0.4)
+            if oos_ml and oos_full:
+                log(f"\n  Factor-Only:  CAGR={oos_full['cagr']:+.1%}  Sharpe={oos_full['sharpe']:.2f}  DD={oos_full['max_dd']:.1%}  Alpha={oos_full['alpha']:+.1%}")
+                log(f"  ML Blend:     CAGR={oos_ml['cagr']:+.1%}  Sharpe={oos_ml['sharpe']:.2f}  DD={oos_ml['max_dd']:.1%}  Alpha={oos_ml['alpha']:+.1%}")
+                log(f"  Delta:        CAGR={oos_ml['cagr']-oos_full['cagr']:+.1%}  Sharpe={oos_ml['sharpe']-oos_full['sharpe']:+.2f}  DD={oos_ml['max_dd']-oos_full['max_dd']:+.1%}")
+                log(f"\n  Factor: $100K -> ${oos_full['final']:,.0f}")
+                log(f"  ML Blend: $100K -> ${oos_ml['final']:,.0f}")
+
+            log("\n  ML Blend per year:")
+            for year in range(2022, 2026):
+                m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31",
+                                 ml_ranker=ml_ranker, ml_blend_weight=0.4)
+                if m:
+                    log(f"    {year}: CAGR={m['cagr']:+.1%}  Sharpe={m['sharpe']:.2f}  "
+                        f"DD={m['max_dd']:.1%}  Alpha={m['alpha']:+.1%}")
+        else:
+            log(f"\n  ML model not found at {ml_model_path}")
+            log("  Run: python3 -m strategies.train_factor_ranker")
+    except Exception as exc:
+        log(f"\n  ML comparison failed: {exc}")
 
     elapsed = time.perf_counter() - t0
     log(f"\nTotal runtime: {elapsed:.0f}s ({elapsed/60:.1f} min)")
