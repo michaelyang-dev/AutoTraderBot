@@ -13,7 +13,7 @@ export const RISK = {
   MAX_CASH_DEPLOY_PCT: 0.90,    // deploy max 90% of available cash per trade
   REBALANCE_INTERVAL: 5,        // check signals every N ticks
   TRAILING_STOP_PCT: 0.15,      // trail 15% below peak price (matches v9.5 backtest)
-  USE_TRAILING_STOP: true,      // true = trailing stop, false = fixed stop-loss
+  USE_TRAILING_STOP: false,     // false = fixed stop-loss from entry (matches v9.5 backtest)
   ATR_TARGET_PCT: 0.01,         // reference volatility (1%) — stocks above this get scaled down
   MIN_POSITION_PCT: 0.03,       // floor: never allocate less than 3% of portfolio
   LOSS_COOLDOWN_CYCLES: 3,      // trade cycles a stock is blocked after a losing exit

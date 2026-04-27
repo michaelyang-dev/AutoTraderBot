@@ -147,13 +147,16 @@ def _compute_features_from_raw(raw, prices):
         sma200_30ago = sma200.shift(30)
         feat["sma200_slope"] = (sma200 - sma200_30ago) / sma200_30ago.replace(0, np.nan)
 
-        # Fundamental placeholders (will be filled from FMP cache if available)
+        # Fundamental placeholders — filled below from FMP parquets
         for fcol in ["gross_margin", "operating_margin", "net_margin", "pe_ratio",
                       "ps_ratio", "debt_to_equity", "current_ratio", "roe", "roa",
                       "eps_surprise_last", "days_since_earnings",
                       "revenue_growth_yoy", "eps_growth_yoy",
                       "insider_buy_ratio_90d", "insider_net_shares_90d"]:
             feat[fcol] = np.nan
+
+        # Sector-relative return (needed by strategy1 for sector-strength boost)
+        feat["ret_10d_vs_sector"] = np.nan  # filled below after all symbols computed
 
         feat["in_sp500"] = True  # will be filtered per-date by strategy
 
@@ -162,11 +165,125 @@ def _compute_features_from_raw(raw, prices):
         if len(today_feat) > 0:
             all_features.append(feat)  # keep full history for lookbacks
 
-    if all_features:
-        result = pd.concat(all_features, ignore_index=True)
-        result["date"] = pd.to_datetime(result["date"])
-        return result
-    return pd.DataFrame()
+    if not all_features:
+        return pd.DataFrame()
+
+    result = pd.concat(all_features, ignore_index=True)
+    result["date"] = pd.to_datetime(result["date"])
+
+    # ── Fill fundamentals from FMP parquet caches ──
+    DATA_DIR = Path(__file__).resolve().parent / "data"
+    result = _fill_fundamentals(result, DATA_DIR)
+
+    # ── Compute sector-relative returns ──
+    result = _fill_sector_relative(result, DATA_DIR)
+
+    return result
+
+
+def _fill_fundamentals(features, data_dir):
+    """Fill fundamental columns from FMP parquet caches (same source as backtest)."""
+    import json as _json
+
+    # Load sector map for later
+    ratios_file = data_dir / "fundamentals_ratios.parquet"
+    income_file = data_dir / "fundamentals_income.parquet"
+    metrics_file = data_dir / "fundamentals_metrics.parquet"
+    earnings_file = data_dir / "fundamentals_earnings.parquet"
+
+    # Ratios: pe_ratio, ps_ratio, debt_to_equity, current_ratio
+    if ratios_file.exists():
+        ratios = pd.read_parquet(ratios_file)
+        if "date" in ratios.columns:
+            ratios["date"] = pd.to_datetime(ratios["date"])
+        # Get latest row per symbol
+        ratios_latest = ratios.sort_values("date").groupby("symbol").last()
+        for col in ["pe_ratio", "ps_ratio", "debt_to_equity", "current_ratio"]:
+            if col in ratios_latest.columns:
+                sym_vals = ratios_latest[col].to_dict()
+                mask = features["symbol"].isin(sym_vals)
+                features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+
+    # Income: gross_margin, operating_margin, net_margin
+    if income_file.exists():
+        income = pd.read_parquet(income_file)
+        filing_col = "filing_date" if "filing_date" in income.columns else "date"
+        if filing_col in income.columns:
+            income[filing_col] = pd.to_datetime(income[filing_col])
+        latest = income.sort_values(filing_col).groupby("symbol").last()
+        for margin_name, num_col, den_col in [
+            ("gross_margin", "gross_profit", "revenue"),
+            ("operating_margin", "operating_income", "revenue"),
+            ("net_margin", "net_income", "revenue"),
+        ]:
+            if num_col in latest.columns and den_col in latest.columns:
+                vals = (latest[num_col] / latest[den_col].replace(0, np.nan)).to_dict()
+                mask = features["symbol"].isin(vals)
+                features.loc[mask, margin_name] = features.loc[mask, "symbol"].map(vals)
+
+    # Metrics: roe, roa
+    if metrics_file.exists():
+        metrics = pd.read_parquet(metrics_file)
+        if "date" in metrics.columns:
+            metrics["date"] = pd.to_datetime(metrics["date"])
+        latest = metrics.sort_values("date").groupby("symbol").last()
+        for col in ["roe", "roa"]:
+            if col in latest.columns:
+                sym_vals = latest[col].to_dict()
+                mask = features["symbol"].isin(sym_vals)
+                features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+
+    # Earnings: eps_surprise_last
+    if earnings_file.exists():
+        earnings = pd.read_parquet(earnings_file)
+        if "date" in earnings.columns:
+            earnings["date"] = pd.to_datetime(earnings["date"])
+        if "earnings_surprise" in earnings.columns:
+            latest = earnings.sort_values("date").groupby("symbol").last()
+            if "earnings_surprise" in latest.columns:
+                sym_vals = latest["earnings_surprise"].to_dict()
+                mask = features["symbol"].isin(sym_vals)
+                features.loc[mask, "eps_surprise_last"] = features.loc[mask, "symbol"].map(sym_vals)
+
+    return features
+
+
+def _fill_sector_relative(features, data_dir):
+    """Compute ret_10d_vs_sector: each stock's 10d return minus its sector median."""
+    import json as _json
+
+    sector_file = data_dir / "cache_sectors.json"
+    if not sector_file.exists():
+        return features
+
+    with open(sector_file) as f:
+        sector_map = _json.load(f)
+
+    # Group by date, compute sector medians
+    for date_val in features["date"].unique():
+        day_mask = features["date"] == date_val
+        day_df = features.loc[day_mask]
+
+        # Build sector groups for this date
+        sec_rets = {}
+        for _, row in day_df.iterrows():
+            sym = row["symbol"]
+            sec = sector_map.get(sym, "Unknown")
+            ret = row.get("ret_10d")
+            if pd.notna(ret):
+                sec_rets.setdefault(sec, []).append(ret)
+
+        sec_medians = {sec: np.median(vals) for sec, vals in sec_rets.items() if vals}
+
+        for idx in day_df.index:
+            sym = features.loc[idx, "symbol"]
+            sec = sector_map.get(sym, "Unknown")
+            ret = features.loc[idx, "ret_10d"]
+            med = sec_medians.get(sec, 0.0)
+            if pd.notna(ret):
+                features.loc[idx, "ret_10d_vs_sector"] = ret - med
+
+    return features
 
 
 def build_signals_v9(raw, enhanced_data=None, top_n=8):
