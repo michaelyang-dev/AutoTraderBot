@@ -308,6 +308,12 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     breadth = sum(1 for v in dist_sma50.values() if v > 0) / max(len(dist_sma50), 1) if dist_sma50 else 0.5
     blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
+    # Crypto risk-on tilt (matches backtester lines 664-667)
+    cfx = uni._crypto_fx.get(today, {})
+    btc_ret = cfx.get("btc_ret_20d", 0)
+    if btc_ret and not np.isnan(btc_ret) and btc_ret > 0.15:
+        blend = min(1.0, blend + 0.10)
+
     # VIX pause (matches backtest logic)
     paused = set()
     regime = uni.get_regime(today)

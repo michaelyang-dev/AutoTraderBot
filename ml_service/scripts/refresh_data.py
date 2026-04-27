@@ -93,6 +93,22 @@ def refresh_fundamentals():
         return False
 
 
+def refresh_options():
+    """Refresh options snapshots (put/call ratio, IV) from Polygon."""
+    log("Refreshing options snapshots...")
+    t0 = time.time()
+    try:
+        from strategies.fetch_all_data import fetch_options_snapshots
+        from sp500_universe import get_stock_symbols
+        symbols = get_stock_symbols()
+        fetch_options_snapshots(symbols)
+        log(f"Options refreshed in {time.time() - t0:.0f}s")
+        return True
+    except Exception as e:
+        log(f"ERROR refreshing options: {e}")
+        return False
+
+
 def restart_ml_server():
     """Restart ml-server via PM2 to pick up fresh data."""
     log("Restarting ml-server to load fresh data...")
@@ -111,15 +127,19 @@ def restart_ml_server():
 
 def main():
     log("=" * 60)
-    log("  WEEKLY DATA REFRESH")
+    log("  DAILY DATA REFRESH")
     log("=" * 60)
 
     ok1 = refresh_enhanced_data()
     ok2 = refresh_vix_cache()
     ok3 = refresh_fundamentals()
+    ok4 = refresh_options()
 
-    if ok1 or ok2 or ok3:
+    if ok1 or ok2 or ok3 or ok4:
         restart_ml_server()
+
+    status = "OK" if (ok1 and ok2 and ok3 and ok4) else "PARTIAL"
+    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4})")
 
     status = "OK" if (ok1 and ok2 and ok3) else "PARTIAL"
     log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3})")

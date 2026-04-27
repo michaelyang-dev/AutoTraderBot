@@ -234,7 +234,9 @@ async def lifespan(app: FastAPI):
                             ("financial_growth.parquet", "financial_growth"),
                             ("enterprise_values.parquet", "enterprise_values"),
                             ("company_profiles.parquet", "profiles"),
-                            ("crypto_forex_extended.parquet", "crypto_forex")]:
+                            ("crypto_forex_extended.parquet", "crypto_forex"),
+                            ("transcript_sentiment.parquet", "transcript_sentiment"),
+                            ("options_snapshots.parquet", "options")]:
             fpath = enhanced_dir / fname
             if fpath.exists():
                 state.enhanced_data[key] = pd.read_parquet(fpath)
@@ -243,6 +245,19 @@ async def lifespan(app: FastAPI):
                         state.enhanced_data[key]["date"]
                     )
                 log.info("  Loaded %s: %d rows", key, len(state.enhanced_data[key]))
+
+    # Also load fundamentals-level data not in enhanced_data/
+    for fname, key in [("fundamentals_insiders.parquet", "insiders"),
+                        ("fundamentals_estimates.parquet", "estimates")]:
+        fpath = DATA_DIR / fname
+        if fpath.exists():
+            state.enhanced_data[key] = pd.read_parquet(fpath)
+            if "date" in state.enhanced_data[key].columns:
+                state.enhanced_data[key]["date"] = pd.to_datetime(
+                    state.enhanced_data[key]["date"]
+                )
+            log.info("  Loaded %s: %d rows", key, len(state.enhanced_data[key]))
+
     if state.enhanced_data:
         log.info("Enhanced data ready: %s", ", ".join(state.enhanced_data.keys()))
     else:

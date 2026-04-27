@@ -436,6 +436,73 @@ def fetch_options_volume_history(symbols, lookback_months=6):
     return df
 
 
+def fetch_options_snapshots(symbols):
+    """Fetch daily options snapshot (put/call ratio, IV) from Polygon API."""
+    import requests as _req
+
+    cache = CACHE_DIR / "options_snapshots.parquet"
+    log("  Fetching options snapshots for %d symbols ..." % len(symbols))
+    rows = []
+    for i, sym in enumerate(symbols):
+        try:
+            r = _req.get(
+                f"https://api.polygon.io/v3/snapshot/options/{sym}",
+                params={"apiKey": MASSIVE_KEY, "limit": 250},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            results = r.json().get("results", [])
+            if not results:
+                continue
+
+            call_vol, put_vol, call_oi, put_oi = 0, 0, 0, 0
+            ivs = []
+            underlying_price = None
+
+            for c in results:
+                ct = c.get("details", {}).get("contract_type", "")
+                vol = c.get("day", {}).get("volume", 0) or 0
+                oi = c.get("open_interest", 0) or 0
+                iv = c.get("implied_volatility")
+                if underlying_price is None:
+                    underlying_price = c.get("underlying_asset", {}).get("price")
+
+                if ct == "call":
+                    call_vol += vol
+                    call_oi += oi
+                elif ct == "put":
+                    put_vol += vol
+                    put_oi += oi
+
+                if iv and iv > 0 and not np.isnan(iv):
+                    ivs.append(iv)
+
+            rows.append({
+                "symbol": sym,
+                "pc_ratio": put_vol / max(call_vol, 1),
+                "pc_oi_ratio": put_oi / max(call_oi, 1),
+                "call_volume": call_vol,
+                "put_volume": put_vol,
+                "total_oi": call_oi + put_oi,
+                "atm_iv": float(np.median(ivs)) if ivs else np.nan,
+            })
+        except Exception as e:
+            continue
+
+        if (i + 1) % 100 == 0:
+            log("    %d/%d symbols ..." % (i + 1, len(symbols)))
+        time.sleep(0.05)
+
+    df = pd.DataFrame(rows)
+    if len(df) > 0:
+        df.to_parquet(cache, index=False)
+        log("  Options snapshots: %d symbols saved" % len(df))
+    else:
+        log("  WARNING: No options data returned")
+    return df
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main
 # ══════════════════════════════════════════════════════════════════════════════
@@ -465,7 +532,10 @@ def main():
     # ── Massive Data ──
     log("\n── Massive Data ──")
     crypto_fx = fetch_crypto_forex_extended()
-    # options_pcr = fetch_options_volume_history(stock_symbols)  # slow, enable if needed
+
+    # ── Polygon Options Data ──
+    log("\n── Options Data (Polygon) ──")
+    options = fetch_options_snapshots(stock_symbols)
 
     elapsed = time.time() - t0
     log("\nTotal fetch time: %.0fs (%.1f min)" % (elapsed, elapsed / 60))

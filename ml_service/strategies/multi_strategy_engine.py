@@ -114,6 +114,10 @@ class FastUniverse:
         self._crypto_fx = {}      # {date: {btc_ret_20d, eth_ret_20d, ...}}
         self._ev = {}             # {symbol: [{date, ev_to_revenue, market_cap}]}
         self._profiles = {}       # {symbol: {beta, market_cap, sector, industry}}
+        self._insiders = {}       # {symbol: DataFrame with date, is_buy, shares}
+        self._sentiment = {}      # {symbol: sentiment_score}
+        self._estimates = {}      # {symbol: {eps_avg, revenue_avg}}
+        self._options = {}        # {symbol: {pc_ratio, atm_iv}}
 
         if enhanced_data:
             # Price targets
@@ -178,6 +182,42 @@ class FastUniverse:
                         col: row[col] for col in cfx.columns if not np.isnan(row[col])
                     }
 
+            # Insider trades
+            ins = enhanced_data.get("insiders")
+            if ins is not None and len(ins) > 0:
+                ins["date"] = pd.to_datetime(ins["date"])
+                for sym, grp in ins.groupby("symbol"):
+                    self._insiders[sym] = grp.sort_values("date")
+
+            # Transcript sentiment (most recent per symbol)
+            ts = enhanced_data.get("transcript_sentiment")
+            if ts is not None and len(ts) > 0:
+                ts = ts.sort_values(["symbol", "date"]) if "date" in ts.columns else ts
+                for sym, grp in ts.groupby("symbol"):
+                    self._sentiment[sym] = grp.iloc[-1].get("sentiment", 0.0)
+
+            # Forward estimates (most recent per symbol)
+            est = enhanced_data.get("estimates")
+            if est is not None and len(est) > 0:
+                est = est.sort_values(["symbol", "date"]) if "date" in est.columns else est
+                for sym, grp in est.groupby("symbol"):
+                    latest = grp.iloc[-1]
+                    eps = latest.get("eps_avg")
+                    rev = latest.get("revenue_avg")
+                    if eps is not None and not np.isnan(eps):
+                        self._estimates[sym] = {"eps_avg": eps, "revenue_avg": rev}
+
+            # Options snapshot (put/call ratio, IV)
+            opt = enhanced_data.get("options")
+            if opt is not None and len(opt) > 0:
+                for _, row in opt.iterrows():
+                    sym = row.get("symbol")
+                    if sym:
+                        self._options[sym] = {
+                            "pc_ratio": row.get("pc_ratio"),
+                            "atm_iv": row.get("atm_iv"),
+                        }
+
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
             f"{len(self._ml_preds)} ML prediction dates, "
             f"{len(self._price_targets)} price targets, {len(self._dcf)} DCF values")
@@ -211,6 +251,24 @@ class FastUniverse:
         return {sym: fdate[sym][feature] for sym in members
                 if sym in fdate and feature in fdate[sym]
                 and not np.isnan(fdate[sym][feature])}
+
+    def get_insider_signal(self, symbol, date, lookback_days=90):
+        """Net insider buying in last N days. Returns (net_shares, buy_ratio)."""
+        df = self._insiders.get(symbol)
+        if df is None or len(df) == 0:
+            return 0, 0.0
+        cutoff = date - pd.Timedelta(days=lookback_days)
+        recent = df[(df["date"] >= cutoff) & (df["date"] <= date)]
+        if len(recent) == 0:
+            return 0, 0.0
+        buys = recent[recent["is_buy"] == 1]
+        sells = recent[recent["is_buy"] == 0] if "is_sell" not in recent.columns else recent[recent["is_sell"] == 1]
+        buy_shares = buys["shares"].sum() if len(buys) > 0 else 0
+        sell_shares = sells["shares"].sum() if len(sells) > 0 else 0
+        total = buy_shares + sell_shares
+        net = buy_shares - sell_shares
+        ratio = buy_shares / total if total > 0 else 0.0
+        return net, ratio
 
     def get_close_at(self, date, symbol):
         """Get close price for symbol on date."""
@@ -353,6 +411,34 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
         dte_val = uni.get_feature_map(date, "debt_to_equity").get(sym)
         if dte_val is not None and not np.isnan(dte_val) and dte_val > 3.0:
             score *= 0.85
+
+        # ROE quality boost
+        roe_val = uni.get_feature_map(date, "roe").get(sym)
+        if roe_val is not None and not np.isnan(roe_val) and roe_val > 0.15:
+            score *= 1.05
+
+        # Insider buying conviction signal
+        # Note: disabled in backtest (FMP insider dates may not be point-in-time)
+        # Active in live only via signal_server_v9 feature fill
+        pass  # insider signal handled via feature columns in live
+
+        # Transcript sentiment boost (only fires with live data, not backtest)
+        sent = uni._sentiment.get(sym)
+        if sent is not None and not np.isnan(sent):
+            if sent > 0.3:
+                score *= 1.05
+            elif sent < -0.2:
+                score *= 0.95
+
+        # Options put/call ratio — contrarian signal (only fires with live data)
+        opt = uni._options.get(sym)
+        if opt and opt.get("pc_ratio") is not None:
+            pcr = opt["pc_ratio"]
+            if not np.isnan(pcr):
+                if pcr > 1.2:
+                    score *= 1.08
+                elif pcr < 0.4:
+                    score *= 0.92
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
@@ -514,6 +600,24 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
     inv_dte = {s: -v for s, v in dte.items() if v >= 0}
     mom_6m = {s: v for s, v in ret_126.items() if not np.isnan(v)}
 
+    # EV/Revenue: lower = cheaper (value signal)
+    inv_ev_rev = {}
+    for s in members:
+        ev_data = uni._ev.get(s)
+        if ev_data:
+            evr = ev_data.get("ev_to_rev")
+            if evr is not None and not np.isnan(float(evr)) and float(evr) > 0:
+                inv_ev_rev[s] = -float(evr)
+
+    # Forward earnings yield: higher = cheaper vs estimates
+    fwd_ey = {}
+    for s in members:
+        est = uni._estimates.get(s)
+        if est and est.get("eps_avg"):
+            px = uni.get_close_at(date, s)
+            if px and px > 0 and est["eps_avg"] > 0:
+                fwd_ey[s] = est["eps_avg"] / px
+
     def zscore(d):
         if len(d) < 20: return {}
         vals = np.array(list(d.values()))
@@ -524,10 +628,15 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
     z2 = zscore(gm)
     z3 = zscore(inv_dte)
     z4 = zscore(mom_6m)
+    z5 = zscore(inv_ev_rev)    # EV/Revenue value signal
+    z6 = zscore(fwd_ey)        # Forward earnings yield
 
     composite = {}
     for sym in members:
-        zs = [z for z in [z1.get(sym), z2.get(sym), z3.get(sym), z4.get(sym)] if z is not None]
+        # Core factors: vol, quality, leverage, momentum
+        # Extended: EV/Revenue, forward earnings yield (if data available)
+        zs = [z for z in [z1.get(sym), z2.get(sym), z3.get(sym), z4.get(sym),
+                           z5.get(sym), z6.get(sym)] if z is not None]
         if len(zs) >= 2:
             composite[sym] = np.mean(zs)
 
