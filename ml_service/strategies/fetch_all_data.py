@@ -446,10 +446,9 @@ def main():
     log("  FETCHING ALL AVAILABLE DATA SOURCES")
     log("=" * 80)
 
-    # Get symbol list
-    features = pd.read_parquet(DATA_DIR / "features.parquet", columns=["symbol"])
-    all_symbols = sorted(features["symbol"].unique().tolist())
-    from sp500_universe import get_etf_symbols
+    # Get symbol list from SP500 constituents (no dependency on features.parquet)
+    from sp500_universe import get_stock_symbols, get_etf_symbols
+    all_symbols = sorted(get_stock_symbols())
     etfs = set(get_etf_symbols())
     stock_symbols = [s for s in all_symbols if s not in etfs]
     log("  Symbols: %d stocks, %d ETFs" % (len(stock_symbols), len(etfs)))
