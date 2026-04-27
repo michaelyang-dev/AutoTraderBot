@@ -257,6 +257,35 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
       }
     }
 
+    // ── STEP 1c: Rebalance exits — sell positions no longer in ML top-N ──
+    // v9.5 strategy exits via rebalancing: when a stock drops out of the top-8,
+    // it should be sold. Without this, positions would only exit via stop-loss.
+    if (mlSignals && mlSignals.length > 0) {
+      const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
+      for (const pos of positions) {
+        if (closedSymbols.has(pos.symbol)) continue;
+        if (pos.symbol === "SPY" && idleSpyRef) continue;
+        if (trendPositions[pos.symbol]) continue;  // trend positions have separate exit logic
+
+        // If we hold a stock that's no longer a BUY, sell it (rebalance exit)
+        if (!mlBuySet.has(pos.symbol)) {
+          try {
+            await alpaca.closePosition(pos.symbol);
+            delete trailingPeaks[pos.symbol];
+            closedSymbols.add(pos.symbol);
+            if (pos.unrealized_plpc < 0) cooldowns[pos.symbol] = cycleNumber;
+            logs.push({
+              msg: `🔄 REBALANCE SELL ${pos.symbol}: no longer in v9.5 top-${RISK.MAX_OPEN_POSITIONS} — closing | P&L: $${pos.unrealized_pl.toFixed(2)}`,
+              type: "sell",
+            });
+            alpaca.recordTrade({ symbol: pos.symbol, action: "sell", shares: pos.qty, price: pos.current_price, strategy: "rebalance", portfolio_value: portfolioValue, pnl: pos.unrealized_pl });
+          } catch (err) {
+            logs.push({ msg: `❌ Rebalance sell failed ${pos.symbol}: ${err.message}`, type: "error" });
+          }
+        }
+      }
+    }
+
     // ── STEP 2: Scan for signals ──
     if (regime !== "BULLISH") {
       const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
@@ -333,8 +362,8 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
 
       const analysis = getSignals(prices);
 
-      // Sell on SELL consensus — unchanged regardless of ML mode
-      if (heldSymbols.has(sym) && !trendPositions[sym] && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
+      // Sell on SELL consensus — only when ML is NOT active (v9.5 handles exits via rebalance)
+      if (!mlActive && heldSymbols.has(sym) && !trendPositions[sym] && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
         try {
           await alpaca.closePosition(sym);
           const posData = positions.find(p => p.symbol === sym);
@@ -388,13 +417,8 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
         // ── ML primary decision ──
         const mlSig = mlMap[sym];
         if (mlSig && mlSig.signal === "BUY") {
-          // CAUTIOUS regime: require ≥ 65% confidence (vs normal 55% threshold)
-          if (regime === "CAUTIOUS" && mlSig.probability < 0.65) {
-            logs.push({
-              msg: `🤖 EVAL ${sym}: conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | ❌ BLOCKED: CAUTIOUS regime requires ≥65% confidence`,
-              type: "system",
-            });
-          } else {
+          // v9.5 handles regime internally via breadth blending — no extra filter needed
+          {
             logs.push({
               msg: `🤖 EVAL ${sym}: conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d → ${earningsDate})` : ""} | cooldown: false | ✅ PASSED → added to candidates`,
               type: "system",
@@ -663,8 +687,9 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
       }
     }
 
-    // ── STEP 6: Trend new entries ──
-    if (!skipNewBuys && regime !== "BEARISH") {
+    // ── STEP 6: Trend new entries (disabled when ML/v9.5 is active) ──
+    // v9.5 manages its own positions — trend overlay would conflict
+    if (!skipNewBuys && regime !== "BEARISH" && !mlActive) {
       const trendCount = Object.keys(trendPositions).length;
       if (trendCount < 8) {
         const trendPosValue = Object.values(trendPositions).reduce((sum, tp) => {

@@ -1662,7 +1662,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               is_top_5: sig.is_top_5,
               price_at_signal: spyPrice || null,
               regime,
-              model_version: mlData.model_version || "v5c",
+              model_version: mlData.strategy || mlData.model_version || "v9.5",
             });
           }
         } catch (_) { /* never crash trading loop */ }

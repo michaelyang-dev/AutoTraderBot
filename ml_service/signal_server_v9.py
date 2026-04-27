@@ -254,29 +254,12 @@ def _fill_sector_relative(features, data_dir):
     with open(sector_file) as f:
         sector_map = _json.load(f)
 
-    # Group by date, compute sector medians
-    for date_val in features["date"].unique():
-        day_mask = features["date"] == date_val
-        day_df = features.loc[day_mask]
-
-        # Build sector groups for this date
-        sec_rets = {}
-        for _, row in day_df.iterrows():
-            sym = row["symbol"]
-            sec = sector_map.get(sym, "Unknown")
-            ret = row.get("ret_10d")
-            if pd.notna(ret):
-                sec_rets.setdefault(sec, []).append(ret)
-
-        sec_medians = {sec: np.median(vals) for sec, vals in sec_rets.items() if vals}
-
-        for idx in day_df.index:
-            sym = features.loc[idx, "symbol"]
-            sec = sector_map.get(sym, "Unknown")
-            ret = features.loc[idx, "ret_10d"]
-            med = sec_medians.get(sec, 0.0)
-            if pd.notna(ret):
-                features.loc[idx, "ret_10d_vs_sector"] = ret - med
+    # Vectorized: map symbol → sector, then groupby (date, sector) → median
+    features["_sector"] = features["symbol"].map(sector_map).fillna("Unknown")
+    sector_medians = features.groupby(["date", "_sector"])["ret_10d"].transform("median")
+    mask = features["ret_10d"].notna()
+    features.loc[mask, "ret_10d_vs_sector"] = features.loc[mask, "ret_10d"] - sector_medians[mask]
+    features.drop(columns=["_sector"], inplace=True)
 
     return features
 
