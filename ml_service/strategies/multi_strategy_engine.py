@@ -275,7 +275,7 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     stress = vix > 30 or vix_ts < 0.95
     n = max(top_n // 2, 5) if stress else top_n
 
-    # Multi-timeframe momentum
+    # Multi-timeframe momentum + relative strength
     ret_20 = uni.get_feature_map(date, "ret_20d", members)
     ret_60 = uni.get_feature_map(date, "ret_60d", members)
     ret_126 = uni.get_feature_map(date, "ret_126d", members)
@@ -283,6 +283,7 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
     gross_m = uni.get_feature_map(date, "gross_margin", members)
     dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
     eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
+    ret_vs_sector = uni.get_feature_map(date, "ret_10d_vs_sector", members)
 
     composite = {}
     for sym in members:
@@ -328,6 +329,11 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=10, rebal_days=10):
                 dcf_upside = (dcf_data["dcf"] - px) / px
                 if dcf_upside > 0.20:  # >20% undervalued by DCF
                     score *= 1.10
+
+        # Sector-relative strength boost
+        rs = ret_vs_sector.get(sym)
+        if rs is not None and not np.isnan(rs) and rs > 0.02:
+            score *= 1.08  # outperforming own sector
 
         # Revenue/earnings acceleration (from FMP financial growth)
         fg = uni._fin_growth.get(sym)
