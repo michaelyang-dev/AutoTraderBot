@@ -1773,7 +1773,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Count positions by strategy for slot allocation
       // Accounts for in-flight orders: pending SELLs reduce count, pending BUYs increase count
       // "legacy" positions (pre-existing, untagged) are tracked but excluded from slot limits
-      const countByStrategy = () => {
+      const countByStrategy = (positionsOverride) => {
+        const posToCount = positionsOverride || currentPositions;
         // Build sets of symbols with pending sells/buys
         const pendingSells = new Set();
         const pendingBuySyms = new Map(); // symbol -> strategy
@@ -1783,7 +1784,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             pendingSells.add(sym);
           } else if (o.side === "buy") {
             // Only count pending buys for symbols we don't already hold
-            const alreadyHeld = currentPositions.some(p => p.symbol === sym);
+            const alreadyHeld = posToCount.some(p => p.symbol === sym);
             if (!alreadyHeld) {
               pendingBuySyms.set(sym, positionStrategy[sym] || "ml");
             }
@@ -1791,7 +1792,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         let ml = 0, mom = 0, mr = 0, mc = 0, trend = 0, legacy = 0;
-        for (const pos of currentPositions) {
+        for (const pos of posToCount) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
           // Skip positions with pending sell — they're on the way out
           if (pendingSells.has(pos.symbol)) continue;
@@ -2381,6 +2382,21 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
+      // Refresh positions and cash after stop-loss + rebalance sells so slot counts are accurate
+      let activePositions = currentPositions;
+      if (closedSymbols.size > 0) {
+        try {
+          activePositions = await getPositions();
+          const freshAcct = await getAccount();
+          cycleCash = freshAcct.cash;
+          cyclePortfolioValue = freshAcct.portfolio_value;
+          addLog(`[post-exit] Refreshed: ${activePositions.length} positions, $${cycleCash.toLocaleString("en-US", {maximumFractionDigits: 0})} cash`, "system");
+        } catch (_) {
+          // Fallback: filter closed symbols from snapshot
+          activePositions = currentPositions.filter(p => !closedSymbols.has(p.symbol));
+        }
+      }
+
       // ── STEP 2: Scan for signals ──
       if (regime !== "BULLISH") {
         const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
@@ -2396,7 +2412,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       if (mlActive) {
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
-        addLog(`ML V5C active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
+        addLog(`v9.5 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
         addLog("ML server offline -- using consensus engine (fallback mode)", "system");
       }
@@ -2649,7 +2665,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         return b.score - a.score;
       });
 
-      const counts = countByStrategy();
+      const counts = countByStrategy(activePositions);
       const slotsAvail = SLOT_CONFIG.max - counts.total;
 
       // Pre-execution diagnostic summary
@@ -2735,7 +2751,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const sector = getSector(opp.sym);
         const sectorLimit = RISK.SECTOR_MAX_POSITIONS[sector];
         if (sectorLimit !== undefined) {
-          const existingSectorCount = currentPositions.filter(p => getSector(p.symbol) === sector).length;
+          const existingSectorCount = activePositions.filter(p => getSector(p.symbol) === sector).length;
           const cycleCount = boughtThisCycle[sector] || 0;
           if (existingSectorCount + cycleCount >= sectorLimit) {
             addLog(`Skipping ${opp.sym} -- ${sector} limit reached (max ${sectorLimit})`, "system");
