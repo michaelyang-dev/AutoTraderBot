@@ -341,14 +341,15 @@ def strategy3_sector_rotation(date, uni, day_idx, rebal_days=21):
     regime = uni.get_regime(date)
     bear = not regime.get("spy_above_sma200", True)
 
-    # In bear: still use momentum ranking but favor defensive sectors
+    # Blended 3m + 6m sector momentum for more robust signal
     sector_rets = {}
     for etf in SECTOR_ETFS:
         close = uni.get_close_series(etf, date, 130)
         if len(close) >= 126:
-            ret = (close.iloc[-1] / close.iloc[-126]) - 1.0
-            if not np.isnan(ret):
-                sector_rets[etf] = ret
+            ret_6m = (close.iloc[-1] / close.iloc[-126]) - 1.0
+            ret_3m = (close.iloc[-1] / close.iloc[-63]) - 1.0
+            if not np.isnan(ret_6m) and not np.isnan(ret_3m):
+                sector_rets[etf] = (ret_6m + ret_3m) / 2
 
     if len(sector_rets) < 3:
         return {}
