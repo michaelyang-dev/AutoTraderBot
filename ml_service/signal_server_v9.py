@@ -178,7 +178,12 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     """
     global _uni_cache, _uni_cache_date
 
-    today = pd.Timestamp.now().normalize()
+    # Use the last available trading date from raw data (not today — may be weekend/holiday)
+    spy_df = raw.get("SPY", pd.DataFrame())
+    if spy_df.empty or len(spy_df) == 0:
+        log.error("SPY data unavailable — cannot build v9.5 signals")
+        return []
+    today = pd.Timestamp(spy_df.index[-1]).normalize()
 
     # Rebuild universe if needed (once per day)
     if _uni_cache is None or _uni_cache_date != today:
