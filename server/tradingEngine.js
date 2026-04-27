@@ -2041,10 +2041,11 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1b: Earnings-eve exits ──
+      // ── STEP 1b: Earnings-eve exits (skip for ML/v9.5 positions — strategy holds through earnings) ──
       for (const pos of currentPositions) {
         if (closedSymbols.has(pos.symbol)) continue;
         if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
+        if (positionStrategy[pos.symbol] === "ml") continue;  // v9.5 holds through earnings
         const earningsDate = earningsMap[pos.symbol];
         if (!earningsDate) continue;
         const days = daysUntilEarnings(earningsDate);
@@ -2772,8 +2773,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         }
 
-        // Skip if earnings within 3 calendar days (already filtered for momentum and MR in their signal functions)
-        if (opp.strategy !== "momentum" && opp.strategy !== "mean_reversion") {
+        // Skip if earnings within 3 calendar days
+        // Disabled for ML/v9.5: the strategy already factors in earnings via eps_surprise boost
+        // and the backtest does not avoid earnings — adding this filter causes cash drag
+        if (opp.strategy !== "ml" && opp.strategy !== "momentum" && opp.strategy !== "mean_reversion") {
           const earningsDate = earningsMap[opp.sym];
           if (earningsDate) {
             const days = daysUntilEarnings(earningsDate);
@@ -2790,18 +2793,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           // Momentum/MR/Mega-cap: fixed % (already computed in signal)
           dynPositionPct = opp.positionPct;
         } else {
-          // ML: ATR-based dynamic sizing with regime and confidence multipliers
-          const stockAtr = atr(priceHist[opp.sym], 14);
-          const atrPct = stockAtr ? stockAtr / opp.price : RISK.ATR_TARGET_PCT;
-          const volatilityScale = RISK.ATR_TARGET_PCT / atrPct;
-          const regimeMult = regime === "CAUTIOUS" ? 0.75 : 1.0;
-          // Equal-weight ML sizing: walk-forward analysis shows rank #1-#5 returns
-          // are statistically indistinguishable (+1.19% to +1.67%), so confidence
-          // scaling just penalizes good trades. ATR + regime scaling still apply.
-          dynPositionPct = Math.max(
-            RISK.MIN_POSITION_PCT,
-            Math.min(RISK.MAX_POSITION_PCT, RISK.MAX_POSITION_PCT * volatilityScale * regimeMult)
-          );
+          // v9.5 ML: equal-weight sizing (12% per position, no ATR/regime scaling)
+          // The backtest uses fixed equal weights — ATR scaling and regime multipliers
+          // would cause the live system to diverge from backtested performance.
+          dynPositionPct = RISK.MAX_POSITION_PCT;
         }
 
         // Apply volatility targeting scale to ALL strategies
@@ -2813,7 +2808,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           continue;
         }
 
-        const maxAlloc = cyclePortfolioValue * dynPositionPct * currentVolScale;
+        // v9.5 ML: no vol-targeting (backtest uses equal weight, not leveraged)
+        const volMult = (opp.strategy === "ml") ? 1.0 : currentVolScale;
+        const maxAlloc = cyclePortfolioValue * dynPositionPct * volMult;
         // ML positions: use full available cash (reserve already subtracted above).
         // Non-ML: cap at 90% to leave room for other strategies.
         const deployCap = (opp.strategy === "ml") ? 1.0 : RISK.MAX_CASH_DEPLOY_PCT;
