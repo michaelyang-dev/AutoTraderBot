@@ -483,8 +483,8 @@ def strategy4_index_inclusion(date, uni, day_idx, active_trades):
     return {s: w for s in active_trades}
 
 
-def strategy5_lowvol_quality(date, uni, day_idx, top_n=15, rebal_days=10):
-    """Low-Vol Quality + Momentum. Top-15, 10-day rebal. NO trend filter (defensive anchor)."""
+def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
+    """Low-Vol Quality + Momentum. Top-10, 10-day rebal. NO trend filter (defensive anchor)."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)
