@@ -1872,7 +1872,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       let cycleCash = account.cash;
-      const cyclePortfolioValue = account.portfolio_value;
+      let cyclePortfolioValue = account.portfolio_value;
 
       // Multi-layer circuit breaker (daily 4%, weekly 8%, peak 20%)
       const cbResult = checkCircuitBreakers(cyclePortfolioValue);
@@ -2428,7 +2428,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       for (const sym of UNIVERSE_SYMBOLS) {
         const prices = priceHist[sym];
-        const isMLBuy = mlActive && mlMap[sym]?.is_top_5 === true;
+        const isMLBuy = mlActive && mlMap[sym]?.signal === "BUY";
 
         if (!prices || prices.length < 35) {
           if (isMLBuy) {
@@ -2547,10 +2547,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const earningsBlocked = earningsDays !== null && earningsDays >= 0 && earningsDays <= 3;
 
         if (mlActive) {
-          // v9.5: top-N cross-sectional ranking (BUY if is_top_5)
+          // v9.5: top-N cross-sectional ranking (BUY signal)
           // v9.5 handles regime internally via breadth blending — no CAUTIOUS filter needed
           const mlSig = mlMap[sym];
-          if (mlSig && mlSig.is_top_5) {
+          if (mlSig && mlSig.signal === "BUY") {
             addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
             opportunities.push({
               sym,
