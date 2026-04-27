@@ -18,7 +18,7 @@ module.exports = {
       name: "ml-server",
       script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
       args: "/home/ubuntu/AutoTraderBot/ml_service/signal_server.py",
-      cwd: "/home/ubuntu/AutoTraderBot",
+      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
       watch: false,
       autorestart: true,
       max_restarts: 5,
@@ -75,6 +75,22 @@ module.exports = {
       cron_restart: "0 18 * * 0",
       autorestart: false,
       watch: false,
+    },
+
+    // ── Weekly data refresh (Sunday 5:00 PM ET) ─────────────────────
+    // Refreshes FMP enhanced data, VIX cache, and fundamentals parquets.
+    // Restarts ml-server afterward so it loads fresh data.
+    {
+      name: "data-refresh",
+      script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
+      args: "/home/ubuntu/AutoTraderBot/ml_service/scripts/refresh_data.py",
+      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
+      cron_restart: "0 17 * * 0",
+      autorestart: false,
+      watch: false,
+      env: {
+        PYTHONUNBUFFERED: "1",
+      },
     },
   ],
 };
