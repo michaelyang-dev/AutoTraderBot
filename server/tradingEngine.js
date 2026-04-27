@@ -19,7 +19,7 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.15,
+  MAX_POSITION_PCT: 0.12,               // v9.5: 8 positions * 12% = 96% (fits within 98% available)
   STOP_LOSS_PCT: -0.15,               // v9.5 backtest: -15% fixed from entry
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.5 exits via rebalance
   MAX_OPEN_POSITIONS: 8,              // v9.5 top-8 concentrated picks
@@ -2418,13 +2418,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // Include both held positions AND pending buy orders to prevent duplicate buys.
-      // Without this, a second ML signal for the same stock can fire before the first
-      // fill is journaled, causing a double buy.
-      const heldSymbols = new Set(currentPositions.map(p => p.symbol));
+      // Uses activePositions (refreshed after rebalance sells) for accurate count.
+      const heldSymbols = new Set(activePositions.map(p => p.symbol));
       for (const o of pendingOrders) {
         if (o.side === "buy") heldSymbols.add(fromAlpacaSymbol(o.symbol));
       }
-      const activePositionCount = currentPositions.filter(p => p.symbol !== "SPY").length;
+      const activePositionCount = activePositions.filter(p => p.symbol !== "SPY").length;
       const opportunities = [];
 
       for (const sym of UNIVERSE_SYMBOLS) {
@@ -2806,8 +2805,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         // Apply volatility targeting scale to ALL strategies
-        // Cash buffer: keep 5% minimum cash reserve to prevent negative balance
-        const cashReserve = cyclePortfolioValue * 0.05;
+        // Cash buffer: 2% reserve to absorb slippage/rounding (v9.5 targets ~100% invested)
+        const cashReserve = cyclePortfolioValue * 0.02;
         const availableCash = Math.max(0, cycleCash - cashReserve);
         if (availableCash < opp.price) {
           addLog(`SKIP ${opp.sym} -- cash buffer: $${cycleCash.toFixed(0)} cash - $${cashReserve.toFixed(0)} reserve = $${availableCash.toFixed(0)} available, need $${opp.price.toFixed(2)}/share`, "system");
@@ -2815,7 +2814,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         const maxAlloc = cyclePortfolioValue * dynPositionPct * currentVolScale;
-        const allocCash = Math.min(maxAlloc, availableCash * RISK.MAX_CASH_DEPLOY_PCT);
+        // ML positions: use full available cash (reserve already subtracted above).
+        // Non-ML: cap at 90% to leave room for other strategies.
+        const deployCap = (opp.strategy === "ml") ? 1.0 : RISK.MAX_CASH_DEPLOY_PCT;
+        const allocCash = Math.min(maxAlloc, availableCash * deployCap);
         if (allocCash < opp.price) {
           addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
           continue;
