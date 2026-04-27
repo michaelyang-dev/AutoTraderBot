@@ -270,9 +270,13 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10):
         return {}
 
     regime = uni.get_regime(date)
-    vix = regime.get("vix", 20)
-    vix_ts = regime.get("vix_term_structure", 1.0)
-    stress = vix > 30 or vix_ts < 0.95
+    # Use breadth for stress detection (no VIX dependency)
+    dist_sma50_all = uni.get_feature_map(date, "dist_sma50")
+    if dist_sma50_all:
+        mkt_breadth = sum(1 for v in dist_sma50_all.values() if v > 0) / max(len(dist_sma50_all), 1)
+    else:
+        mkt_breadth = 0.5
+    stress = mkt_breadth < 0.30  # fewer than 30% of stocks above 50d SMA
     n = max(top_n // 2, 5) if stress else top_n
 
     # Multi-timeframe momentum + relative strength
