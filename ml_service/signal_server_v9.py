@@ -8,7 +8,10 @@ the same JSON format for the trading bot.
 This module is imported by signal_server.py when v9.5 is active.
 """
 
+import json as _json
 import logging
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -28,9 +31,6 @@ _uni_cache_date = None
 
 def _build_universe(raw, enhanced_data=None):
     """Build FastUniverse from raw bar data."""
-    import json
-    from pathlib import Path
-
     DATA_DIR = Path(__file__).resolve().parent / "data"
 
     # Build prices DataFrame
@@ -46,14 +46,14 @@ def _build_universe(raw, enhanced_data=None):
     sector_map = {}
     if sector_file.exists():
         with open(sector_file) as f:
-            sector_map = json.load(f)
+            sector_map = _json.load(f)
 
     # Load SP500 changes
     changes_file = DATA_DIR / "sp500_changes.json"
     sp500_changes = []
     if changes_file.exists():
         with open(changes_file) as f:
-            sp500_changes = json.load(f)
+            sp500_changes = _json.load(f)
 
     # VIX data (cached)
     vix_data = None
@@ -183,9 +183,6 @@ def _compute_features_from_raw(raw, prices):
 
 def _fill_fundamentals(features, data_dir):
     """Fill fundamental columns from FMP parquet caches (same source as backtest)."""
-    import json as _json
-
-    # Load sector map for later
     ratios_file = data_dir / "fundamentals_ratios.parquet"
     income_file = data_dir / "fundamentals_income.parquet"
     metrics_file = data_dir / "fundamentals_metrics.parquet"
@@ -250,8 +247,6 @@ def _fill_fundamentals(features, data_dir):
 
 def _fill_sector_relative(features, data_dir):
     """Compute ret_10d_vs_sector: each stock's 10d return minus its sector median."""
-    import json as _json
-
     sector_file = data_dir / "cache_sectors.json"
     if not sector_file.exists():
         return features
