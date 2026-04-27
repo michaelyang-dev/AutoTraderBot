@@ -287,6 +287,19 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
     }
 
     // ── STEP 2: Scan for signals ──
+    // Refresh positions/cash after stop-loss and rebalance sells
+    let freshPositions = positions;
+    if (closedSymbols.size > 0) {
+      try {
+        freshPositions = await alpaca.getPositions();
+        const freshAcct = await alpaca.getAccount();
+        cash = freshAcct.cash;
+      } catch (_) {
+        // Fall back to original positions minus closed ones
+        freshPositions = positions.filter(p => !closedSymbols.has(p.symbol));
+      }
+    }
+
     if (regime !== "BULLISH") {
       const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
       logs.push({
@@ -309,9 +322,9 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
       logs.push({ msg: "🔄 ML server offline — using consensus engine (fallback mode)", type: "system" });
     }
 
-    const heldSymbols = new Set(positions.map((p) => p.symbol));
+    const heldSymbols = new Set(freshPositions.map((p) => p.symbol));
     // Don't count idle-spy toward position limit — only active ML/trend positions count
-    const activePositionCount = positions.filter(p => p.symbol !== "SPY").length;
+    const activePositionCount = freshPositions.filter(p => p.symbol !== "SPY").length;
     const opportunities = [];
 
     // Build scan list: UNIVERSE + any ML BUY symbols not already in UNIVERSE

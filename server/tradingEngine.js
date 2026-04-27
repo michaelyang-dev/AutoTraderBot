@@ -20,13 +20,13 @@ const INITIAL_CASH = 100000;
 
 const RISK = {
   MAX_POSITION_PCT: 0.15,
-  STOP_LOSS_PCT: -0.08,
-  TAKE_PROFIT_PCT: 0.25,              // WF-optimized: 15%→25% lets winners run (+5.2% median CAGR)
-  MAX_OPEN_POSITIONS: 8,              // 2-strategy: ML(5)+Mom(3)
+  STOP_LOSS_PCT: -0.15,               // v9.5 backtest: -15% fixed from entry
+  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.5 exits via rebalance
+  MAX_OPEN_POSITIONS: 8,              // v9.5 top-8 concentrated picks
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.12,            // WF-optimized: 8%→12% reduces premature exits (+0.23 Sharpe)
-  USE_TRAILING_STOP: true,
+  TRAILING_STOP_PCT: 0.15,            // matches STOP_LOSS_PCT (only used if USE_TRAILING_STOP=true)
+  USE_TRAILING_STOP: false,           // v9.5 backtest uses fixed stop from entry, not trailing
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -42,12 +42,13 @@ const ENABLE_MOMENTUM_REGIME_FILTER = true;  // Skip momentum buys when SPY < 50
 const ENABLE_SPY_PARKING = false;  // Walk-forward validated OFF: +0.42 Sharpe, +3.4% CAGR (commit f8bd464)
 
 // ── Multi-strategy slot allocation ──
+// v9.5: all slots go to ML (v9.5 multi-strategy engine handles diversification internally)
 const SLOT_CONFIG = {
-  ml_medium: 5,          // ML primary slots — gained 3 from dead strategies (walk-forward validated)
-  momentum: 3,           // Momentum primary slots
-  mean_reversion: 0,     // Disabled — backtest shows +10pp alpha without MR
-  mega_cap: 0,           // Disabled — 0 trades in 11 walk-forward years
-  flex: 0,               // Consolidated into ml_medium
+  ml_medium: 8,          // v9.5 top-8 picks get all slots
+  momentum: 0,           // Disabled — v9.5 has its own momentum strategy (S1)
+  mean_reversion: 0,     // Disabled
+  mega_cap: 0,           // Disabled
+  flex: 0,
   max: 8,                // Hard cap (= RISK.MAX_OPEN_POSITIONS)
 };
 
@@ -2341,6 +2342,45 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
+      // ── STEP 1f: Rebalance exits — sell positions no longer in ML top-N ──
+      // v9.5 strategy exits via rebalancing: when a stock drops out of the top-8,
+      // it should be sold. Without this, positions would only exit via stop-loss.
+      if (mlSignals && mlSignals.length > 0) {
+        const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
+        for (const pos of currentPositions) {
+          const sym = pos.symbol;
+          if (closedSymbols.has(sym)) continue;
+          if (sym === "SPY" && idleSpyShares > 0) continue;
+          if (trendPositions[sym]) continue;
+          // Only rebalance-sell ML positions (not momentum/trend/etc)
+          if (positionStrategy[sym] && positionStrategy[sym] !== "ml") continue;
+
+          if (!mlBuySet.has(sym)) {
+            try {
+              await closePosition(sym);
+              closedSymbols.add(sym);
+              setCooldown(sym, "ml");
+              delete mlEntryDates[sym];
+              delete positionStrategy[sym];
+              delete trailingPeaks[sym];
+              const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
+              addLog(`REBALANCE SELL ${sym}: no longer in v9.5 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
+              tradeCount.sells++; mlTradeCount.sells++;
+              if (unrealized_pl >= 0) { tradeCount.wins++; mlTradeCount.wins++; }
+              else { tradeCount.losses++; mlTradeCount.losses++; }
+              tradeCount.totalPnL += unrealized_pl;
+              mlTradeCount.totalPnL += unrealized_pl;
+              try { journal.closePosition({ symbol: sym, fillPrice: curr, exitReason: "rebalance" }); } catch (_) {}
+              dailyStats.sells++;
+              if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
+              notify.send(`🔄 REBALANCE ${sym} | ${qty} shares @ $${curr.toFixed(2)} | No longer in top-8 — P&L: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
+            } catch (err) {
+              addLog(`Rebalance sell failed ${sym}: ${err.message}`, "error");
+            }
+          }
+        }
+      }
+
       // ── STEP 2: Scan for signals ──
       if (regime !== "BULLISH") {
         const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
@@ -2421,12 +2461,10 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
         const analysis = getSignals(prices);
 
-        // Sell on SELL consensus (only for ML positions — every other strategy has its own exit rules)
-        // ML minimum hold: 5 trading days (~1950 cycles at 1 cycle/min, 390 min/day)
-        // The ML model predicts 10-day forward returns; selling before 5 days defeats the signal.
-        // Stop-loss and trailing stops (STEP 1a/1b) still fire during the hold period.
+        // Consensus sell disabled when ML/v9.5 is active — v9.5 exits via rebalance (Step 1f).
+        // Old technical signals (SMA, RSI, MACD) would fight the factor-based strategy.
         const ML_MIN_HOLD_CYCLES = 5 * 390;
-        const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend"]);
+        const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend", "ml"]);
         if (heldSymbols.has(sym) && !trendPositions[sym] && !excludedStrategies.has(positionStrategy[sym]) && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
           // Check minimum hold period before allowing consensus-based exit
           const mlEntryCycle = mlEntryDates[sym];
@@ -2494,25 +2532,22 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const earningsBlocked = earningsDays !== null && earningsDays >= 0 && earningsDays <= 3;
 
         if (mlActive) {
-          // ML V5C: top-N cross-sectional ranking (BUY if is_top_5)
+          // v9.5: top-N cross-sectional ranking (BUY if is_top_5)
+          // v9.5 handles regime internally via breadth blending — no CAUTIOUS filter needed
           const mlSig = mlMap[sym];
           if (mlSig && mlSig.is_top_5) {
-            if (regime === "CAUTIOUS" && mlSig.rank > 2) {
-              addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: CAUTIOUS regime, only top 2 picks allowed`, "system");
-            } else {
-              addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
-              opportunities.push({
-                sym,
-                score: mlSig.probability,
-                price: prices[prices.length - 1],
-                consensus: `ML V5C #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
-                rsiVal: analysis.indicators.rsi,
-                mlConf: mlSig.probability,
-              });
-            }
+            addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
+            opportunities.push({
+              sym,
+              score: mlSig.probability,
+              price: prices[prices.length - 1],
+              consensus: `v9.5 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
+              rsiVal: analysis.indicators.rsi,
+              mlConf: mlSig.probability,
+            });
           } else {
             if (mlSig && mlSig.rank <= 10) {
-              addLog(`ML SKIP ${sym} -- rank #${mlSig.rank}, not in top 5`, "system");
+              addLog(`ML SKIP ${sym} -- rank #${mlSig.rank}, not in top 8`, "system");
             }
           }
         } else {
