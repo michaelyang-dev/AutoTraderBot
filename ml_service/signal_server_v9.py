@@ -213,19 +213,41 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     breadth = sum(1 for v in dist_sma50.values() if v > 0) / max(len(dist_sma50), 1) if dist_sma50 else 0.5
     blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
+    # VIX pause (matches backtest logic)
+    paused = set()
+    regime = uni.get_regime(today)
+    vix = regime.get("vix", 20)
+    if vix > 40:
+        paused = {"s1_momentum", "s4_inclusion"}
+
     # Combine with dynamic allocation
     combined = {}
     for name, bull_pct in STRATEGY_CONFIG_BULL:
+        if name in paused:
+            continue
         bear_pct = dict(STRATEGY_CONFIG_BEAR).get(name, 0)
         cap = bull_pct * blend + bear_pct * (1 - blend)
         for sym, w in targets.get(name, {}).items():
             if w > 0:
                 combined[sym] = combined.get(sym, 0) + w * cap
 
-    # Apply constraints
+    # Apply constraints (must match backtest exactly)
+    # 1) Single-name cap: 15%
     for sym in list(combined):
         if combined[sym] > 0.15:
             combined[sym] = 0.15
+    # 2) Sector cap: 35%
+    sec_tot = {}
+    for sym, w in combined.items():
+        sec = uni.sector_map.get(sym, "X")
+        sec_tot[sec] = sec_tot.get(sec, 0) + w
+    for sec, tot in sec_tot.items():
+        if tot > 0.35:
+            scale = 0.35 / tot
+            for sym in list(combined):
+                if uni.sector_map.get(sym, "X") == sec:
+                    combined[sym] *= scale
+    # 3) Gross exposure cap: 100%
     gross = sum(combined.values())
     if gross > 1.0:
         for sym in combined:

@@ -285,7 +285,18 @@ export async function executeLiveTradingCycle({ priceHist, volHist = {}, trailin
     const activePositionCount = positions.filter(p => p.symbol !== "SPY").length;
     const opportunities = [];
 
-    for (const { sym } of UNIVERSE) {
+    // Build scan list: UNIVERSE + any ML BUY symbols not already in UNIVERSE
+    const universeSymSet = new Set(UNIVERSE.map(u => u.sym));
+    const scanList = [...UNIVERSE.map(u => u.sym)];
+    if (mlActive) {
+      for (const s of mlSignals) {
+        if (s.signal === "BUY" && !universeSymSet.has(s.symbol)) {
+          scanList.push(s.symbol);
+        }
+      }
+    }
+
+    for (const sym of scanList) {
       const prices = priceHist[sym];
       const isMLBuy = mlActive && mlMap[sym]?.signal === "BUY";
 

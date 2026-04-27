@@ -7,12 +7,12 @@ export const INITIAL_CASH = 100000;
 // Risk Management
 export const RISK = {
   MAX_POSITION_PCT: 0.15,       // max 15% of portfolio per stock
-  STOP_LOSS_PCT: -0.08,         // -8% fixed stop loss (used when USE_TRAILING_STOP is false)
-  TAKE_PROFIT_PCT: 0.15,        // +15% take profit
-  MAX_OPEN_POSITIONS: 6,        // max concurrent positions
+  STOP_LOSS_PCT: -0.15,         // -15% stop loss (matches v9.5 backtest)
+  TAKE_PROFIT_PCT: 0.30,        // +30% take profit (allow winners to run)
+  MAX_OPEN_POSITIONS: 8,        // max concurrent positions (matches v9.5 top-8 picks)
   MAX_CASH_DEPLOY_PCT: 0.90,    // deploy max 90% of available cash per trade
   REBALANCE_INTERVAL: 5,        // check signals every N ticks
-  TRAILING_STOP_PCT: 0.08,      // trail 8% below peak price
+  TRAILING_STOP_PCT: 0.15,      // trail 15% below peak price (matches v9.5 backtest)
   USE_TRAILING_STOP: true,      // true = trailing stop, false = fixed stop-loss
   ATR_TARGET_PCT: 0.01,         // reference volatility (1%) — stocks above this get scaled down
   MIN_POSITION_PCT: 0.03,       // floor: never allocate less than 3% of portfolio
