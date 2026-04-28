@@ -54,7 +54,8 @@ R2K_CONFIG_BEAR = [
 class R2KUniverse:
     """Pre-indexed small-cap universe data for fast strategy computation."""
 
-    def __init__(self, features_df, prices_df, universe_df, sector_map=None):
+    def __init__(self, features_df, prices_df, universe_df, sector_map=None,
+                 short_volume_df=None):
         t0 = time.time()
         print("  Building R2K universe index ...", flush=True)
 
@@ -83,9 +84,23 @@ class R2KUniverse:
         for date, grp in universe_df.groupby("date"):
             self._universe_by_date[date] = set(grp["symbol"].tolist())
 
+        # Short volume data: {date: {symbol: {short_ratio, short_ratio_20d, short_ratio_pctile}}}
+        self._short_vol = {}
+        if short_volume_df is not None and len(short_volume_df) > 0:
+            short_volume_df["date"] = pd.to_datetime(short_volume_df["date"])
+            for date, grp in short_volume_df.groupby("date"):
+                self._short_vol[date] = {}
+                for _, row in grp.iterrows():
+                    sym = row["symbol"]
+                    self._short_vol[date][sym] = {
+                        "short_ratio_20d": row.get("short_ratio_20d", np.nan),
+                        "short_ratio_pctile": row.get("short_ratio_pctile", np.nan),
+                    }
+
         elapsed = time.time() - t0
         print(f"    R2K index built in {elapsed:.1f}s: {len(self._feat_by_date)} dates, "
-              f"{len(self._close)} price series", flush=True)
+              f"{len(self._close)} price series, "
+              f"{len(self._short_vol)} short volume dates", flush=True)
 
     def get_universe(self, date):
         """Get R2K stocks on a given date."""
@@ -125,6 +140,11 @@ class R2KUniverse:
         if s is None:
             return pd.Series(dtype=float)
         return s.loc[:end_date].iloc[-lookback:]
+
+    def get_short_vol(self, date, symbol):
+        """Get short volume data for a symbol on a date."""
+        sv_date = self._short_vol.get(date, {})
+        return sv_date.get(symbol, {})
 
     def get_regime(self, date):
         """Get market regime from SPY (same as SP500 strategy)."""
@@ -202,6 +222,17 @@ def r2k_strategy1_momentum(date, uni, day_idx, top_n=15, rebal_days=10):
         dte_val = dte_map.get(sym)
         if dte_val is not None and not np.isnan(dte_val) and dte_val > 2.5:
             score *= 0.85
+
+        # Short volume signal (FINRA data)
+        # Low short selling = less bearish pressure = momentum more likely to continue
+        # High short selling = either informed sellers (avoid) or squeeze setup (risky)
+        sv = uni.get_short_vol(date, sym)
+        sv_pctile = sv.get("short_ratio_pctile")
+        if sv_pctile is not None and not np.isnan(sv_pctile):
+            if sv_pctile < 0.25:
+                score *= 1.12  # low short selling — clean momentum, no bearish pressure
+            elif sv_pctile > 0.80:
+                score *= 0.88  # heavy short selling — avoid, shorts may be right
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
@@ -484,6 +515,19 @@ def main():
     except Exception as e:
         print(f"   WARNING: Could not load IWM/SPY: {e}")
 
+    # Load short volume data (FINRA)
+    short_vol = None
+    sv_path = DATA_DIR / "finra_short_features.parquet"
+    if sv_path.exists():
+        short_vol = pd.read_parquet(sv_path)
+        short_vol["date"] = pd.to_datetime(short_vol["date"])
+        # Filter to R2K symbols only (saves memory)
+        r2k_syms = set(universe["symbol"].unique())
+        short_vol = short_vol[short_vol["symbol"].isin(r2k_syms)]
+        print(f"   Short volume: {len(short_vol)} rows, {short_vol['symbol'].nunique()} R2K symbols")
+    else:
+        print("   WARNING: No FINRA short volume data")
+
     # Build sector map (use cache if available)
     import json
     sector_map = {}
@@ -493,7 +537,7 @@ def main():
             sector_map = json.load(f)
 
     # Build universe
-    uni = R2KUniverse(features, prices, universe, sector_map)
+    uni = R2KUniverse(features, prices, universe, sector_map, short_vol)
 
     # ── IN-SAMPLE ──
     print("\n" + "=" * 80)
