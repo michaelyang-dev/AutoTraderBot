@@ -417,23 +417,10 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
         # Active in live only via signal_server_v9 feature fill
         pass  # insider signal handled via feature columns in live
 
-        # Transcript sentiment boost (only fires with live data, not backtest)
-        sent = uni._sentiment.get(sym)
-        if sent is not None and not np.isnan(sent):
-            if sent > 0.3:
-                score *= 1.05
-            elif sent < -0.2:
-                score *= 0.95
-
-        # Options put/call ratio — contrarian signal (only fires with live data)
-        opt = uni._options.get(sym)
-        if opt and opt.get("pc_ratio") is not None:
-            pcr = opt["pc_ratio"]
-            if not np.isnan(pcr):
-                if pcr > 1.2:
-                    score *= 1.08
-                elif pcr < 0.4:
-                    score *= 0.92
+        # Transcript sentiment and options put/call ratio: REMOVED
+        # These were live-only signals with no backtest validation.
+        # Keeping the strategy to only backtested signals reduces noise risk.
+        # Data is still collected daily for future validation.
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
