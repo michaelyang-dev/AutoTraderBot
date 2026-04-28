@@ -44,12 +44,27 @@ def log(msg):
     print(msg, flush=True)
 
 
-def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4):
-    """Run the strategy exactly as implemented in multi_strategy_engine."""
+def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4, open_prices=None):
+    """Run the strategy exactly as implemented in multi_strategy_engine.
+
+    Args:
+        open_prices: DataFrame with open prices. When provided, new buys
+                     use next-day open (eliminates same-bar execution bias).
+    """
     trading_dates = [d for d in sorted(uni.prices.index)
                      if pd.Timestamp(start) <= d <= pd.Timestamp(end)]
     if not trading_dates:
         return None
+
+    # Next-day-open execution setup
+    _next_date = {}
+    for idx in range(len(trading_dates) - 1):
+        _next_date[idx] = trading_dates[idx + 1]
+    _open_lookup = {}
+    if open_prices is not None:
+        dates_in_open = open_prices.index.intersection(trading_dates)
+        if len(dates_in_open) > 0:
+            _open_lookup = open_prices.loc[dates_in_open].to_dict(orient="index")
 
     cost_frac = COST_BPS / 10000
     cash = INITIAL_CASH
@@ -146,6 +161,9 @@ def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4):
                 trade_count += 1
                 del holdings[sym]
 
+        next_d = _next_date.get(day_idx)
+        next_open = _open_lookup.get(next_d, {}) if next_d else {}
+
         for sym, tgt in target_d.items():
             px = today_prices.get(sym)
             if not px or px <= 0: continue
@@ -155,9 +173,16 @@ def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4):
             cost = abs(delta) * cost_frac
             trade_count += 1
             if delta > 0 and cash >= delta:
-                shares = (delta - cost) / px
+                # Next-day open for new buys (same-bar execution fix)
+                if sym not in holdings and next_open:
+                    buy_px = next_open.get(sym, px)
+                    if buy_px is None or np.isnan(buy_px) or buy_px <= 0:
+                        buy_px = px
+                else:
+                    buy_px = px
+                shares = (delta - cost) / buy_px
                 if sym in holdings: holdings[sym]["shares"] += shares
-                else: holdings[sym] = {"shares": shares, "entry_px": px}
+                else: holdings[sym] = {"shares": shares, "entry_px": buy_px}
                 cash -= delta
             elif delta < 0 and sym in holdings:
                 sell = min(abs(delta) / px, holdings[sym]["shares"])
@@ -214,6 +239,12 @@ def main():
     prices = pd.DataFrame(close_frames)
     prices.index = pd.to_datetime(prices.index)
 
+    # Build open prices for next-day-open execution (eliminates same-bar bias)
+    open_frames = {sym: df["open"] for sym, df in bars.items() if len(df) > 0 and "open" in df.columns}
+    open_prices = pd.DataFrame(open_frames)
+    open_prices.index = pd.to_datetime(open_prices.index)
+    log(f"  Open prices loaded: {len(open_prices)} dates")
+
     with open(DATA_DIR / "cache_sectors.json") as f:
         sector_map = json.load(f)
     with open(DATA_DIR / "sp500_changes.json") as f:
@@ -262,7 +293,7 @@ def main():
     log("  Strategy parameters were tuned during this period.")
     log("=" * 80)
 
-    is_full = run_backtest(uni, "2018-01-01", "2021-12-31")
+    is_full = run_backtest(uni, "2018-01-01", "2021-12-31", open_prices=open_prices)
     if is_full:
         log(f"\n  In-sample full period:")
         log(f"    CAGR:   {is_full['cagr']:+.1%}")
@@ -272,7 +303,7 @@ def main():
 
     log("\n  In-sample per year:")
     for year in range(2018, 2022):
-        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31")
+        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31", open_prices=open_prices)
         if m:
             log(f"    {year}: CAGR={m['cagr']:+.1%}  Sharpe={m['sharpe']:.2f}  "
                 f"DD={m['max_dd']:.1%}  Alpha={m['alpha']:+.1%}")
@@ -283,7 +314,7 @@ def main():
     log("  NO parameter changes allowed. Exact same code as in-sample.")
     log("=" * 80)
 
-    oos_full = run_backtest(uni, "2022-01-01", "2025-12-31")
+    oos_full = run_backtest(uni, "2022-01-01", "2025-12-31", open_prices=open_prices)
     if oos_full:
         log(f"\n  Out-of-sample full period:")
         log(f"    CAGR:    {oos_full['cagr']:+.1%}")
@@ -298,7 +329,7 @@ def main():
     log("\n  Out-of-sample per year:")
     oos_yearly = []
     for year in range(2022, 2026):
-        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31")
+        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31", open_prices=open_prices)
         if m:
             m["year"] = year
             oos_yearly.append(m)
@@ -343,7 +374,8 @@ def main():
             log(f"\n  ML model loaded: {ml_ranker.model.num_trees()} trees")
 
             oos_ml = run_backtest(uni, "2022-01-01", "2025-12-31",
-                                  ml_ranker=ml_ranker, ml_blend_weight=0.4)
+                                  ml_ranker=ml_ranker, ml_blend_weight=0.4,
+                                  open_prices=open_prices)
             if oos_ml and oos_full:
                 log(f"\n  Factor-Only:  CAGR={oos_full['cagr']:+.1%}  Sharpe={oos_full['sharpe']:.2f}  DD={oos_full['max_dd']:.1%}  Alpha={oos_full['alpha']:+.1%}")
                 log(f"  ML Blend:     CAGR={oos_ml['cagr']:+.1%}  Sharpe={oos_ml['sharpe']:.2f}  DD={oos_ml['max_dd']:.1%}  Alpha={oos_ml['alpha']:+.1%}")
@@ -354,7 +386,8 @@ def main():
             log("\n  ML Blend per year:")
             for year in range(2022, 2026):
                 m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31",
-                                 ml_ranker=ml_ranker, ml_blend_weight=0.4)
+                                 ml_ranker=ml_ranker, ml_blend_weight=0.4,
+                                 open_prices=open_prices)
                 if m:
                     log(f"    {year}: CAGR={m['cagr']:+.1%}  Sharpe={m['sharpe']:.2f}  "
                         f"DD={m['max_dd']:.1%}  Alpha={m['alpha']:+.1%}")

@@ -191,10 +191,11 @@ def _fill_fundamentals(features, data_dir):
     # Ratios: pe_ratio, ps_ratio, debt_to_equity, current_ratio
     if ratios_file.exists():
         ratios = pd.read_parquet(ratios_file)
-        if "date" in ratios.columns:
-            ratios["date"] = pd.to_datetime(ratios["date"])
-        # Get latest row per symbol
-        ratios_latest = ratios.sort_values("date").groupby("symbol").last()
+        # Use filing_date if available (point-in-time safe), else fall back to date
+        rat_date_col = "filing_date" if "filing_date" in ratios.columns else "date"
+        if rat_date_col in ratios.columns:
+            ratios[rat_date_col] = pd.to_datetime(ratios[rat_date_col])
+        ratios_latest = ratios.sort_values(rat_date_col).groupby("symbol").last()
         for col in ["pe_ratio", "ps_ratio", "debt_to_equity", "current_ratio"]:
             if col in ratios_latest.columns:
                 sym_vals = ratios_latest[col].to_dict()
@@ -221,9 +222,11 @@ def _fill_fundamentals(features, data_dir):
     # Metrics: roe, roa
     if metrics_file.exists():
         metrics = pd.read_parquet(metrics_file)
-        if "date" in metrics.columns:
-            metrics["date"] = pd.to_datetime(metrics["date"])
-        latest = metrics.sort_values("date").groupby("symbol").last()
+        # Use filing_date if available (point-in-time safe)
+        met_date_col = "filing_date" if "filing_date" in metrics.columns else "date"
+        if met_date_col in metrics.columns:
+            metrics[met_date_col] = pd.to_datetime(metrics[met_date_col])
+        latest = metrics.sort_values(met_date_col).groupby("symbol").last()
         for col in ["roe", "roa"]:
             if col in latest.columns:
                 sym_vals = latest[col].to_dict()
