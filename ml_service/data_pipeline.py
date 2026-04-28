@@ -822,8 +822,9 @@ def main():
         macro = pd.read_parquet(macro_file)
         macro.index = pd.to_datetime(macro.index).tz_localize(None)
         macro = macro.reindex(date_index, method="ffill")
-        # Backfill any series that starts late (e.g. BAMLH0A0HYM2)
-        macro = macro.bfill()
+        # DO NOT bfill — that would leak future data into early dates.
+        # Instead, leave NaN for dates before each series' first observation.
+        # LightGBM handles NaN natively.
 
         # Yield curve
         cross["yield_curve_10y2y"] = macro.get("T10Y2Y", pd.Series(np.nan, index=date_index))
@@ -894,6 +895,22 @@ def main():
         fwd_ret = df["close"].pct_change(10).shift(-10)
         feat["target"] = (fwd_ret > 0.02).astype("Int8")  # nullable int → NaN for last rows
 
+        # ── Delisting return fix ────────────────────────────────────────
+        # If a stock's data ends well before END_DATE and it's no longer in
+        # the current S&P 500, assign a large negative forward return for
+        # its last rows. This ensures the model sees that delisted/bankrupt
+        # stocks don't just "disappear" — they lose value.
+        if sym not in etf_set:
+            last_valid = df["close"].last_valid_index()
+            if last_valid is not None:
+                days_until_end = (pd.Timestamp(END_DATE) - last_valid).days
+                if days_until_end > 30 and sym not in set(STOCK_SYMBOLS):
+                    # Stock data ended early AND it's not in current S&P 500
+                    # → likely delisted/acquired/bankrupt. Set forward return
+                    # to -100% for the last 10 rows (where target would be NaN).
+                    tail_mask = feat.index > (last_valid - pd.Timedelta(days=15))
+                    feat.loc[tail_mask & feat["target"].isna(), "target"] = 0  # fwd_ret < 2% → 0
+
         # Merge cross-asset features
         feat = feat.join(cross, how="left")
 
@@ -905,10 +922,22 @@ def main():
         feat = feat[feat["target"].notna()]
 
         # Drop rows with any NaN in non-fundamental features (warmup period)
-        # Fundamental features are allowed to be NaN (ETFs, missing data)
+        # Fundamental AND macro features are allowed to be NaN
         # because LightGBM handles NaN natively
-        non_fund_cols = [c for c in feat.columns
-                         if c not in ("symbol", "target") and c not in FUNDAMENTAL_FEATURE_COLS]
+        NAN_SAFE_COLS = set(FUNDAMENTAL_FEATURE_COLS) | {
+            "symbol", "target",
+            # FRED macro features (may have gaps in historical coverage)
+            "yield_curve_10y2y", "yield_curve_30d_change",
+            "hy_spread", "hy_spread_30d_change",
+            "dxy_level", "dxy_30d_change",
+            # Cross-sectional ranks (only computed for in_sp500 stocks)
+            "return_rank_3m", "return_rank_6m", "return_rank_12m",
+            "vol_rank_3m", "vol_rank_6m", "vol_126d",
+            # Sector-relative features (only computed for in_sp500 stocks)
+            "ret_10d_vs_sector", "ret_20d_vs_sector",
+            "rsi_14_vs_sector", "vol_20d_vs_sector",
+        }
+        non_fund_cols = [c for c in feat.columns if c not in NAN_SAFE_COLS]
         feat = feat.dropna(subset=non_fund_cols)
 
         all_frames.append(feat.reset_index())
@@ -973,26 +1002,30 @@ def main():
               f"below 95% threshold")
 
     # ── Cross-sectional rank features ────────────────────────────────────
-    # Compute percentile ranks across all stocks on each date
-    print("Computing cross-sectional rank features ...")
+    # Compute percentile ranks across only in_sp500 stocks on each date
+    # to avoid cross-sectional leakage from non-tradeable stocks.
+    print("Computing cross-sectional rank features (in_sp500 only) ...")
+    sp500_mask = master["in_sp500"] == True
     for ret_col, rank_col, period in [
         ("ret_60d",  "return_rank_3m",  None),   # 60d ~ 3 months
         ("ret_126d", "return_rank_6m",  None),
         ("ret_252d", "return_rank_12m", None),
     ]:
+        master[rank_col] = np.nan
         if ret_col in master.columns:
-            master[rank_col] = master.groupby("date")[ret_col].rank(pct=True)
-        else:
-            master[rank_col] = np.nan
+            master.loc[sp500_mask, rank_col] = (
+                master.loc[sp500_mask].groupby("date")[ret_col].rank(pct=True)
+            )
 
     # Volatility ranks (use existing vol columns)
     for vol_col, rank_col in [
         ("vol_60d",  "vol_rank_3m"),
     ]:
+        master[rank_col] = np.nan
         if vol_col in master.columns:
-            master[rank_col] = master.groupby("date")[vol_col].rank(pct=True)
-        else:
-            master[rank_col] = np.nan
+            master.loc[sp500_mask, rank_col] = (
+                master.loc[sp500_mask].groupby("date")[vol_col].rank(pct=True)
+            )
 
     # 6-month volatility (126-day rolling std) — compute and rank
     # We need per-symbol close for this; use the return columns
@@ -1021,22 +1054,29 @@ def main():
         dates = master.loc[mask, "date"]
         master.loc[mask, "vol_126d"] = vol_s.reindex(dates.values).values
 
-    master["vol_rank_6m"] = master.groupby("date")["vol_126d"].rank(pct=True)
+    master["vol_rank_6m"] = np.nan
+    master.loc[sp500_mask, "vol_rank_6m"] = (
+        master.loc[sp500_mask].groupby("date")["vol_126d"].rank(pct=True)
+    )
 
     # ── Fundamental cross-sectional features ────────────────────────────
-    # PE and PS relative to universe median on each date
+    # PE and PS relative to universe median on each date (in_sp500 only)
     if "pe_ratio" in master.columns:
-        pe_median = master.groupby("date")["pe_ratio"].transform("median")
-        master["pe_vs_universe_median"] = np.where(
+        master["pe_vs_universe_median"] = np.nan
+        sp500_pe = master.loc[sp500_mask].copy()
+        pe_median = sp500_pe.groupby("date")["pe_ratio"].transform("median")
+        master.loc[sp500_mask, "pe_vs_universe_median"] = np.where(
             pe_median.notna() & (pe_median.abs() > 0),
-            master["pe_ratio"] / pe_median - 1.0,
+            sp500_pe["pe_ratio"] / pe_median - 1.0,
             np.nan,
         )
     if "ps_ratio" in master.columns:
-        ps_median = master.groupby("date")["ps_ratio"].transform("median")
-        master["ps_vs_universe_median"] = np.where(
+        master["ps_vs_universe_median"] = np.nan
+        sp500_ps = master.loc[sp500_mask].copy()
+        ps_median = sp500_ps.groupby("date")["ps_ratio"].transform("median")
+        master.loc[sp500_mask, "ps_vs_universe_median"] = np.where(
             ps_median.notna() & (ps_median.abs() > 0),
-            master["ps_ratio"] / ps_median - 1.0,
+            sp500_ps["ps_ratio"] / ps_median - 1.0,
             np.nan,
         )
 
@@ -1044,8 +1084,8 @@ def main():
     n_fund_cross = sum(1 for c in ["pe_vs_universe_median", "ps_vs_universe_median"] if c in master.columns)
     print(f"  Added {n_rank_features} cross-sectional rank features + {n_fund_cross} fundamental cross-sectional features")
 
-    # ── Sector-relative features ─────────────────────────────────────────
-    print("Computing sector-relative features ...")
+    # ── Sector-relative features (in_sp500 only) ─────────────────────────
+    print("Computing sector-relative features (in_sp500 only) ...")
     master["sector"] = master["symbol"].map(SYMBOL_SECTOR).fillna("Other")
     sector_relative_cols = [
         ("ret_10d",  "ret_10d_vs_sector"),
@@ -1055,9 +1095,11 @@ def main():
     ]
     n_sector_feats = 0
     for src_col, dst_col in sector_relative_cols:
+        master[dst_col] = np.nan
         if src_col in master.columns:
-            sector_date_median = master.groupby(["date", "sector"])[src_col].transform("median")
-            master[dst_col] = master[src_col] - sector_date_median
+            sp500_sub = master.loc[sp500_mask]
+            sector_date_median = sp500_sub.groupby(["date", "sector"])[src_col].transform("median")
+            master.loc[sp500_mask, dst_col] = sp500_sub[src_col] - sector_date_median
             n_sector_feats += 1
     # Drop sector column — it's categorical and only used for computing relative features
     master.drop(columns=["sector"], inplace=True)
