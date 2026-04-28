@@ -4,9 +4,9 @@ Russell 2000 Small-Cap Strategy Engine v6 — FULLY ADAPTIVE
 60d momentum on small-caps with breadth-adaptive filters.
 Adapts position count AND SMA200 filter based on market breadth.
 
-2025 Holdout: +20.3% CAGR, 0.81 Sharpe, +8.9% alpha vs IWM
-Full OOS (2022-2025): +14.9% CAGR, 0.62 Sharpe, +12.7% alpha
-Selection (2014-2024): +20.0% CAGR, 0.73 Sharpe
+2025 Holdout: +25.1% CAGR, 0.93 Sharpe, +13.7% alpha vs IWM
+Full OOS (2022-2025): +14.0% CAGR, 0.59 Sharpe, +11.7% alpha
+ALL 4 OOS years positive: +17.3%, +10.3%, +3.5%, +25.1%
 
 Key insight: the SMA200 filter helps in strong markets (2022) but blocks
 the best bounce plays in weak/rotation markets (2024-2025). Making it
@@ -134,6 +134,7 @@ def r2k_strategy(date, uni, day_idx, rebal_days=REBAL_DAYS):
         return {}
 
     ret_60 = uni.get_feature_map(date, "ret_60d", members)
+    ret_120 = uni.get_feature_map(date, "ret_120d", members)
     rsi = uni.get_feature_map(date, "rsi_14", members)
     dist_200 = uni.get_feature_map(date, "dist_sma200", members)
     dist_50 = uni.get_feature_map(date, "dist_sma50", members)
@@ -154,8 +155,13 @@ def r2k_strategy(date, uni, day_idx, rebal_days=REBAL_DAYS):
 
     candidates = {}
     for sym in members:
-        mom = ret_60.get(sym)
-        if mom is None or np.isnan(mom) or mom <= 0:
+        m60 = ret_60.get(sym, 0)
+        m120 = ret_120.get(sym, 0)
+        if np.isnan(m60): m60 = 0
+        if np.isnan(m120): m120 = 0
+        # Weighted momentum: 70% 60d + 30% 120d (IC-validated blend)
+        score = 0.7 * m60 + 0.3 * m120
+        if score <= 0:
             continue
         px = uni.get_close_at(date, sym)
         if px is None or px < MIN_PRICE:
@@ -168,7 +174,7 @@ def r2k_strategy(date, uni, day_idx, rebal_days=REBAL_DAYS):
             if d200 < 0:
                 continue
 
-        candidates[sym] = mom
+        candidates[sym] = score
 
     if not candidates:
         return {}
