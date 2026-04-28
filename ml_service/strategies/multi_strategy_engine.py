@@ -218,6 +218,18 @@ class FastUniverse:
                             "atm_iv": row.get("atm_iv"),
                         }
 
+            # Ortex short interest (overrides/supplements _options dict)
+            ortex_si = enhanced_data.get("ortex_si")
+            if ortex_si is not None and len(ortex_si) > 0:
+                for _, row in ortex_si.iterrows():
+                    sym = row.get("ticker")
+                    if sym:
+                        if sym not in self._options:
+                            self._options[sym] = {}
+                        self._options[sym]["si_pct_float"] = row.get("siPctFreeFloat")
+                        self._options[sym]["short_score"] = row.get("shortScore")
+                        self._options[sym]["si_shares"] = row.get("siShares")
+
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
             f"{len(self._ml_preds)} ML prediction dates, "
             f"{len(self._price_targets)} price targets, {len(self._dcf)} DCF values")
@@ -417,10 +429,16 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
         # Active in live only via signal_server_v9 feature fill
         pass  # insider signal handled via feature columns in live
 
-        # Transcript sentiment and options put/call ratio: REMOVED
-        # These were live-only signals with no backtest validation.
-        # Keeping the strategy to only backtested signals reduces noise risk.
-        # Data is still collected daily for future validation.
+        # Ortex Short Interest signal (live only — no historical backtest data)
+        # Academic research strongly supports: low SI = clean momentum, high SI = crash risk
+        # This is the most economically justified live-only signal we have
+        ortex = uni._options.get(sym)  # reusing _options dict for Ortex data
+        if ortex and ortex.get("si_pct_float") is not None:
+            si = ortex["si_pct_float"]
+            if si < 2.0:
+                score *= 1.10  # very low SI — shorts not betting against, clean momentum
+            elif si > 10.0:
+                score *= 0.80  # heavily shorted — significant crash risk, penalize hard
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)

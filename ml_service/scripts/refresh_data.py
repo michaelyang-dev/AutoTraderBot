@@ -109,6 +109,55 @@ def refresh_options():
         return False
 
 
+def refresh_ortex():
+    """Refresh Ortex short interest data (bulk SP500)."""
+    log("Refreshing Ortex short interest...")
+    t0 = time.time()
+    try:
+        import requests
+        import urllib.parse
+        import pandas as pd
+        from pathlib import Path
+
+        ORTEX_KEY = os.environ.get("ORTEX_API_KEY", "")
+        if not ORTEX_KEY:
+            log("  ORTEX_API_KEY not set — skipping")
+            return False
+
+        base = "https://api.ortex.com/api/v1"
+        headers = {"Ortex-Api-Key": ORTEX_KEY, "accept": "application/json"}
+        DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "enhanced_data"
+
+        for endpoint, filename in [
+            ("short_interest", "ortex_short_interest.parquet"),
+            ("short_dtc", "ortex_short_dtc.parquet"),
+            ("short_ctb", "ortex_short_ctb.parquet"),
+            ("short_availability", "ortex_short_availability.parquet"),
+        ]:
+            all_rows = []
+            url = f"{base}/index/{endpoint}?format=json&index={urllib.parse.quote('US-S 500')}"
+            while url:
+                r = requests.get(url, headers=headers, timeout=30)
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                all_rows.extend(data.get("rows", []))
+                nxt = data.get("paginationLinks", {}).get("next")
+                url = nxt if nxt and nxt.startswith("http") else None
+                time.sleep(0.3)
+
+            if all_rows:
+                df = pd.DataFrame(all_rows)
+                df.to_parquet(DATA_DIR / filename, index=False)
+                log(f"  {endpoint}: {len(df)} stocks")
+
+        log(f"Ortex refreshed in {time.time() - t0:.0f}s")
+        return True
+    except Exception as e:
+        log(f"ERROR refreshing Ortex: {e}")
+        return False
+
+
 def restart_ml_server():
     """Restart ml-server via PM2 to pick up fresh data."""
     log("Restarting ml-server to load fresh data...")
@@ -134,12 +183,13 @@ def main():
     ok2 = refresh_vix_cache()
     ok3 = refresh_fundamentals()
     ok4 = refresh_options()
+    ok5 = refresh_ortex()
 
-    if ok1 or ok2 or ok3 or ok4:
+    if ok1 or ok2 or ok3 or ok4 or ok5:
         restart_ml_server()
 
-    status = "OK" if (ok1 and ok2 and ok3 and ok4) else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4})")
+    status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5) else "PARTIAL"
+    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5})")
 
     status = "OK" if (ok1 and ok2 and ok3) else "PARTIAL"
     log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3})")
