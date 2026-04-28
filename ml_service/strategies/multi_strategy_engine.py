@@ -346,7 +346,6 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
     gross_m = uni.get_feature_map(date, "gross_margin", members)
     dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
     eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
-    ret_vs_sector = uni.get_feature_map(date, "ret_10d_vs_sector", members)
 
     composite = {}
     for sym in members:
@@ -393,20 +392,15 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
                 if dcf_upside > 0.20:  # >20% undervalued by DCF
                     score *= 1.10
 
-        # Sector-relative strength boost
-        rs = ret_vs_sector.get(sym)
-        if rs is not None and not np.isnan(rs) and rs > 0.02:
-            score *= 1.08  # outperforming own sector
-
-        # Revenue/earnings acceleration (from FMP financial growth)
+        # Revenue/earnings acceleration (IC +0.017 and +0.016 — strongest fundamental signals)
         fg = uni._fin_growth.get(sym)
         if fg:
             rg = fg.get("rev_growth")
             eg = fg.get("eps_growth")
-            if rg is not None and not np.isnan(rg) and rg > 0.10:
-                score *= 1.05  # growing revenue >10%
-            if eg is not None and not np.isnan(eg) and eg > 0.15:
-                score *= 1.05  # growing EPS >15%
+            if rg is not None and not np.isnan(rg) and rg > 0.08:
+                score *= 1.10  # growing revenue >8%
+            if eg is not None and not np.isnan(eg) and eg > 0.10:
+                score *= 1.10  # growing EPS >10%
 
         # Leverage penalty: highly leveraged companies blow up in bear markets
         dte_val = uni.get_feature_map(date, "debt_to_equity").get(sym)
@@ -708,13 +702,32 @@ VIX_EXTREME = 40
 
 
 def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
-                 ml_ranker=None, ml_blend_weight=0.4):
+                 ml_ranker=None, ml_blend_weight=0.4, open_prices=None):
+    """
+    Run multi-strategy backtest.
+
+    Args:
+        open_prices: DataFrame with open prices (columns=symbols, index=dates).
+                     When provided, new buys use next-day open instead of
+                     same-day close (eliminates same-bar execution bias).
+    """
     trading_dates = sorted(uni.prices.index)
     trading_dates = [d for d in trading_dates
                      if pd.Timestamp(start_date) <= d <= pd.Timestamp(end_date)]
 
     if not trading_dates:
         return {"cagr": 0, "sharpe": 0, "max_dd": 0}
+
+    # Pre-build next-date map and open price lookup for next-day-open execution
+    _next_date = {}
+    for idx in range(len(trading_dates) - 1):
+        _next_date[idx] = trading_dates[idx + 1]
+
+    _open_lookup = {}
+    if open_prices is not None:
+        dates_in_open = open_prices.index.intersection(trading_dates)
+        if len(dates_in_open) > 0:
+            _open_lookup = open_prices.loc[dates_in_open].to_dict(orient="index")
 
     cost_frac = COST_BPS / 10_000
     cash = INITIAL_CASH
@@ -882,7 +895,12 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
                 trade_count += 1
                 del holdings[sym]
 
-        # Adjust existing and buy new
+        # Adjust existing and buy new.
+        # For NEW buys, use next-day open if available (avoids same-bar
+        # execution bias). Sells and size adjustments use today's close.
+        next_d = _next_date.get(day_idx)
+        next_open = _open_lookup.get(next_d, {}) if next_d else {}
+
         for sym, target_val in target_dollars.items():
             px = today_prices.get(sym)
             if px is None or px <= 0:
@@ -895,11 +913,18 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
             total_costs += cost
             trade_count += 1
             if delta > 0 and cash >= delta:
-                new_shares = (delta - cost) / px
+                # Use next-day open for new buys if available
+                if sym not in holdings and next_open:
+                    buy_px = next_open.get(sym, px)
+                    if buy_px is None or np.isnan(buy_px) or buy_px <= 0:
+                        buy_px = px
+                else:
+                    buy_px = px
+                new_shares = (delta - cost) / buy_px
                 if sym in holdings:
                     holdings[sym]["shares"] += new_shares
                 else:
-                    holdings[sym] = {"shares": new_shares, "entry_px": px}
+                    holdings[sym] = {"shares": new_shares, "entry_px": buy_px}
                 cash -= delta
             elif delta < 0 and sym in holdings:
                 sell_shares = min(abs(delta) / px, holdings[sym]["shares"])
@@ -965,6 +990,11 @@ def main():
     prices = pd.DataFrame(close_frames)
     prices.index = pd.to_datetime(prices.index)
 
+    # Build open prices for next-day-open execution (Fix 1: same-bar bias)
+    open_frames = {sym: df["open"] for sym, df in bars.items() if len(df) > 0}
+    open_prices = pd.DataFrame(open_frames)
+    open_prices.index = pd.to_datetime(open_prices.index)
+
     sector_file = DATA_DIR / "cache_sectors.json"
     with open(sector_file) as f:
         sector_map = json.load(f)
@@ -1020,7 +1050,7 @@ def main():
 
     # Full period
     log("\n2. Running full-period backtest (2022-2025) ...")
-    full = run_backtest(uni, "2022-01-01", "2025-12-31")
+    full = run_backtest(uni, "2022-01-01", "2025-12-31", open_prices=open_prices)
 
     log(f"\n{'='*80}")
     log("  FULL PERIOD RESULTS")
@@ -1041,7 +1071,7 @@ def main():
 
     yearly = []
     for year in range(2022, 2026):
-        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31")
+        m = run_backtest(uni, f"{year}-01-01", f"{year}-12-31", open_prices=open_prices)
         m["year"] = year
         yearly.append(m)
         alpha = m["cagr"] - m["spy_cagr"]
