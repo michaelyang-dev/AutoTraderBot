@@ -25,7 +25,15 @@ FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 # ── Universe (loaded from sp500_universe module) ─────────────────────────────
 from sp500_universe import get_stock_symbols, get_etf_symbols, get_full_universe, get_cross_asset, get_all_symbols
 from sp500_history import get_sp500_on_date, load_sp500_changes
-from unified_backtester import SYMBOL_SECTOR
+
+# Sector map for sector-relative features (loaded from cache_sectors.json)
+import json as _json
+_sector_path = Path(__file__).resolve().parent / "data" / "cache_sectors.json"
+if _sector_path.exists():
+    with open(_sector_path) as _f:
+        SYMBOL_SECTOR = _json.load(_f)
+else:
+    SYMBOL_SECTOR = {}
 
 STOCK_SYMBOLS = get_stock_symbols()
 UNIVERSE = get_full_universe()
