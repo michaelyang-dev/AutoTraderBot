@@ -179,7 +179,6 @@ def refresh_snapshot_history():
     log("Accumulating daily snapshot history (scores, grades)...")
     t0 = time.time()
     try:
-        import requests
         import pandas as pd
         from pathlib import Path
 

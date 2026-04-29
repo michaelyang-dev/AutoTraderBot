@@ -120,7 +120,7 @@ class FastUniverse:
         self._estimates = {}      # {symbol: {eps_avg, revenue_avg}}
         self._options = {}        # {symbol: {pc_ratio, atm_iv}}
         self._short_ratio = {}    # {date: {symbol: short_ratio_20d}} from FINRA/Massive
-        # New v9.7 data
+        # Additional signal data
         self._revenue_surprise = {} # {symbol: last revenue surprise ratio}
         self._beat_streak = {}      # {symbol: consecutive earnings beats}
         self._piotroski = {}        # {symbol: piotroski_score}
@@ -223,8 +223,9 @@ class FastUniverse:
                     sym = row.get("symbol")
                     if sym:
                         self._options[sym] = {
-                            "pc_ratio": row.get("pc_ratio"),
-                            "atm_iv": row.get("atm_iv"),
+                            "pc_ratio": row.get("pc_ratio") or row.get("pc_vol_ratio"),
+                            "pc_oi_ratio": row.get("pc_oi_ratio"),
+                            "atm_iv": row.get("atm_iv") or row.get("avg_implied_vol"),
                         }
 
             # Ortex short interest (overrides/supplements _options dict)
@@ -302,17 +303,21 @@ class FastUniverse:
                 ))
 
             # For each trading date, find latest available signal per stock
+            # Use bisect for O(log N) lookup instead of O(N) linear scan
+            import bisect
+            # Pre-convert avail_dates to sorted Timestamps per symbol
+            sym_avail_ts = {}
+            for sym, entries in latest_by_sym.items():
+                sym_avail_ts[sym] = [pd.Timestamp(e[0]) for e in entries]
+
             for td in trading_dates:
                 td_ts = pd.Timestamp(td)
                 signals = {}
                 for sym, entries in latest_by_sym.items():
-                    # Find most recent entry before td
-                    best = None
-                    for avail, rs, bs in entries:
-                        if pd.Timestamp(avail) <= td_ts:
-                            best = (rs, bs)
-                    if best:
-                        signals[sym] = {"rev_surprise": best[0], "beat_streak": int(best[1])}
+                    idx = bisect.bisect_right(sym_avail_ts[sym], td_ts) - 1
+                    if idx >= 0:
+                        _, rs, bs = entries[idx]
+                        signals[sym] = {"rev_surprise": rs, "beat_streak": int(bs)}
                 if signals:
                     self._earnings_signals[td] = signals
 
@@ -353,16 +358,6 @@ class FastUniverse:
                             "strongSell": row.get("strongSell", 0),
                             "consensus": row.get("consensus", ""),
                         }
-
-            # Load options snapshots (put/call ratio) — live-only
-            opt_snap = enhanced_data.get("options_snap")
-            if opt_snap is not None and len(opt_snap) > 0:
-                for _, row in opt_snap.iterrows():
-                    sym = row.get("symbol")
-                    if sym:
-                        pcr = row.get("pc_oi_ratio")
-                        if pcr is not None and not np.isnan(pcr):
-                            self._pc_ratio[sym] = pcr
 
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
             f"{len(self._ml_preds)} ML prediction dates, "
