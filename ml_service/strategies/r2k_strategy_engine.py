@@ -1,5 +1,5 @@
 """
-Russell 2000 Small-Cap Strategy Engine v6 — FULLY ADAPTIVE
+Russell 2000 Small-Cap Strategy Engine v8 — FULLY ADAPTIVE
 ===========================================================
 60d momentum on small-caps with breadth-adaptive filters.
 Adapts position count AND SMA200 filter based on market breadth.

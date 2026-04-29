@@ -336,7 +336,7 @@ module.exports = function mountGrafanaRoutes(app) {
     }
   });
 
-  // ── ML model health (proxy to signal server) ─────────────────────
+  // ── Signal server health (v9.6 factor strategy) ─────────────────
   app.get("/api/grafana/ml-health", async (req, res) => {
     try {
       const health = await fetchLocal(`${ML_SERVER}/health`);
