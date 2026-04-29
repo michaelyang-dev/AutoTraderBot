@@ -566,31 +566,10 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
             if bs >= 3:
                 score *= 1.05
 
-        # Piotroski Score — financial quality (live-only, snapshot)
-        pio = uni._piotroski.get(sym)
-        if pio is not None and not np.isnan(pio):
-            if pio >= 7:
-                score *= 1.05  # strong financial health
-            elif pio <= 3:
-                score *= 0.90  # weak financial health
-
-        # Analyst consensus — live-only, snapshot
-        ac = uni._analyst_consensus.get(sym)
-        if ac:
-            total = ac.get("strongBuy", 0) + ac.get("buy", 0) + ac.get("hold", 0) + ac.get("sell", 0) + ac.get("strongSell", 0)
-            if total >= 10:  # only trust consensus with enough analysts
-                if ac.get("consensus") == "strongBuy":
-                    score *= 1.05
-                elif ac.get("consensus") in ("sell", "strongSell"):
-                    score *= 0.90
-
-        # Put/call OI ratio — live-only, snapshot
-        pcr = uni._pc_ratio.get(sym)
-        if pcr is not None and not np.isnan(pcr):
-            if pcr < 0.5:
-                score *= 1.05  # bullish options positioning
-            elif pcr > 1.5:
-                score *= 0.92  # bearish options positioning
+        # Piotroski, analyst consensus, put/call ratio: DISABLED
+        # These are snapshot-only (no history) and cannot be backtested.
+        # Data is being collected daily — will enable once we have 6+ months of history.
+        # See: options_history.parquet, financial_scores.parquet, analyst_grades_consensus.parquet
 
         # Analyst target upside boost (from FMP price targets)
         pt = uni._price_targets.get(sym)

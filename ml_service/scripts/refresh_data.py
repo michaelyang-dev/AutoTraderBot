@@ -174,6 +174,49 @@ def restart_ml_server():
         log(f"ERROR restarting ml-server: {e}")
 
 
+def refresh_snapshot_history():
+    """Accumulate daily snapshots of financial scores and analyst grades for future backtesting."""
+    log("Accumulating daily snapshot history (scores, grades)...")
+    t0 = time.time()
+    try:
+        import requests
+        import pandas as pd
+        from pathlib import Path
+
+        FMP_KEY = os.environ.get("FMP_API_KEY", "")
+        DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "enhanced_data"
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        for endpoint, snapshot_file, history_file, symbol_col in [
+            ("financial-scores", "financial_scores.parquet", "financial_scores_history.parquet", "symbol"),
+            ("grades-consensus", "analyst_grades_consensus.parquet", "analyst_grades_history.parquet", "symbol"),
+        ]:
+            # Read current snapshot
+            snap_path = DATA_DIR / snapshot_file
+            if not snap_path.exists():
+                continue
+            df = pd.read_parquet(snap_path)
+            df["date"] = today
+
+            # Append to history
+            hist_path = DATA_DIR / history_file
+            if hist_path.exists():
+                try:
+                    existing = pd.read_parquet(hist_path)
+                    existing = existing[existing["date"] != today]  # remove today if re-running
+                    df = pd.concat([existing, df], ignore_index=True)
+                except Exception:
+                    pass
+            df.to_parquet(hist_path, index=False)
+            log(f"  {history_file}: {len(df)} total rows ({df['date'].nunique()} dates)")
+
+        log(f"Snapshot history updated in {time.time() - t0:.0f}s")
+        return True
+    except Exception as e:
+        log(f"ERROR updating snapshot history: {e}")
+        return False
+
+
 def main():
     log("=" * 60)
     log("  DAILY DATA REFRESH")
@@ -184,15 +227,13 @@ def main():
     ok3 = refresh_fundamentals()
     ok4 = refresh_options()
     ok5 = refresh_ortex()
+    ok6 = refresh_snapshot_history()
 
     if ok1 or ok2 or ok3 or ok4 or ok5:
         restart_ml_server()
 
-    status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5) else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5})")
-
-    status = "OK" if (ok1 and ok2 and ok3) else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3})")
+    status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5 and ok6) else "PARTIAL"
+    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5}, snapshots={ok6})")
 
 
 if __name__ == "__main__":
