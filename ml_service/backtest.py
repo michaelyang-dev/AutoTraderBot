@@ -37,7 +37,7 @@ from unified_backtester import (
     SLOT_ML_MOM_MR, SLOT_ML_MOM_MR_SLOW, SLOT_MCAP_ONLY, SLOT_ML_MOM_MR_MCAP,
     SLOT_TSMOM_ONLY, SLOT_ML_MOM_MCAP_TSMOM, SLOT_LIVE,
     SLOT_TREND_ONLY, SLOT_LIVE_TREND,
-    load_bars_cached, load_predictions_cached,
+    load_bars_cached, load_open_bars_cached, load_predictions_cached,
     INITIAL_CASH, DATA_DIR,
 )
 from backtest_utils import calc_metrics, calc_alpha_beta
@@ -159,6 +159,8 @@ def main():
                         help="Enable CAUTIOUS regime ML filter: only top 2 picks during CAUTIOUS (matches live)")
     parser.add_argument("--live", action="store_true",
                         help="Match live production config: --no-spy-parking + --cautious-filter + --momentum-regime-filter")
+    parser.add_argument("--oos-only", action="store_true",
+                        help="Exclude training/purge rows from predictions (true out-of-sample)")
     parser.add_argument("--export-logs", default=None, metavar="DIR",
                         help="Export equity_curve.parquet and trade_log.parquet to DIR")
     args = parser.parse_args()
@@ -191,6 +193,15 @@ def main():
     else:
         log("Loading predictions ...")
         preds = load_predictions_cached(no_cache=no_cache, validation=args.validation)
+    # Filter to out-of-sample rows only (exclude training data the model saw)
+    if args.oos_only and "split" in preds.columns:
+        before = len(preds)
+        preds = preds[preds["split"].isin(["calib", "oos"])]
+        log(f"  --oos-only: {before:,} → {len(preds):,} rows (excluded train/purge)")
+    elif args.oos_only:
+        log("  WARNING: --oos-only requested but predictions.parquet has no 'split' column. "
+            "Re-run train_production_model.py to generate it.")
+
     all_dates = sorted(preds["date"].unique().tolist())
     universe_syms = sorted(preds["symbol"].unique().tolist())
 
@@ -224,15 +235,21 @@ def main():
     log("Fetching price bars ...")
     close = load_bars_cached(universe_syms, start_str, end_str, no_cache=no_cache)
 
+    log("Fetching open prices (next-day-open execution) ...")
+    open_prices = load_open_bars_cached(universe_syms, start_str, end_str, no_cache=no_cache)
+
     sim_index = pd.DatetimeIndex([pd.Timestamp(d) for d in all_dates])
     close = close.reindex(sim_index, method="ffill")
+    open_prices = open_prices.reindex(sim_index, method="ffill")
 
     spy_px = close["SPY"].dropna()
     if spy_px.empty:
         # Cache may be stale or corrupt — retry without cache
         log("SPY data missing after reindex — retrying without cache ...")
         close = load_bars_cached(universe_syms, start_str, end_str, no_cache=True)
+        open_prices = load_open_bars_cached(universe_syms, start_str, end_str, no_cache=True)
         close = close.reindex(sim_index, method="ffill")
+        open_prices = open_prices.reindex(sim_index, method="ffill")
         spy_px = close["SPY"].dropna()
         if spy_px.empty:
             sys.exit("ERROR: No SPY price data available for the requested date range.")
@@ -293,7 +310,7 @@ def main():
     pm = PortfolioManager(strategies=strategies, slot_config=slot_config)
     do_detail = args.export_logs is not None
     result = pm.run(all_dates, spy_prices=spy_prices_arg, price_data=price_data,
-                    detail_log=do_detail)
+                    detail_log=do_detail, open_data=open_prices)
     if do_detail:
         vals, trades, equity_df, trade_log_df = result
     else:

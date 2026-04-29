@@ -44,7 +44,8 @@ def log(msg):
     print(msg, flush=True)
 
 
-def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4, open_prices=None):
+def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4, open_prices=None,
+                 si_blend_weight=0.15, s1_top_n=8, s1_rebal_days=10):
     """Run the strategy exactly as implemented in multi_strategy_engine.
 
     Args:
@@ -89,7 +90,9 @@ def run_backtest(uni, start, end, ml_ranker=None, ml_blend_weight=0.4, open_pric
         vix = regime.get("vix", 20)
 
         t1 = strategy1_momentum_reversal(date, uni, day_idx,
-                                         ml_ranker=ml_ranker, ml_blend_weight=ml_blend_weight)
+                                         top_n=s1_top_n, rebal_days=s1_rebal_days,
+                                         ml_ranker=ml_ranker, ml_blend_weight=ml_blend_weight,
+                                         si_blend_weight=si_blend_weight)
         t3 = strategy3_sector_rotation(date, uni, day_idx)
         t4 = strategy4_index_inclusion(date, uni, day_idx, s4_active)
         t5 = strategy5_lowvol_quality(date, uni, day_idx)

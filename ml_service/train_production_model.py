@@ -329,6 +329,15 @@ def train_production_model():
         X_train_sect_imp, y_train, X_calib_sect_imp, y_calib,
         train_groups, calib_groups, train_qids, calib_qids, "Sector")
 
+    # ── Mark train/calib/oos split for each row ──
+    # This lets the backtest exclude training rows for honest OOS metrics.
+    df["split"] = "oos"
+    df.loc[df["date"] < purge_train_end, "split"] = "train"
+    df.loc[(df["date"] >= purge_train_end) & (df["date"] < purge_calib_start), "split"] = "purge"
+    df.loc[(df["date"] >= purge_calib_start) & (df["date"] <= calib_dates.max()), "split"] = "calib"
+    split_counts = df["split"].value_counts()
+    log(f"\n  Split column: {dict(split_counts)}")
+
     # ── Generate blended predictions ──
     log(f"\n  Generating 40/60 blended predictions for ALL {len(df):,} rows ...")
     X_all_base = imp_base.transform(df[base_feature_cols].values)
@@ -368,7 +377,7 @@ def train_production_model():
 
     # Save predictions
     save_cols = ["date", "symbol", "target_v5", "prob_base", "prob_sector",
-                 "prob_ensemble", "fwd_ret", "in_sp500"]
+                 "prob_ensemble", "fwd_ret", "in_sp500", "split"]
     df[save_cols].to_parquet(PRED_FILE, index=False, engine="pyarrow", compression="snappy")
     log(f"  Predictions → {PRED_FILE.name} ({len(df):,} rows)")
 

@@ -183,6 +183,10 @@ class MassiveDataProvider:
         df = df.set_index("date")[["open", "high", "low", "close", "volume"]]
         df.index = df.index.tz_localize(None)
 
+        # Deduplicate: Polygon can return duplicate timestamps on split/dividend
+        # adjustment days. Keep the last entry (most recently adjusted).
+        df = df[~df.index.duplicated(keep="last")]
+
         for c in ["open", "high", "low", "close"]:
             df[c] = df[c].astype(np.float32)
         df["volume"] = df["volume"].astype(np.float64)
@@ -512,6 +516,28 @@ class MassiveDataProvider:
         if days_stale > 3:
             issues.append(f"DATA_STALE: most recent bar is {days_stale} days old")
 
+        # 5. OHLCV consistency: high >= low, open/close within [low,high],
+        #    no zero/negative prices, no zero volume
+        bad_ohlcv_symbols = []
+        total_violations = 0
+        for sym, df in bars.items():
+            if len(df) < 5:
+                continue
+            v = 0
+            v += int((df["high"] < df["low"]).sum())
+            v += int(((df["open"] > df["high"]) | (df["open"] < df["low"])).sum())
+            v += int(((df["close"] > df["high"]) | (df["close"] < df["low"])).sum())
+            v += int((df["close"] <= 0).sum())
+            v += int((df["volume"] <= 0).sum())
+            if v > 0:
+                bad_ohlcv_symbols.append((sym, v))
+                total_violations += v
+        if bad_ohlcv_symbols:
+            issues.append(f"BAD_OHLCV: {len(bad_ohlcv_symbols)} symbols, "
+                          f"{total_violations} total violations")
+            log.warning("BAD_OHLCV symbols (first 10): %s",
+                        ", ".join(f"{s}({n})" for s, n in bad_ohlcv_symbols[:10]))
+
         passed = len(issues) == 0
         result = {
             "passed": passed,
@@ -521,6 +547,7 @@ class MassiveDataProvider:
             "n_missing": len(missing),
             "n_stale": len(stale_symbols),
             "n_null": len(null_symbols),
+            "n_bad_ohlcv": len(bad_ohlcv_symbols),
             "most_recent_date": str(most_recent.date()) if most_recent > pd.Timestamp.min else "N/A",
             "issues": issues,
         }

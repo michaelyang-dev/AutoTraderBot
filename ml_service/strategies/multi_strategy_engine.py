@@ -118,6 +118,7 @@ class FastUniverse:
         self._sentiment = {}      # {symbol: sentiment_score}
         self._estimates = {}      # {symbol: {eps_avg, revenue_avg}}
         self._options = {}        # {symbol: {pc_ratio, atm_iv}}
+        self._short_ratio = {}    # {date: {symbol: short_ratio_20d}} from FINRA
 
         if enhanced_data:
             # Price targets
@@ -230,6 +231,15 @@ class FastUniverse:
                         self._options[sym]["short_score"] = row.get("shortScore")
                         self._options[sym]["si_shares"] = row.get("siShares")
 
+        # Load FINRA short volume features (2022+) for backtest-able SI signal
+        finra_path = DATA_DIR / "finra_short_features.parquet"
+        if finra_path.exists():
+            finra = pd.read_parquet(finra_path)
+            finra["date"] = pd.to_datetime(finra["date"])
+            for date, grp in finra.groupby("date"):
+                self._short_ratio[date] = dict(zip(grp["symbol"], grp["short_ratio_20d"]))
+            log(f"    FINRA short data loaded: {len(self._short_ratio)} dates")
+
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
             f"{len(self._ml_preds)} ML prediction dates, "
             f"{len(self._price_targets)} price targets, {len(self._dcf)} DCF values")
@@ -318,6 +328,26 @@ class FastUniverse:
             return {s: preds[s] for s in members if s in preds}
         return preds
 
+    def get_short_ratios(self, date, members=None):
+        """Get {symbol: short_ratio_20d} for a date. FINRA for backtest, Ortex for live."""
+        # FINRA daily data (backtest: 2022+)
+        sr = self._short_ratio.get(date, {})
+        if sr and members:
+            return {s: sr[s] for s in members if s in sr}
+        if sr:
+            return sr
+        # Fallback: Ortex snapshot (live only — single date)
+        if self._options:
+            result = {}
+            syms = members if members else self._options.keys()
+            for s in syms:
+                opt = self._options.get(s)
+                if opt and opt.get("si_pct_float") is not None:
+                    # Convert SI% to a 0-1 ratio for consistency with FINRA
+                    result[s] = opt["si_pct_float"] / 100.0
+            return result
+        return {}
+
     def get_additions(self, date, lookback_days=4):
         """Get SP500 additions announced in last N calendar days."""
         result = []
@@ -332,7 +362,8 @@ class FastUniverse:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
-                                ml_ranker=None, ml_blend_weight=0.4):
+                                ml_ranker=None, ml_blend_weight=0.4,
+                                si_blend_weight=0.15):
     """Adaptive Momentum with consistency weighting + sector tilt. Top-8, 10d."""
     if day_idx % rebal_days != 0:
         return None
@@ -355,7 +386,6 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
     ret_60 = uni.get_feature_map(date, "ret_60d", members)
     ret_126 = uni.get_feature_map(date, "ret_126d", members)
     ret_252 = uni.get_feature_map(date, "ret_252d", members)
-    gross_m = uni.get_feature_map(date, "gross_margin", members)
     dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
     eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
 
@@ -374,15 +404,25 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
         avg_ret = np.mean(rets)
         score = avg_ret * (consistency ** 2)
 
-        # Quality boost
-        gm = gross_m.get(sym)
-        if gm is not None and not np.isnan(gm) and gm > 0.3:
-            score *= 1.15
-
-        # Earnings surprise boost
+        # Earnings surprise boost — strongest fundamental (+0.60% per 10d, IC=+0.052)
         es = eps_surp.get(sym)
         if es is not None and not np.isnan(es) and es > 0:
             score *= 1.15
+
+        # ROE quality boost (+0.26% per 10d, IC=+0.020)
+        roe_val = uni.get_feature_map(date, "roe").get(sym)
+        if roe_val is not None and not np.isnan(roe_val) and roe_val > 0.15:
+            score *= 1.05
+
+        # Revenue/earnings acceleration (IC +0.017 and +0.016)
+        fg = uni._fin_growth.get(sym)
+        if fg:
+            rg = fg.get("rev_growth")
+            eg = fg.get("eps_growth")
+            if rg is not None and not np.isnan(rg) and rg > 0.08:
+                score *= 1.10  # growing revenue >8%
+            if eg is not None and not np.isnan(eg) and eg > 0.10:
+                score *= 1.10  # growing EPS >10%
 
         # Analyst target upside boost (from FMP price targets)
         pt = uni._price_targets.get(sym)
@@ -403,42 +443,6 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
                 dcf_upside = (dcf_data["dcf"] - px) / px
                 if dcf_upside > 0.20:  # >20% undervalued by DCF
                     score *= 1.10
-
-        # Revenue/earnings acceleration (IC +0.017 and +0.016 — strongest fundamental signals)
-        fg = uni._fin_growth.get(sym)
-        if fg:
-            rg = fg.get("rev_growth")
-            eg = fg.get("eps_growth")
-            if rg is not None and not np.isnan(rg) and rg > 0.08:
-                score *= 1.10  # growing revenue >8%
-            if eg is not None and not np.isnan(eg) and eg > 0.10:
-                score *= 1.10  # growing EPS >10%
-
-        # Leverage penalty: highly leveraged companies blow up in bear markets
-        dte_val = uni.get_feature_map(date, "debt_to_equity").get(sym)
-        if dte_val is not None and not np.isnan(dte_val) and dte_val > 3.0:
-            score *= 0.85
-
-        # ROE quality boost
-        roe_val = uni.get_feature_map(date, "roe").get(sym)
-        if roe_val is not None and not np.isnan(roe_val) and roe_val > 0.15:
-            score *= 1.05
-
-        # Insider buying conviction signal
-        # Note: disabled in backtest (FMP insider dates may not be point-in-time)
-        # Active in live only via signal_server_v9 feature fill
-        pass  # insider signal handled via feature columns in live
-
-        # Ortex Short Interest signal (live only — no historical backtest data)
-        # Academic research strongly supports: low SI = clean momentum, high SI = crash risk
-        # This is the most economically justified live-only signal we have
-        ortex = uni._options.get(sym)  # reusing _options dict for Ortex data
-        if ortex and ortex.get("si_pct_float") is not None:
-            si = ortex["si_pct_float"]
-            if si < 2.0:
-                score *= 1.10  # very low SI — shorts not betting against, clean momentum
-            elif si > 10.0:
-                score *= 0.80  # heavily shorted — significant crash risk, penalize hard
 
         # Trend filter: above 50d SMA
         d50 = dist_sma50.get(sym, 0)
@@ -474,6 +478,18 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
 
     if not composite:
         return {}
+
+    # Short interest (Ortex live only — FINRA backtest showed negligible impact)
+    # Keep simple threshold boost for live: low SI → clean momentum, high SI → crash risk
+    # This only fires in live production where Ortex data is loaded
+    for sym in list(composite.keys()):
+        ortex = uni._options.get(sym)
+        if ortex and ortex.get("si_pct_float") is not None:
+            si = ortex["si_pct_float"]
+            if si < 2.0:
+                composite[sym] *= 1.10
+            elif si > 10.0:
+                composite[sym] *= 0.85
 
     # ML blend: if ranker available, expand candidates and re-rank
     if ml_ranker is not None and ml_ranker.model is not None:
@@ -683,11 +699,11 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
 # Bull: heavy momentum + sector
 # Bear: heavy low-vol quality + sector (which goes to cash in bear)
 STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.80),
+    ("s1_momentum", 0.90),
     ("s2_drift", 0.00),
-    ("s3_sector", 0.10),
+    ("s3_sector", 0.05),
     ("s4_inclusion", 0.00),
-    ("s5_lowvol", 0.10),
+    ("s5_lowvol", 0.05),
     ("s6_short", 0.00),
 ]
 

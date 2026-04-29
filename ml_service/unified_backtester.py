@@ -145,6 +145,62 @@ def load_bars_cached(symbols: list[str], start: str, end: str,
     return close
 
 
+def load_open_bars_cached(symbols: list[str], start: str, end: str,
+                          no_cache: bool = False) -> pd.DataFrame:
+    """
+    Download open prices via Massive (Polygon) with disk cache.
+    Used for next-day-open execution in backtests (avoids same-bar bias).
+
+    Returns a DataFrame with columns=symbols, index=dates (open prices).
+    """
+    name = "bars_open"
+    key = _bars_cache_key(symbols, start, end)
+    cache_file = _cache_path(name)
+
+    if not no_cache and cache_file.exists():
+        cached_key = _read_meta(name)
+        age_hours = (time.time() - _file_mtime(cache_file)) / 3600
+        if cached_key == key and age_hours < 24:
+            return pd.read_parquet(cache_file)
+
+    syms = list(set(["SPY"] + symbols))
+
+    try:
+        from massive_data_provider import MassiveDataProvider
+        provider = MassiveDataProvider(validate_vs_yfinance=False)
+        bars_dict = provider.fetch_bars_batch(syms, warmup_days=max(
+            (pd.Timestamp(end) - pd.Timestamp(start)).days + 30, 60))
+
+        open_frames = {}
+        for sym, df in bars_dict.items():
+            if len(df) > 0:
+                open_frames[sym] = df["open"]
+
+        if open_frames:
+            opens = pd.DataFrame(open_frames)
+            opens.index = pd.to_datetime(opens.index).tz_localize(None)
+            opens = opens[(opens.index >= pd.Timestamp(start)) &
+                          (opens.index <= pd.Timestamp(end))]
+
+            _ensure_cache_dir()
+            opens.to_parquet(cache_file)
+            _write_meta(name, key)
+            return opens
+    except Exception as exc:
+        warnings.warn(f"Massive open fetch failed, falling back to yfinance: {exc}")
+
+    import yfinance as yf
+    raw = yf.download(syms, start=start, end=end,
+                      auto_adjust=True, progress=False, threads=True)
+    opens = raw["Open"] if isinstance(raw.columns, pd.MultiIndex) else raw[["Open"]]
+    opens.index = pd.to_datetime(opens.index).tz_localize(None)
+
+    _ensure_cache_dir()
+    opens.to_parquet(cache_file)
+    _write_meta(name, key)
+    return opens
+
+
 def load_predictions_cached(pred_file: Path = None,
                             no_cache: bool = False,
                             validation: bool = False) -> pd.DataFrame:
@@ -1466,7 +1522,7 @@ class PortfolioManager:
     # ── public API ───────────────────────────────────────────────────────
 
     def run(self, all_dates, spy_prices=None, price_data=None,
-            detail_log=False):
+            detail_log=False, open_data=None):
         """
         Execute the backtest.
 
@@ -1478,6 +1534,9 @@ class PortfolioManager:
                      Required for price-based strategies (momentum, etc.).
         detail_log : if True, also return (equity_df, trade_details) with
                      per-day equity curve and per-trade detail records.
+        open_data  : DataFrame with open prices (columns=symbols, index=dates).
+                     When provided, buy entries use next-day open instead of
+                     same-day close (eliminates same-bar execution bias).
 
         Returns
         -------
@@ -1502,13 +1561,26 @@ class PortfolioManager:
                     strat.set_price_data(price_data)
 
         # Pre-build price lookup for price-based strategies
-        # {date → {symbol → price}}
+        # {date → {symbol ��� price}}
         px_lookup = {}
         if price_data is not None:
             # Vectorized: build all lookups at once using to_dict(orient="index")
             dates_in_data = price_data.index.intersection(all_dates)
             if len(dates_in_data) > 0:
                 px_lookup = price_data.loc[dates_in_data].to_dict(orient="index")
+
+        # Pre-build open price lookup for next-day-open execution
+        # {date → {symbol → open_price}}
+        open_px_lookup = {}
+        if open_data is not None:
+            dates_in_open = open_data.index.intersection(all_dates)
+            if len(dates_in_open) > 0:
+                open_px_lookup = open_data.loc[dates_in_open].to_dict(orient="index")
+
+        # Map each date index to the next trading date (for next-day-open execution)
+        _next_date = {}
+        for idx in range(len(all_dates) - 1):
+            _next_date[idx] = all_dates[idx + 1]
 
         # -- per-run state (local, so PortfolioManager is reusable) --------
         cash            = float(self.initial_cash)
@@ -1675,10 +1747,21 @@ class PortfolioManager:
                 if _has_earnings_within(sig.symbol, date):
                     continue
 
-                # For price-based signals, require a valid entry price
+                # For price-based signals, require a valid entry price.
+                # Use next-day open if open_data is available (avoids same-bar
+                # execution bias); fall back to same-day close otherwise.
                 entry_px = 0.0
                 if sig.price_based:
-                    entry_px = day_prices.get(sig.symbol, np.nan)
+                    if open_px_lookup and i in _next_date:
+                        next_d = _next_date[i]
+                        next_open = open_px_lookup.get(next_d, {})
+                        entry_px = next_open.get(sig.symbol, np.nan)
+                        # Fall back to next-day close if open is missing
+                        if np.isnan(entry_px) or entry_px <= 0:
+                            next_close = px_lookup.get(next_d, {})
+                            entry_px = next_close.get(sig.symbol, np.nan)
+                    else:
+                        entry_px = day_prices.get(sig.symbol, np.nan)
                     if np.isnan(entry_px) or entry_px <= 0:
                         continue
 
