@@ -437,16 +437,22 @@ def fetch_options_volume_history(symbols, lookback_months=6):
 
 
 def fetch_options_snapshots(symbols):
-    """Fetch daily options snapshot (put/call ratio, IV) from Polygon API."""
+    """Fetch daily options snapshot (put/call ratio, IV) from Polygon/Massive API.
+    Saves current snapshot to options_snapshots.parquet (overwritten daily for live use)
+    AND appends to options_history.parquet (accumulates over time for backtesting).
+    """
     import requests as _req
 
     cache = CACHE_DIR / "options_snapshots.parquet"
+    history_file = CACHE_DIR / "options_history.parquet"
+    today = datetime.now().strftime("%Y-%m-%d")
+
     log("  Fetching options snapshots for %d symbols ..." % len(symbols))
     rows = []
     for i, sym in enumerate(symbols):
         try:
             r = _req.get(
-                f"https://api.polygon.io/v3/snapshot/options/{sym}",
+                f"https://api.massive.com/v3/snapshot/options/{sym}",
                 params={"apiKey": MASSIVE_KEY, "limit": 250},
                 timeout=15,
             )
@@ -479,6 +485,7 @@ def fetch_options_snapshots(symbols):
                     ivs.append(iv)
 
             rows.append({
+                "date": today,
                 "symbol": sym,
                 "pc_ratio": put_vol / max(call_vol, 1),
                 "pc_oi_ratio": put_oi / max(call_oi, 1),
@@ -496,8 +503,22 @@ def fetch_options_snapshots(symbols):
 
     df = pd.DataFrame(rows)
     if len(df) > 0:
+        # Save current snapshot (for live signal server)
         df.to_parquet(cache, index=False)
         log("  Options snapshots: %d symbols saved" % len(df))
+
+        # Append to history file (accumulates daily for future backtesting)
+        if history_file.exists():
+            try:
+                existing = pd.read_parquet(history_file)
+                # Remove today's rows if re-running same day
+                existing = existing[existing["date"] != today]
+                df = pd.concat([existing, df], ignore_index=True)
+            except Exception:
+                pass
+        df.to_parquet(history_file, index=False)
+        log("  Options history: %d total rows (%d dates)" % (
+            len(df), df["date"].nunique()))
     else:
         log("  WARNING: No options data returned")
     return df

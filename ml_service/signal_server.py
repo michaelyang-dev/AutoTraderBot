@@ -236,7 +236,10 @@ async def lifespan(app: FastAPI):
                             ("crypto_forex_extended.parquet", "crypto_forex"),
                             ("transcript_sentiment.parquet", "transcript_sentiment"),
                             ("options_snapshots.parquet", "options"),
-                            ("ortex_short_interest.parquet", "ortex_si")]:
+                            ("ortex_short_interest.parquet", "ortex_si"),
+                            ("financial_scores.parquet", "financial_scores"),
+                            ("analyst_grades_consensus.parquet", "analyst_grades"),
+                            ("options_snapshots.parquet", "options_snap")]:
             fpath = enhanced_dir / fname
             if fpath.exists():
                 state.enhanced_data[key] = pd.read_parquet(fpath)

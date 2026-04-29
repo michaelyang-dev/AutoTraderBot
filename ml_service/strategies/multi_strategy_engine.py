@@ -119,7 +119,14 @@ class FastUniverse:
         self._sentiment = {}      # {symbol: sentiment_score}
         self._estimates = {}      # {symbol: {eps_avg, revenue_avg}}
         self._options = {}        # {symbol: {pc_ratio, atm_iv}}
-        self._short_ratio = {}    # {date: {symbol: short_ratio_20d}} from FINRA
+        self._short_ratio = {}    # {date: {symbol: short_ratio_20d}} from FINRA/Massive
+        # New v9.7 data
+        self._revenue_surprise = {} # {symbol: last revenue surprise ratio}
+        self._beat_streak = {}      # {symbol: consecutive earnings beats}
+        self._piotroski = {}        # {symbol: piotroski_score}
+        self._altman_z = {}         # {symbol: altman_z_score}
+        self._analyst_consensus = {} # {symbol: {strongBuy, buy, hold, sell, consensus}}
+        self._pc_ratio = {}         # {symbol: put/call OI ratio}
 
         if enhanced_data:
             # Price targets
@@ -232,14 +239,130 @@ class FastUniverse:
                         self._options[sym]["short_score"] = row.get("shortScore")
                         self._options[sym]["si_shares"] = row.get("siShares")
 
-        # Load FINRA short volume features (2022+) for backtest-able SI signal
-        finra_path = DATA_DIR / "finra_short_features.parquet"
-        if finra_path.exists():
-            finra = pd.read_parquet(finra_path)
-            finra["date"] = pd.to_datetime(finra["date"])
-            for date, grp in finra.groupby("date"):
-                self._short_ratio[date] = dict(zip(grp["symbol"], grp["short_ratio_20d"]))
-            log(f"    FINRA short data loaded: {len(self._short_ratio)} dates")
+        # Load Massive FINRA short interest (2017+, biweekly, replaces old 2022+ FINRA daily)
+        massive_si_path = DATA_DIR / "enhanced_data" / "massive_short_interest.parquet"
+        if massive_si_path.exists():
+            msi = pd.read_parquet(massive_si_path)
+            msi["date"] = pd.to_datetime(msi["settlement_date"])
+            for date, grp in msi.groupby("date"):
+                self._short_ratio[date] = dict(zip(grp["ticker"], grp.get("days_to_cover", pd.Series(dtype=float))))
+            log(f"    Massive short interest loaded: {len(self._short_ratio)} dates (2017+)")
+        else:
+            # Fallback to old FINRA daily data
+            finra_path = DATA_DIR / "finra_short_features.parquet"
+            if finra_path.exists():
+                finra = pd.read_parquet(finra_path)
+                finra["date"] = pd.to_datetime(finra["date"])
+                for date, grp in finra.groupby("date"):
+                    self._short_ratio[date] = dict(zip(grp["symbol"], grp["short_ratio_20d"]))
+                log(f"    FINRA short data loaded: {len(self._short_ratio)} dates (fallback)")
+
+        # Load revenue surprise + beat streak from earnings data (IC=+0.015, t=+10.5)
+        # Index by date for proper backtesting (forward-fill quarterly data to daily)
+        self._earnings_signals = {}  # {date: {symbol: {rev_surprise, beat_streak}}}
+        earnings_path = DATA_DIR / "fundamentals_earnings.parquet"
+        if earnings_path.exists():
+            earn = pd.read_parquet(earnings_path)
+            earn["date"] = pd.to_datetime(earn["date"])
+            earn = earn.sort_values(["symbol", "date"]).drop_duplicates(subset=["symbol", "date"], keep="last")
+
+            # Revenue surprise: (actual - estimated) / |estimated|
+            mask = earn["revenue_estimated"].abs() > 1
+            earn.loc[mask, "rev_surprise"] = (
+                (earn.loc[mask, "revenue_actual"] - earn.loc[mask, "revenue_estimated"])
+                / earn.loc[mask, "revenue_estimated"].abs()
+            )
+
+            # Beat streak: consecutive quarters beating EPS estimates
+            earn["beat_streak"] = 0
+            for sym, grp in earn.groupby("symbol"):
+                streak = 0
+                for idx, row in grp.iterrows():
+                    if pd.notna(row.get("eps_actual")) and pd.notna(row.get("eps_estimated")):
+                        if row["eps_actual"] > row["eps_estimated"]:
+                            streak += 1
+                        else:
+                            streak = 0
+                    earn.at[idx, "beat_streak"] = streak
+
+            # Build date-indexed dict: for each trading date, what's the latest signal per stock?
+            # Use earnings date + 1 day (available day after announcement)
+            earn["avail_date"] = earn["date"] + pd.Timedelta(days=1)
+            earn_valid = earn.dropna(subset=["rev_surprise"])
+
+            # Forward-fill: for each stock, carry forward the most recent earnings signal
+            trading_dates = sorted(self._feat_by_date.keys())
+            # Build per-symbol latest values
+            latest_by_sym = {}  # {symbol: [(avail_date, rev_surprise, beat_streak)]}
+            for sym, grp in earn_valid.groupby("symbol"):
+                latest_by_sym[sym] = list(zip(
+                    grp["avail_date"].values,
+                    grp["rev_surprise"].values,
+                    grp["beat_streak"].values
+                ))
+
+            # For each trading date, find latest available signal per stock
+            for td in trading_dates:
+                td_ts = pd.Timestamp(td)
+                signals = {}
+                for sym, entries in latest_by_sym.items():
+                    # Find most recent entry before td
+                    best = None
+                    for avail, rs, bs in entries:
+                        if pd.Timestamp(avail) <= td_ts:
+                            best = (rs, bs)
+                    if best:
+                        signals[sym] = {"rev_surprise": best[0], "beat_streak": int(best[1])}
+                if signals:
+                    self._earnings_signals[td] = signals
+
+            # Also store most recent for live signal server
+            for sym, entries in latest_by_sym.items():
+                if entries:
+                    self._revenue_surprise[sym] = entries[-1][1]  # latest rev_surprise
+                    self._beat_streak[sym] = int(entries[-1][2])  # latest beat_streak
+
+            log(f"    Earnings signals loaded: {len(self._earnings_signals)} dates, "
+                f"{len(self._revenue_surprise)} symbols with revenue surprise")
+
+        # Load financial scores (Piotroski, Altman Z-Score) — live-only, snapshot
+        if enhanced_data:
+            fin_scores = enhanced_data.get("financial_scores")
+            if fin_scores is not None and len(fin_scores) > 0:
+                for _, row in fin_scores.iterrows():
+                    sym = row.get("symbol")
+                    if sym:
+                        ps = row.get("piotroskiScore")
+                        az = row.get("altmanZScore")
+                        if ps is not None and not np.isnan(ps):
+                            self._piotroski[sym] = ps
+                        if az is not None and not np.isnan(az):
+                            self._altman_z[sym] = az
+
+            # Load analyst grades consensus — live-only, snapshot
+            grades = enhanced_data.get("analyst_grades")
+            if grades is not None and len(grades) > 0:
+                for _, row in grades.iterrows():
+                    sym = row.get("symbol")
+                    if sym:
+                        self._analyst_consensus[sym] = {
+                            "strongBuy": row.get("strongBuy", 0),
+                            "buy": row.get("buy", 0),
+                            "hold": row.get("hold", 0),
+                            "sell": row.get("sell", 0),
+                            "strongSell": row.get("strongSell", 0),
+                            "consensus": row.get("consensus", ""),
+                        }
+
+            # Load options snapshots (put/call ratio) — live-only
+            opt_snap = enhanced_data.get("options_snap")
+            if opt_snap is not None and len(opt_snap) > 0:
+                for _, row in opt_snap.iterrows():
+                    sym = row.get("symbol")
+                    if sym:
+                        pcr = row.get("pc_oi_ratio")
+                        if pcr is not None and not np.isnan(pcr):
+                            self._pc_ratio[sym] = pcr
 
         log(f"    Index built in {time.time()-t0:.1f}s: {len(self._feat_by_date)} dates, "
             f"{len(self._ml_preds)} ML prediction dates, "
@@ -424,6 +547,50 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
                 score *= 1.10  # growing revenue >8%
             if eg is not None and not np.isnan(eg) and eg > 0.10:
                 score *= 1.10  # growing EPS >10%
+
+        # Revenue surprise boost — IC=+0.015, t=+10.5, consistent IS/OOS
+        earn_sigs = uni._earnings_signals.get(date, {}).get(sym)
+        if earn_sigs:
+            rs = earn_sigs.get("rev_surprise")
+            if rs is not None and not np.isnan(rs) and rs > 0.02:
+                score *= 1.10  # beat revenue estimates by >2%
+            bs = earn_sigs.get("beat_streak", 0)
+            if bs >= 3:
+                score *= 1.05  # 3+ consecutive quarters beating EPS estimates
+        else:
+            # Fallback to latest snapshot (for live server)
+            rs = uni._revenue_surprise.get(sym)
+            if rs is not None and not np.isnan(rs) and rs > 0.02:
+                score *= 1.10
+            bs = uni._beat_streak.get(sym, 0)
+            if bs >= 3:
+                score *= 1.05
+
+        # Piotroski Score — financial quality (live-only, snapshot)
+        pio = uni._piotroski.get(sym)
+        if pio is not None and not np.isnan(pio):
+            if pio >= 7:
+                score *= 1.05  # strong financial health
+            elif pio <= 3:
+                score *= 0.90  # weak financial health
+
+        # Analyst consensus — live-only, snapshot
+        ac = uni._analyst_consensus.get(sym)
+        if ac:
+            total = ac.get("strongBuy", 0) + ac.get("buy", 0) + ac.get("hold", 0) + ac.get("sell", 0) + ac.get("strongSell", 0)
+            if total >= 10:  # only trust consensus with enough analysts
+                if ac.get("consensus") == "strongBuy":
+                    score *= 1.05
+                elif ac.get("consensus") in ("sell", "strongSell"):
+                    score *= 0.90
+
+        # Put/call OI ratio — live-only, snapshot
+        pcr = uni._pc_ratio.get(sym)
+        if pcr is not None and not np.isnan(pcr):
+            if pcr < 0.5:
+                score *= 1.05  # bullish options positioning
+            elif pcr > 1.5:
+                score *= 0.92  # bearish options positioning
 
         # Analyst target upside boost (from FMP price targets)
         pt = uni._price_targets.get(sym)
