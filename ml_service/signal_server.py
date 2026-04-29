@@ -1,14 +1,13 @@
 """
-ML Signal Server (v9.5 — Multi-Strategy Factor Framework)
-=========================================================
-FastAPI service that runs the v9.5 multi-strategy factor framework
+Signal Server (v9.6 — Multi-Strategy Factor Framework)
+======================================================
+FastAPI service that runs the v9.6 multi-strategy factor framework
 and serves trading signals to the JS trading bot.
 
 Strategies:
-  - S1 Adaptive Momentum (80% bull / 10% bear): consistency-weighted multi-timeframe
-  - S3 Sector Rotation (10% bull / 20% bear): relative-strength sector ETFs
-  - S4 Index Inclusion (event-driven): SP500 add/remove events
-  - S5 Low-Vol Quality (10% bull / 70% bear): defensive quality stocks
+  - S1 Adaptive Momentum (90% bull / 10% bear): consistency-weighted multi-timeframe
+  - S3 Sector Rotation (5% bull / 20% bear): relative-strength sector ETFs
+  - S5 Low-Vol Quality (5% bull / 70% bear): defensive quality stocks
   - Dynamic regime blending via market breadth (% above 50d SMA)
   - -15% stop-loss, 15% single-name cap, 35% sector cap
 
@@ -75,7 +74,7 @@ class State:
     refresh_task:   Optional[asyncio.Task] = None
     enhanced_data:  dict                   = {}
     # Strategy info
-    strategy_version: str                  = "v9.5"
+    strategy_version: str                  = "v9.6"
     top_n:          int                    = 8
 
 state = State()
@@ -178,7 +177,7 @@ def _is_market_hours() -> bool:
 
 async def _refresh() -> bool:
     try:
-        log.info("Refreshing v9.5 signals ...")
+        log.info("Refreshing v9.6 signals ...")
         t0 = time.perf_counter()
         raw = await asyncio.get_event_loop().run_in_executor(None, _fetch_bars_batch)
         new_signals = await asyncio.get_event_loop().run_in_executor(
@@ -192,7 +191,7 @@ async def _refresh() -> bool:
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
         log.info(
-            "v9.5 signals refreshed in %.1fs — %d BUY, %d HOLD",
+            "v9.6 signals refreshed in %.1fs — %d BUY, %d HOLD",
             elapsed, len(buys), len(new_signals) - len(buys),
         )
         top8 = new_signals[:8]
@@ -221,9 +220,9 @@ async def _background_refresh_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — load enhanced data for v9.5 strategy
+    # Startup — load enhanced data for v9.6 strategy
     log.info("=" * 60)
-    log.info("  Signal Server v9.5 — Multi-Strategy Factor Framework")
+    log.info("  Signal Server v9.6 — Multi-Strategy Factor Framework")
     log.info("=" * 60)
 
     # Load enhanced data (price targets, DCF, financial growth, etc.)
@@ -293,9 +292,9 @@ async def lifespan(app: FastAPI):
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "ML Trading Signal Server",
-    description = "v9.5 Multi-Strategy Factor Framework signals for the auto-trader bot",
-    version     = "9.5.0",
+    title       = "Trading Signal Server",
+    description = "v9.6 Multi-Strategy Factor Framework signals for the auto-trader bot",
+    version     = "9.6.0",
     lifespan    = lifespan,
 )
 

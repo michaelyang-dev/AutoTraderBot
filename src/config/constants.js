@@ -7,13 +7,13 @@ export const INITIAL_CASH = 100000;
 // Risk Management
 export const RISK = {
   MAX_POSITION_PCT: 0.15,       // max 15% of portfolio per stock
-  STOP_LOSS_PCT: -0.15,         // -15% stop loss (matches v9.5 backtest)
-  TAKE_PROFIT_PCT: 1.00,        // effectively disabled — v9.5 exits via rebalance, not take-profit
-  MAX_OPEN_POSITIONS: 8,        // max concurrent positions (matches v9.5 top-8 picks)
+  STOP_LOSS_PCT: -0.15,         // -15% stop loss (matches v9.6 backtest)
+  TAKE_PROFIT_PCT: 1.00,        // effectively disabled — v9.6 exits via rebalance, not take-profit
+  MAX_OPEN_POSITIONS: 8,        // max concurrent positions (matches v9.6 top-8 picks)
   MAX_CASH_DEPLOY_PCT: 0.90,    // deploy max 90% of available cash per trade
   REBALANCE_INTERVAL: 5,        // check signals every N ticks
-  TRAILING_STOP_PCT: 0.15,      // trail 15% below peak price (matches v9.5 backtest)
-  USE_TRAILING_STOP: false,     // false = fixed stop-loss from entry (matches v9.5 backtest)
+  TRAILING_STOP_PCT: 0.15,      // trail 15% below peak price (matches v9.6 backtest)
+  USE_TRAILING_STOP: false,     // false = fixed stop-loss from entry (matches v9.6 backtest)
   ATR_TARGET_PCT: 0.01,         // reference volatility (1%) — stocks above this get scaled down
   MIN_POSITION_PCT: 0.03,       // floor: never allocate less than 3% of portfolio
   LOSS_COOLDOWN_CYCLES: 3,      // trade cycles a stock is blocked after a losing exit

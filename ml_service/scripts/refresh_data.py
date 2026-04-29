@@ -3,7 +3,7 @@
 Weekly Data Refresh
 ===================
 Refreshes FMP enhanced data (price targets, DCF, growth, etc.)
-and VIX cache so the v9.5 strategy has current fundamentals.
+and VIX cache so the v9.6 strategy has current fundamentals.
 
 Run via PM2 cron: every Sunday at 5:00 PM ET
 After completion, restarts ml-server to pick up new data.

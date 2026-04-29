@@ -1,8 +1,9 @@
 """
-Multi-Strategy Backtesting Engine v8 (optimized)
-=================================================
-Runs all 5 strategies combined with realistic costs.
-Pre-indexes all data for O(1) lookups instead of DataFrame scans.
+Multi-Strategy Engine v9.6 (SP500)
+==================================
+Core strategy engine for the SP500 portfolio.
+Runs momentum (S1), sector rotation (S3), and low-vol quality (S5)
+with breadth-based regime blending. Pre-indexes all data for O(1) lookups.
 
 Usage:
     cd ml_service && python3 -m strategies.multi_strategy_engine

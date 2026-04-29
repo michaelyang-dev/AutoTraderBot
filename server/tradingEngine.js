@@ -2,7 +2,7 @@
 //  TRADING ENGINE — Server-side consolidated trading logic
 //  Runs all signal analysis, regime detection, trend following,
 //  and trade execution directly on the Express server.
-//  No React dependency — uses Alpaca SDK + Node http for ML signals.
+//  No React dependency — uses Alpaca SDK + Node http for v9.6 factor signals.
 // ══════════════════════════════════════════════════════════════════════
 
 const http = require("http");
@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.12,               // v9.5: 8 positions * 12% = 96% (fits within 98% available)
-  STOP_LOSS_PCT: -0.15,               // v9.5 backtest: -15% fixed from entry
-  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.5 exits via rebalance
-  MAX_OPEN_POSITIONS: 8,              // v9.5 top-8 concentrated picks
+  MAX_POSITION_PCT: 0.12,               // v9.6: 8 positions * 12% = 96% (fits within 98% available)
+  STOP_LOSS_PCT: -0.15,               // v9.6 backtest: -15% fixed from entry
+  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.6 exits via rebalance
+  MAX_OPEN_POSITIONS: 8,              // v9.6 top-8 concentrated picks
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.15,            // matches STOP_LOSS_PCT (only used if USE_TRAILING_STOP=true)
-  USE_TRAILING_STOP: false,           // v9.5 backtest uses fixed stop from entry, not trailing
+  USE_TRAILING_STOP: false,           // v9.6 backtest uses fixed stop from entry, not trailing
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -42,10 +42,10 @@ const ENABLE_MOMENTUM_REGIME_FILTER = true;  // Skip momentum buys when SPY < 50
 const ENABLE_SPY_PARKING = false;  // Walk-forward validated OFF: +0.42 Sharpe, +3.4% CAGR (commit f8bd464)
 
 // ── Multi-strategy slot allocation ──
-// v9.5: all slots go to ML (v9.5 multi-strategy engine handles diversification internally)
+// v9.6: all slots go to factor strategy (multi-strategy engine handles diversification)
 const SLOT_CONFIG = {
-  ml_medium: 8,          // v9.5 top-8 picks get all slots
-  momentum: 0,           // Disabled — v9.5 has its own momentum strategy (S1)
+  ml_medium: 8,          // v9.6 top-8 picks (kept as "ml_medium" for API compatibility)
+  momentum: 0,           // Disabled — v9.6 has its own momentum strategy (S1)
   mean_reversion: 0,     // Disabled
   mega_cap: 0,           // Disabled
   flex: 0,
@@ -1663,7 +1663,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               is_top_5: sig.is_top_5,
               price_at_signal: spyPrice || null,
               regime,
-              model_version: mlData.strategy || mlData.model_version || "v9.5",
+              model_version: mlData.strategy || mlData.model_version || "v9.6",
             });
           }
         } catch (_) { /* never crash trading loop */ }
@@ -1677,9 +1677,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       // ML status transition notifications
       if (prevMlStatus === "ok" && mlStatus !== "ok") {
-        notify.send("🚨 ML SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
+        notify.send("🚨 SIGNAL SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
       } else if (prevMlStatus !== "ok" && mlStatus === "ok") {
-        notify.send("✅ ML SERVER RECOVERED — ML signals active again.", { immediate: true });
+        notify.send("✅ SIGNAL SERVER RECOVERED — v9.6 signals active again.", { immediate: true });
       }
       prevMlStatus = mlStatus;
 
@@ -1719,7 +1719,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Market open transition notification
       if (marketOpen && !prevMarketOpen) {
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
-        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. ML signals: ${buyCount} BUY.`);
+        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v9.6 signals: ${buyCount} BUY.`);
       }
       prevMarketOpen = marketOpen;
 
@@ -2041,11 +2041,11 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1b: Earnings-eve exits (skip for ML/v9.5 positions — strategy holds through earnings) ──
+      // ── STEP 1b: Earnings-eve exits (skip for ML/v9.6 positions — strategy holds through earnings) ──
       for (const pos of currentPositions) {
         if (closedSymbols.has(pos.symbol)) continue;
         if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
-        if (positionStrategy[pos.symbol] === "ml") continue;  // v9.5 holds through earnings
+        if (positionStrategy[pos.symbol] === "ml") continue;  // v9.6 holds through earnings
         const earningsDate = earningsMap[pos.symbol];
         if (!earningsDate) continue;
         const days = daysUntilEarnings(earningsDate);
@@ -2344,8 +2344,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1f: Rebalance exits — sell positions no longer in ML top-N ──
-      // v9.5 strategy exits via rebalancing: when a stock drops out of the top-8,
+      // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
+      // v9.6 strategy exits via rebalancing: when a stock drops out of the top-8,
       // it should be sold. Without this, positions would only exit via stop-loss.
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
@@ -2366,7 +2366,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete positionStrategy[sym];
               delete trailingPeaks[sym];
               const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
-              addLog(`REBALANCE SELL ${sym}: no longer in v9.5 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
+              addLog(`REBALANCE SELL ${sym}: no longer in v9.6 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
               tradeCount.sells++; mlTradeCount.sells++;
               if (unrealized_pl >= 0) { tradeCount.wins++; mlTradeCount.wins++; }
               else { tradeCount.losses++; mlTradeCount.losses++; }
@@ -2413,9 +2413,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       if (mlActive) {
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
-        addLog(`v9.5 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
+        addLog(`v9.6 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
-        addLog("ML server offline -- using consensus engine (fallback mode)", "system");
+        addLog("Signal server offline -- using consensus engine (fallback mode)", "system");
       }
 
       // Include both held positions AND pending buy orders to prevent duplicate buys.
@@ -2477,7 +2477,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
         const analysis = getSignals(prices);
 
-        // Consensus sell disabled when ML/v9.5 is active — v9.5 exits via rebalance (Step 1f).
+        // Consensus sell disabled when ML/v9.6 is active — v9.6 exits via rebalance (Step 1f).
         // Old technical signals (SMA, RSI, MACD) would fight the factor-based strategy.
         const ML_MIN_HOLD_CYCLES = 5 * 390;
         const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend", "ml"]);
@@ -2548,8 +2548,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const earningsBlocked = earningsDays !== null && earningsDays >= 0 && earningsDays <= 3;
 
         if (mlActive) {
-          // v9.5: top-N cross-sectional ranking (BUY signal)
-          // v9.5 handles regime internally via breadth blending — no CAUTIOUS filter needed
+          // v9.6: top-N cross-sectional ranking (BUY signal)
+          // v9.6 handles regime internally via breadth blending — no CAUTIOUS filter needed
           const mlSig = mlMap[sym];
           if (mlSig && mlSig.signal === "BUY") {
             addLog(`EVAL ${sym}: rank #${mlSig.rank} conf ${(mlSig.probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | earnings blocked: ${earningsBlocked}${earningsBlocked ? ` (${earningsDays}d -> ${earningsDate})` : ""} | cooldown: false | PASSED -> added to candidates`, "system");
@@ -2557,7 +2557,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               sym,
               score: mlSig.probability,
               price: prices[prices.length - 1],
-              consensus: `v9.5 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
+              consensus: `v9.6 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
               rsiVal: analysis.indicators.rsi,
               mlConf: mlSig.probability,
             });
@@ -2774,7 +2774,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         // Skip if earnings within 3 calendar days
-        // Disabled for ML/v9.5: the strategy already factors in earnings via eps_surprise boost
+        // Disabled for ML/v9.6: the strategy already factors in earnings via eps_surprise boost
         // and the backtest does not avoid earnings — adding this filter causes cash drag
         if (opp.strategy !== "ml" && opp.strategy !== "momentum" && opp.strategy !== "mean_reversion") {
           const earningsDate = earningsMap[opp.sym];
@@ -2793,14 +2793,14 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           // Momentum/MR/Mega-cap: fixed % (already computed in signal)
           dynPositionPct = opp.positionPct;
         } else {
-          // v9.5 ML: equal-weight sizing (12% per position, no ATR/regime scaling)
+          // v9.6 ML: equal-weight sizing (12% per position, no ATR/regime scaling)
           // The backtest uses fixed equal weights — ATR scaling and regime multipliers
           // would cause the live system to diverge from backtested performance.
           dynPositionPct = RISK.MAX_POSITION_PCT;
         }
 
         // Apply volatility targeting scale to ALL strategies
-        // Cash buffer: 2% reserve to absorb slippage/rounding (v9.5 targets ~100% invested)
+        // Cash buffer: 2% reserve to absorb slippage/rounding (v9.6 targets ~100% invested)
         const cashReserve = cyclePortfolioValue * 0.02;
         const availableCash = Math.max(0, cycleCash - cashReserve);
         if (availableCash < opp.price) {
@@ -2808,7 +2808,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           continue;
         }
 
-        // v9.5 ML: no vol-targeting (backtest uses equal weight, not leveraged)
+        // v9.6 ML: no vol-targeting (backtest uses equal weight, not leveraged)
         const volMult = (opp.strategy === "ml") ? 1.0 : currentVolScale;
         const maxAlloc = cyclePortfolioValue * dynPositionPct * volMult;
         // ML positions: use full available cash (reserve already subtracted above).
@@ -3174,8 +3174,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             else mlPos++;
           }
           const flexUsed = Math.max(0, mlPos + momPos + mrPos - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum - SLOT_CONFIG.mean_reversion);
-          summary += `\nSlots: ML ${mlPos}/${SLOT_CONFIG.ml_medium} | MOM ${momPos}/${SLOT_CONFIG.momentum} | MR ${mrPos}/${SLOT_CONFIG.mean_reversion} | Flex ${flexUsed}/${SLOT_CONFIG.flex}`;
-          summary += `\nML P&L: $${mlTradeCount.totalPnL.toFixed(0)} (${mlTradeCount.wins}W/${mlTradeCount.losses}L)`;
+          summary += `\nSlots: v9.6 ${mlPos}/${SLOT_CONFIG.ml_medium} | MOM ${momPos}/${SLOT_CONFIG.momentum} | MR ${mrPos}/${SLOT_CONFIG.mean_reversion} | Flex ${flexUsed}/${SLOT_CONFIG.flex}`;
+          summary += `\nv9.6 P&L: $${mlTradeCount.totalPnL.toFixed(0)} (${mlTradeCount.wins}W/${mlTradeCount.losses}L)`;
           summary += `\nMOM P&L: $${momTradeCount.totalPnL.toFixed(0)} (${momTradeCount.wins}W/${momTradeCount.losses}L)`;
           summary += `\nMR P&L: $${mrTradeCount.totalPnL.toFixed(0)} (${mrTradeCount.wins}W/${mrTradeCount.losses}L)`;
           summary += `\nSPY Idle: ${idleSpyShares} shares ($${spyIdleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;

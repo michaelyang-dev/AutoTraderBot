@@ -1,11 +1,10 @@
 """
-V9.5 Signal Adapter
+V9.6 Signal Adapter
 ===================
-Bridges the v9.5 multi-strategy framework with the existing signal_server.
-Replaces build_signals() with v9.5 strategy output while maintaining
-the same JSON format for the trading bot.
+Bridges the v9.6 multi-strategy factor framework with signal_server.
+Outputs signals in the same JSON format the trading bot expects.
 
-This module is imported by signal_server.py when v9.5 is active.
+This module is imported by signal_server.py.
 """
 
 import json as _json
@@ -71,7 +70,7 @@ def _build_universe(raw, enhanced_data=None):
 
 
 def _compute_features_from_raw(raw, prices):
-    """Compute the feature columns that v9.5 strategies need from raw bars."""
+    """Compute the feature columns that v9.6 strategies need from raw bars."""
     date_index = prices.index
     all_features = []
 
@@ -269,7 +268,7 @@ def _fill_sector_relative(features, data_dir):
 
 def build_signals_v9(raw, enhanced_data=None, top_n=8):
     """
-    Build signals using v9.5 multi-strategy framework.
+    Build signals using v9.6 multi-strategy framework.
 
     Returns list of signal dicts in the same format as build_signals():
     [{symbol, probability, confidence, ml_mode, rank, is_top_5, signal}, ...]
@@ -279,16 +278,16 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     # Use the last available trading date from raw data (not today — may be weekend/holiday)
     spy_df = raw.get("SPY", pd.DataFrame())
     if spy_df.empty or len(spy_df) == 0:
-        log.error("SPY data unavailable — cannot build v9.5 signals")
+        log.error("SPY data unavailable — cannot build v9.6 signals")
         return []
     today = pd.Timestamp(spy_df.index[-1]).normalize()
 
     # Rebuild universe if needed (once per day)
     if _uni_cache is None or _uni_cache_date != today:
-        log.info("Building v9.5 FastUniverse ...")
+        log.info("Building v9.6 FastUniverse ...")
         _uni_cache = _build_universe(raw, enhanced_data)
         _uni_cache_date = today
-        log.info("v9.5 FastUniverse ready")
+        log.info("v9.6 FastUniverse ready")
 
     uni = _uni_cache
 
@@ -388,7 +387,7 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
         sig["signal"] = "BUY" if sig["is_top_5"] else "HOLD"
 
     buy_count = sum(1 for s in signals if s["signal"] == "BUY")
-    log.info("v9.5 signals: %d total, %d BUY (breadth=%.1f%%, blend=%.2f)",
+    log.info("v9.6 signals: %d total, %d BUY (breadth=%.1f%%, blend=%.2f)",
              len(signals), buy_count, breadth * 100, blend)
 
     return signals
