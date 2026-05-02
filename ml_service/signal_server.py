@@ -353,6 +353,117 @@ def get_signal(symbol: str):
     }
 
 
+# ── Data Status & Quality Monitoring ─────────────────────────────────────────
+
+@app.get("/data-status")
+def data_status():
+    """Comprehensive data freshness and quality check.
+
+    Returns status for every data source with staleness thresholds.
+    Call before market open to verify everything is current.
+    """
+    import time as _time
+    now = _time.time()
+    DATA_DIR = Path(__file__).resolve().parent / "data"
+    ENHANCED_DIR = DATA_DIR / "enhanced_data"
+    alerts = []
+
+    def _check_file(path, max_age_hours, label):
+        if not path.exists():
+            alerts.append(f"MISSING: {label}")
+            return {"status": "MISSING", "label": label, "age_hours": None}
+        age_h = (now - path.stat().st_mtime) / 3600
+        ok = age_h <= max_age_hours
+        if not ok:
+            alerts.append(f"STALE: {label} ({age_h:.0f}h old, max {max_age_hours}h)")
+        return {
+            "status": "ok" if ok else "STALE",
+            "label": label,
+            "age_hours": round(age_h, 1),
+            "max_hours": max_age_hours,
+        }
+
+    checks = {}
+
+    # SP1500 membership (weekly, max 14 days = 336h)
+    checks["sp1500_membership"] = _check_file(
+        DATA_DIR / "sp1500_members.json", 336, "SP1500 membership")
+
+    # Sector map (weekly, max 14 days)
+    checks["sector_map"] = _check_file(
+        DATA_DIR / "cache_sectors.json", 336, "Sector map")
+
+    # Fundamentals (daily weekdays, max 48h to account for weekends)
+    for f in ["fundamentals_ratios", "fundamentals_income",
+              "fundamentals_metrics", "fundamentals_earnings"]:
+        checks[f] = _check_file(DATA_DIR / f"{f}.parquet", 48, f)
+
+    # VIX (daily weekdays, max 48h)
+    checks["vix_cache"] = _check_file(
+        ENHANCED_DIR / "vix_cache.parquet", 48, "VIX cache")
+
+    # Enhanced data (7-day cache TTL for some, daily for others)
+    daily_enhanced = ["options_snapshots", "ortex_short_interest",
+                      "ortex_short_dtc", "ortex_short_ctb",
+                      "ortex_short_availability", "crypto_forex_extended"]
+    weekly_enhanced = ["financial_growth", "enterprise_values",
+                       "company_profiles", "transcript_sentiment",
+                       "price_targets", "dcf_values"]
+
+    for f in daily_enhanced:
+        checks[f] = _check_file(ENHANCED_DIR / f"{f}.parquet", 48, f)
+    for f in weekly_enhanced:
+        checks[f] = _check_file(ENHANCED_DIR / f"{f}.parquet", 192, f)  # 8 days
+
+    # Signal quality
+    signal_check = {"status": "ok", "label": "signals"}
+    if not state.cache:
+        signal_check["status"] = "NO_SIGNALS"
+        alerts.append("NO SIGNALS generated")
+    else:
+        buys = [s for s in state.cache if s.get("signal") == "BUY"]
+        total = len(state.cache)
+        signal_check["total"] = total
+        signal_check["buy_count"] = len(buys)
+        # Sanity checks
+        if total < 400:
+            signal_check["status"] = "LOW_COUNT"
+            alerts.append(f"LOW SIGNAL COUNT: {total} (expected 1400+)")
+        if len(buys) == 0:
+            signal_check["status"] = "NO_BUYS"
+            alerts.append("ZERO BUY signals")
+        # Check for unreasonable probabilities
+        bad_probs = [s for s in state.cache if s.get("probability", 0) < 0
+                     or s.get("probability", 0) > 1]
+        if bad_probs:
+            signal_check["status"] = "BAD_PROBABILITIES"
+            alerts.append(f"{len(bad_probs)} signals with invalid probabilities")
+    checks["signals"] = signal_check
+
+    # SP1500 count validation
+    sp1500_file = DATA_DIR / "sp1500_members.json"
+    if sp1500_file.exists():
+        try:
+            import json as _json
+            with open(sp1500_file) as f:
+                sp = _json.load(f)
+            total_members = len(sp.get("sp500", [])) + len(sp.get("sp400", [])) + len(sp.get("sp600", []))
+            if total_members < 1400 or total_members > 1600:
+                alerts.append(f"SP1500 COUNT ANOMALY: {total_members} (expected 1400-1600)")
+            checks["sp1500_membership"]["member_count"] = total_members
+        except Exception:
+            pass
+
+    overall = "OK" if not alerts else "ALERT"
+    return {
+        "status": overall,
+        "timestamp": datetime.now().isoformat(),
+        "alerts": alerts,
+        "checks": checks,
+        "last_signal_update": state.last_update.isoformat() if state.last_update else None,
+    }
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

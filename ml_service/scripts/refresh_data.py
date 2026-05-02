@@ -110,8 +110,9 @@ def refresh_options():
     t0 = time.time()
     try:
         from strategies.fetch_all_data import fetch_options_snapshots
-        from sp500_universe import get_stock_symbols
-        symbols = get_stock_symbols()
+        from sp500_universe import get_all_symbols, get_etf_symbols
+        etfs = set(get_etf_symbols())
+        symbols = [s for s in get_all_symbols() if s not in etfs]
         fetch_options_snapshots(symbols)
         log(f"Options refreshed in {time.time() - t0:.0f}s")
         return True
@@ -294,6 +295,41 @@ def main():
 
     status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5 and ok6) else "PARTIAL"
     log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5}, snapshots={ok6})")
+
+    # Alert on failure via Telegram
+    if status != "OK":
+        failures = []
+        if not ok1: failures.append("enhanced_data")
+        if not ok2: failures.append("VIX")
+        if not ok3: failures.append("fundamentals")
+        if not ok4: failures.append("options")
+        if not ok5: failures.append("ortex")
+        if not ok6: failures.append("snapshots")
+        _send_telegram_alert(
+            f"⚠️ DATA REFRESH {status}\n"
+            f"Failed: {', '.join(failures)}\n"
+            f"System will use last known good data."
+        )
+    else:
+        log("All refreshes succeeded — no alerts needed")
+
+
+def _send_telegram_alert(message):
+    """Send alert via Telegram (same bot as tradingEngine)."""
+    import urllib.request
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id:
+        log("Telegram not configured — alert not sent")
+        return
+    try:
+        import urllib.parse
+        url = (f"https://api.telegram.org/bot{bot_token}/sendMessage"
+               f"?chat_id={chat_id}&text={urllib.parse.quote(message)}")
+        urllib.request.urlopen(url, timeout=10)
+        log(f"Telegram alert sent: {message[:80]}...")
+    except Exception as e:
+        log(f"Failed to send Telegram alert: {e}")
 
 
 if __name__ == "__main__":
