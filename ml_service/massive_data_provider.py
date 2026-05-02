@@ -43,9 +43,9 @@ CACHE_DIR = DATA_DIR / "massive_cache"
 # Polygon API base
 API_BASE = "https://api.polygon.io"
 
-# Rate limiting (disabled — Stocks Starter plan has unlimited calls)
-CALLS_PER_MINUTE = 0  # unlimited
-CALL_INTERVAL = 0.0   # no delay
+# Rate limiting — small delay prevents 429 throttling during cold starts (1500+ symbols)
+CALLS_PER_MINUTE = 0  # unlimited plan, but Polygon still throttles bursts
+CALL_INTERVAL = 0.08  # 80ms between calls (~12/sec, avoids burst throttling)
 
 
 def _sic_to_sector(sic_code: str, sic_desc: str = "") -> str:

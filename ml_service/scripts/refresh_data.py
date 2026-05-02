@@ -278,17 +278,37 @@ def refresh_snapshot_history():
         return False
 
 
+def _run_with_timeout(func, label, timeout_sec=600):
+    """Run a refresh function with a hard timeout."""
+    import signal as _sig
+
+    def _handler(signum, frame):
+        raise TimeoutError(f"{label} exceeded {timeout_sec}s timeout")
+
+    old = _sig.signal(_sig.SIGALRM, _handler)
+    _sig.alarm(timeout_sec)
+    try:
+        result = func()
+    except TimeoutError as e:
+        log(f"TIMEOUT: {e}")
+        result = False
+    finally:
+        _sig.alarm(0)
+        _sig.signal(_sig.SIGALRM, old)
+    return result
+
+
 def main():
     log("=" * 60)
     log("  DAILY DATA REFRESH")
     log("=" * 60)
 
-    ok1 = refresh_enhanced_data()
-    ok2 = refresh_vix_cache()
-    ok3 = refresh_fundamentals()
-    ok4 = refresh_options()
-    ok5 = refresh_ortex()
-    ok6 = refresh_snapshot_history()
+    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 300)
+    ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60)
+    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 600)
+    ok4 = _run_with_timeout(refresh_options, "options", 300)
+    ok5 = _run_with_timeout(refresh_ortex, "ortex", 600)
+    ok6 = _run_with_timeout(refresh_snapshot_history, "snapshots", 120)
 
     if ok1 or ok2 or ok3 or ok4 or ok5:
         restart_ml_server()
