@@ -43,13 +43,22 @@ CACHE_TTL = 3  # days before re-fetching
 
 # Individual stocks with fundamental data (ETFs excluded)
 # Use historical S&P 500 union to include delisted/acquired stocks
-from sp500_universe import get_stock_symbols, get_etf_symbols
+from sp500_universe import get_stock_symbols, get_all_symbols, get_etf_symbols
 from sp500_history import get_sp500_on_date, load_sp500_changes
 
 def _build_stock_universe():
-    """Build union of all historical S&P 500 stock members (excludes ETFs)."""
+    """Build full SP1500 stock universe (excludes ETFs).
+
+    v10: Uses SP1500 membership from sp1500_members.json + historical SP500
+    members for continuity. Falls back to SP500-only if SP1500 unavailable.
+    """
     load_sp500_changes()
     etf_set = set(get_etf_symbols())
+
+    # Start with full SP1500 (includes SP400 + SP600)
+    current = set(get_all_symbols()) - etf_set
+
+    # Add historical SP500 members for continuity
     historical = set()
     d = pd.Timestamp.today() - pd.Timedelta(days=365 * 10 + 220)
     end = pd.Timestamp.today()
@@ -57,10 +66,10 @@ def _build_stock_universe():
         members = get_sp500_on_date(d)
         historical |= members
         d += pd.Timedelta(days=30)
-    # Exclude ETFs — they don't have fundamentals
-    stocks_only = sorted((historical | set(get_stock_symbols())) - etf_set)
+
+    stocks_only = sorted((historical | current) - etf_set)
     print(f"  FMP universe: {len(stocks_only)} stocks "
-          f"(current SP500 + {len(stocks_only) - len(get_stock_symbols())} historical)")
+          f"(SP1500 + {len(stocks_only) - len(current)} historical)")
     return stocks_only
 
 STOCK_SYMBOLS = _build_stock_universe()
