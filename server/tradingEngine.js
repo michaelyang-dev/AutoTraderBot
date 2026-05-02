@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.12,               // v9.6: 8 positions * 12% = 96% (fits within 98% available)
-  STOP_LOSS_PCT: -0.15,               // v9.6 backtest: -15% fixed from entry
+  MAX_POSITION_PCT: 0.115,              // v10: 8 positions * 11.5% = 92% + 4% hedges (2%GLD+2%VIXM) + 4% cash
+  STOP_LOSS_PCT: -0.25,               // v10: -25% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.6 exits via rebalance
   MAX_OPEN_POSITIONS: 8,              // v9.6 top-8 concentrated picks
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.15,            // matches STOP_LOSS_PCT (only used if USE_TRAILING_STOP=true)
-  USE_TRAILING_STOP: false,           // v9.6 backtest uses fixed stop from entry, not trailing
+  TRAILING_STOP_PCT: 0.25,            // v10: -25% trailing stop from peak
+  USE_TRAILING_STOP: true,            // v10: trailing stop enabled (backtested: -24.1% max DD)
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -138,7 +138,7 @@ const ETF_SYMBOLS = [
   "EWZ","EWJ","FXI","INDA","EFA","EEM","VGK","VWO","IEFA",
   "GLD","SLV","USO","DBC","CPER",
   "TLT","IEF","SHY","HYG","LQD",
-  "VIXY","UUP",
+  "VIXY","VIXM","UUP",
 ];
 
 function loadUniverseSymbols() {
@@ -199,10 +199,10 @@ const PRICE_POLL_MS = 15000;
 const TRADE_CYCLE_MS = 60000;
 
 // ── Volatility Targeting ──
-const VOL_TARGET = 0.15;    // 15% annualized target
+const VOL_TARGET = 0.18;    // v10: 18% annualized target (backtested: 1.09 Sharpe)
 const MAX_LEVERAGE = 1.5;
 const MIN_LEVERAGE = 0.3;
-const VOL_LOOKBACK = 20;    // trading days for realized vol
+const VOL_LOOKBACK = 40;    // v10: 40-day lookback (matches backtest)
 
 const SECTOR_MAP = {
   AAPL: "Tech", MSFT: "Tech", GOOGL: "Tech", GOOG: "Tech", META: "Tech",
@@ -1900,7 +1900,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       if (previousDayValue !== null && previousDayValue > 0) {
         const dailyRet = (cyclePortfolioValue - previousDayValue) / previousDayValue;
         dailyReturns.push(dailyRet);
-        if (dailyReturns.length > 30) dailyReturns.splice(0, dailyReturns.length - 30);
+        if (dailyReturns.length > 60) dailyReturns.splice(0, dailyReturns.length - 60);
       }
       previousDayValue = cyclePortfolioValue;
 
@@ -1941,6 +1941,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         if (trendPositions[symbol]) continue;
         if (positionStrategy[symbol] === "momentum") continue;  // handled in STEP 1c
         if (positionStrategy[symbol] === "mean_reversion") continue;  // handled in STEP 1d
+        if (positionStrategy[symbol] === "hedge") continue;  // v10: GLD/VIXM managed in STEP 1g
 
         // Update trailing peak
         if (RISK.USE_TRAILING_STOP) {
@@ -2398,6 +2399,68 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
+      // ── STEP 1g: Maintain GLD + VIXM hedge allocations (2% each) ──
+      // v10: permanent 2% VIXM (tail hedge), 2% GLD (trend-following)
+      // GLD: buy when above 252-day SMA, sell when below
+      // VIXM: always hold 2%
+      const HEDGE_PCT = { GLD: 0.02, VIXM: 0.02 };
+      for (const hedgeSym of ["GLD", "VIXM"]) {
+        const targetPct = HEDGE_PCT[hedgeSym];
+        const hedgePos = activePositions.find(p => p.symbol === hedgeSym);
+        const hedgeValue = hedgePos ? hedgePos.market_value : 0;
+        const targetValue = cyclePortfolioValue * targetPct;
+        const currentPct = hedgeValue / cyclePortfolioValue;
+
+        // GLD trend filter: only hold if price > 252-day SMA
+        let shouldHold = true;
+        if (hedgeSym === "GLD" && priceHist.GLD) {
+          const gldPrices = priceHist.GLD;
+          if (gldPrices.length >= 252) {
+            const sma252 = gldPrices.slice(-252).reduce((a, b) => a + b, 0) / 252;
+            const currGld = gldPrices[gldPrices.length - 1];
+            shouldHold = currGld > sma252;
+          }
+        }
+
+        if (!shouldHold && hedgePos) {
+          // GLD below trend — sell
+          try {
+            await closePosition(hedgeSym);
+            closedSymbols.add(hedgeSym);
+            addLog(`[hedge] SELL ${hedgeSym}: below 252d SMA — trend off`, "sell");
+          } catch (err) {
+            addLog(`[hedge] Failed to sell ${hedgeSym}: ${err.message}`, "error");
+          }
+        } else if (shouldHold && Math.abs(currentPct - targetPct) > 0.005) {
+          // Rebalance: buy or trim to target
+          const hedgePrice = priceHist[hedgeSym]?.[priceHist[hedgeSym].length - 1];
+          if (hedgePrice && hedgePrice > 0) {
+            if (hedgeValue < targetValue * 0.8 && cycleCash > targetValue * 0.5) {
+              // Under-allocated — buy
+              const buyAmt = targetValue - hedgeValue;
+              const shares = Math.floor(buyAmt / hedgePrice);
+              if (shares > 0) {
+                try {
+                  await placeOrder({ symbol: hedgeSym, qty: shares, side: "buy", type: "market" });
+                  cycleCash -= shares * hedgePrice;
+                  positionStrategy[hedgeSym] = "hedge";
+                  addLog(`[hedge] BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} (${(targetPct * 100).toFixed(0)}% target)`, "buy");
+                } catch (err) {
+                  addLog(`[hedge] Failed to buy ${hedgeSym}: ${err.message}`, "error");
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Tag hedge positions so they're not sold by rebalance logic
+      for (const hSym of ["GLD", "VIXM"]) {
+        if (positionStrategy[hSym] !== "hedge" && activePositions.find(p => p.symbol === hSym)) {
+          positionStrategy[hSym] = "hedge";
+        }
+      }
+
       // ── STEP 2: Scan for signals ──
       if (regime !== "BULLISH") {
         const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
@@ -2808,8 +2871,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           continue;
         }
 
-        // v9.6 ML: no vol-targeting (backtest uses equal weight, not leveraged)
-        const volMult = (opp.strategy === "ml") ? 1.0 : currentVolScale;
+        // v10: vol-targeting enabled for ML positions (backtest: 18% vol target)
+        const volMult = currentVolScale;
         const maxAlloc = cyclePortfolioValue * dynPositionPct * volMult;
         // ML positions: use full available cash (reserve already subtracted above).
         // Non-ML: cap at 90% to leave room for other strategies.

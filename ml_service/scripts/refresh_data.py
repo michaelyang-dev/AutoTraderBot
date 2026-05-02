@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
-Weekly Data Refresh
-===================
-Refreshes FMP enhanced data (price targets, DCF, growth, etc.)
-and VIX cache so the v9.6 strategy has current fundamentals.
+Daily Data Refresh
+==================
+Refreshes all data sources and accumulates daily snapshots for
+future backtesting. Runs Mon-Fri at 5:00 PM ET via PM2 cron.
 
-Run via PM2 cron: every Sunday at 5:00 PM ET
+What it does:
+  1. Refreshes FMP enhanced data (price targets, DCF, growth, profiles)
+  2. Refreshes VIX cache from yfinance
+  3. Refreshes FMP fundamentals (income, ratios, earnings)
+  4. Refreshes options snapshots from Massive/Polygon (accumulates history)
+  5. Refreshes Ortex short interest data
+  6. Accumulates ALL snapshots to _history.parquet files (point-in-time database)
+
+The history accumulation (#6) is critical: it builds a point-in-time record
+of signals that change daily (price targets, DCF, short interest, etc.).
+Without this, backtests use current values applied to past dates (look-ahead bias).
+
 After completion, restarts ml-server to pick up new data.
 
 Usage:
@@ -174,42 +185,92 @@ def restart_ml_server():
         log(f"ERROR restarting ml-server: {e}")
 
 
+def _accumulate_snapshot(snapshot_file, history_file, data_dir, today):
+    """Append today's snapshot to a history parquet file.
+
+    Reads the current snapshot, stamps it with today's date,
+    and appends it to the history file (deduplicating if re-run same day).
+    """
+    import pandas as pd
+
+    snap_path = data_dir / snapshot_file
+    if not snap_path.exists():
+        return None
+
+    df = pd.read_parquet(snap_path)
+    df["date"] = today
+
+    hist_path = data_dir / history_file
+    if hist_path.exists():
+        try:
+            existing = pd.read_parquet(hist_path)
+            existing = existing[existing["date"] != today]  # remove today if re-running
+            df = pd.concat([existing, df], ignore_index=True)
+        except Exception:
+            pass
+
+    df.to_parquet(hist_path, index=False)
+    n_dates = df["date"].nunique()
+    log(f"  {history_file}: {len(df)} total rows ({n_dates} dates)")
+    return len(df)
+
+
 def refresh_snapshot_history():
-    """Accumulate daily snapshots of financial scores and analyst grades for future backtesting."""
-    log("Accumulating daily snapshot history (scores, grades)...")
+    """Accumulate daily snapshots of ALL enhanced data for future backtesting.
+
+    Every snapshot file gets stamped with today's date and appended to a
+    corresponding _history.parquet file. Over time this builds a point-in-time
+    database of signals that can't be reconstructed from other sources.
+
+    Data accumulated:
+      - Financial scores (Piotroski, Altman Z)
+      - Analyst grades consensus (buy/hold/sell)
+      - Price targets (analyst consensus targets)
+      - DCF values (intrinsic value estimates)
+      - Financial growth (revenue/EPS/FCF growth rates)
+      - Enterprise values (EV/Revenue, market cap)
+      - Ortex short interest (SI%, days-to-cover, cost-to-borrow)
+      - Options snapshots (put/call ratio, IV) — already accumulated by fetch_options_snapshots
+      - Company profiles (beta, sector, market cap)
+      - Transcript sentiment (earnings call sentiment)
+    """
+    log("Accumulating daily snapshot history (ALL enhanced data)...")
     t0 = time.time()
     try:
         import pandas as pd
-        from pathlib import Path
 
-        FMP_KEY = os.environ.get("FMP_API_KEY", "")
         DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "enhanced_data"
         today = datetime.now().strftime("%Y-%m-%d")
+        accumulated = 0
 
-        for endpoint, snapshot_file, history_file, symbol_col in [
-            ("financial-scores", "financial_scores.parquet", "financial_scores_history.parquet", "symbol"),
-            ("grades-consensus", "analyst_grades_consensus.parquet", "analyst_grades_history.parquet", "symbol"),
-        ]:
-            # Read current snapshot
-            snap_path = DATA_DIR / snapshot_file
-            if not snap_path.exists():
-                continue
-            df = pd.read_parquet(snap_path)
-            df["date"] = today
+        # All snapshot → history pairs to accumulate
+        SNAPSHOT_PAIRS = [
+            # (snapshot_file, history_file)
+            # Financial scores & analyst grades (already existed)
+            ("financial_scores.parquet", "financial_scores_history.parquet"),
+            ("analyst_grades_consensus.parquet", "analyst_grades_history.parquet"),
+            # Price targets & DCF (snapshot-only before, NOW accumulating)
+            ("price_targets.parquet", "price_targets_history.parquet"),
+            ("dcf_values.parquet", "dcf_values_history.parquet"),
+            # Financial growth & enterprise values
+            ("financial_growth.parquet", "financial_growth_history.parquet"),
+            ("enterprise_values.parquet", "enterprise_values_history.parquet"),
+            # Ortex short interest
+            ("ortex_short_interest.parquet", "ortex_short_interest_history.parquet"),
+            ("ortex_short_dtc.parquet", "ortex_short_dtc_history.parquet"),
+            ("ortex_short_ctb.parquet", "ortex_short_ctb_history.parquet"),
+            ("ortex_short_availability.parquet", "ortex_short_availability_history.parquet"),
+            # Company profiles & sentiment
+            ("company_profiles.parquet", "company_profiles_history.parquet"),
+            ("transcript_sentiment.parquet", "transcript_sentiment_history.parquet"),
+        ]
 
-            # Append to history
-            hist_path = DATA_DIR / history_file
-            if hist_path.exists():
-                try:
-                    existing = pd.read_parquet(hist_path)
-                    existing = existing[existing["date"] != today]  # remove today if re-running
-                    df = pd.concat([existing, df], ignore_index=True)
-                except Exception:
-                    pass
-            df.to_parquet(hist_path, index=False)
-            log(f"  {history_file}: {len(df)} total rows ({df['date'].nunique()} dates)")
+        for snapshot_file, history_file in SNAPSHOT_PAIRS:
+            result = _accumulate_snapshot(snapshot_file, history_file, DATA_DIR, today)
+            if result is not None:
+                accumulated += 1
 
-        log(f"Snapshot history updated in {time.time() - t0:.0f}s")
+        log(f"Snapshot history updated: {accumulated} datasets accumulated in {time.time() - t0:.0f}s")
         return True
     except Exception as e:
         log(f"ERROR updating snapshot history: {e}")

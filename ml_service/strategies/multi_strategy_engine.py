@@ -507,6 +507,8 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
     ret_252 = uni.get_feature_map(date, "ret_252d", members)
     dist_sma50 = uni.get_feature_map(date, "dist_sma50", members)
     eps_surp = uni.get_feature_map(date, "eps_surprise_last", members)
+    roe_map = uni.get_feature_map(date, "roe")  # pre-fetch outside loop
+    _fdate_all = uni._feat_by_date.get(date, {})  # for recent_sue lookup
 
     composite = {}
     for sym in members:
@@ -529,7 +531,7 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
             score *= 1.15
 
         # ROE quality boost (+0.26% per 10d, IC=+0.020)
-        roe_val = uni.get_feature_map(date, "roe").get(sym)
+        roe_val = roe_map.get(sym)
         if roe_val is not None and not np.isnan(roe_val) and roe_val > 0.15:
             score *= 1.05
 
@@ -560,6 +562,10 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
             bs = uni._beat_streak.get(sym, 0)
             if bs >= 3:
                 score *= 1.05
+
+        # PEAD/SUE boost: TESTED AND DISABLED — hurt CAGR by -2.2%
+        # SUE boost causes strategy to chase earnings pop stocks instead of sustained momentum.
+        # PEAD works as standalone short-term strategy, not as momentum modifier.
 
         # Piotroski, analyst consensus, put/call ratio: DISABLED
         # These are snapshot-only (no history) and cannot be backtested.

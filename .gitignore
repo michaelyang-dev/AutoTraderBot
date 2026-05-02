@@ -10,6 +10,7 @@ server/backtest_data/
 *.lgb
 *.png
 ml_service/venv/
+.venv/
 data/journal.db*
 
 # Env backups (contain secrets)

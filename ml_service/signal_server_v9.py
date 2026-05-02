@@ -15,11 +15,30 @@ import numpy as np
 import pandas as pd
 
 from sp500_history import get_sp500_on_date
+from sp1500_membership import get_sp1500_on_date
 from strategies.multi_strategy_engine import (
     FastUniverse, strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, strategy4_index_inclusion,
-    STRATEGY_CONFIG_BULL, STRATEGY_CONFIG_BEAR, SECTOR_ETFS,
+    SECTOR_ETFS,
 )
+
+# v10 strategy config: 85% momentum, 15% value
+# Bear regime shifts to 10% mom, 20% value, 60% lowvol, 10% sector
+STRATEGY_CONFIG_BULL = [
+    ("s1_momentum", 0.85),
+    ("s7_value",    0.15),
+    ("s3_sector",   0.00),
+    ("s4_inclusion", 0.00),
+    ("s5_lowvol",   0.00),
+]
+
+STRATEGY_CONFIG_BEAR = [
+    ("s1_momentum", 0.10),
+    ("s7_value",    0.20),
+    ("s3_sector",   0.10),
+    ("s4_inclusion", 0.00),
+    ("s5_lowvol",   0.60),
+]
 
 log = logging.getLogger("signal_server")
 
@@ -266,6 +285,45 @@ def _fill_sector_relative(features, data_dir):
     return features
 
 
+def _strategy_value(uni, date, members, top_n=10):
+    """Value strategy: high-quality stocks with strong fundamentals.
+
+    Matches fast_backtest._strategy_value exactly:
+    - Filters: ROE > 5%, gross margin > 15%, dist_sma200 > -15%, D/E < 3
+    - Scores: -ret_252d * 0.30 + gross_margin * 0.25 + min(ROE, 0.5) * 0.25
+    - Equal-weight top N picks
+    """
+    roe = uni.get_feature_map(date, "roe", members)
+    gm = uni.get_feature_map(date, "gross_margin", members)
+    r252 = uni.get_feature_map(date, "ret_252d", members)
+    d200 = uni.get_feature_map(date, "dist_sma200", members)
+    de = uni.get_feature_map(date, "debt_to_equity", members)
+
+    scores = {}
+    for sym in members:
+        r = roe.get(sym)
+        g = gm.get(sym)
+        rv = r252.get(sym)
+        dv = d200.get(sym)
+        debt = de.get(sym)
+        if r is None or g is None or rv is None:
+            continue
+        if np.isnan(r) or np.isnan(g) or np.isnan(rv):
+            continue
+        if r < 0.05 or g < 0.15:
+            continue
+        if dv is not None and dv < -0.15:
+            continue
+        if debt is not None and not np.isnan(debt) and debt > 3.0:
+            continue
+        scores[sym] = -rv * 0.30 + g * 0.25 + min(r, 0.5) * 0.25
+
+    if not scores:
+        return {}
+    ss = sorted(scores, key=scores.get, reverse=True)[:top_n]
+    return {s: 1.0 / len(ss) for s in ss}
+
+
 def build_signals_v9(raw, enhanced_data=None, top_n=8):
     """
     Build signals using v9.6 multi-strategy framework.
@@ -298,11 +356,16 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     t4 = strategy4_index_inclusion(today, uni, 0, s4_active)
     t5 = strategy5_lowvol_quality(today, uni, 0, top_n=10, rebal_days=1)
 
+    # Value strategy: uses SP1500 membership for the value stock universe
+    members = get_sp1500_on_date(today)
+    t7 = _strategy_value(uni, today, members, top_n=10)
+
     targets = {
         "s1_momentum": t1 or {},
         "s3_sector": t3 or {},
         "s4_inclusion": t4 or {},
         "s5_lowvol": t5 or {},
+        "s7_value": t7 or {},
     }
 
     # Breadth blend
@@ -364,8 +427,8 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     if max_score <= 0:
         max_score = 1.0
 
-    # All SP500 symbols should appear in the output
-    members = get_sp500_on_date(today)
+    # All SP1500 symbols should appear in the output (falls back to SP500 if Norgate unavailable)
+    members = get_sp1500_on_date(today)
     signals = []
     for sym in sorted(members):
         raw_score = combined.get(sym, 0.0)
