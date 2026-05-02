@@ -1730,7 +1730,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Market open transition notification
       if (marketOpen && !prevMarketOpen) {
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
-        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v9.6 signals: ${buyCount} BUY.`);
+        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v10 signals: ${buyCount} BUY.`);
       }
       prevMarketOpen = marketOpen;
 
@@ -2008,10 +2008,17 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             else { tradeCount.losses++; stratTracker.losses++; }
             tradeCount.totalPnL += unrealized_pl;
             stratTracker.totalPnL += unrealized_pl;
-            try { journal.closePosition({ symbol, fillPrice: curr, exitReason: "stop-loss" }); } catch (_) {}
+            const exitReason = RISK.USE_TRAILING_STOP ? "trail-stop" : "stop-loss";
+            try { journal.closePosition({ symbol, fillPrice: curr, exitReason }); } catch (_) {}
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
-            notify.send(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
+            if (RISK.USE_TRAILING_STOP) {
+              const peak = trailingPeaks[symbol] || curr;
+              const drop = ((curr - peak) / peak * 100).toFixed(1);
+              notify.send(`🛑 TRAIL-STOP ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Peak $${peak.toFixed(2)}, drop ${drop}% | P&L: $${unrealized_pl.toFixed(2)}`);
+            } else {
+              notify.send(`🛑 STOP-LOSS ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Loss: $${unrealized_pl.toFixed(2)} (${(unrealized_plpc * 100).toFixed(1)}%)`);
+            }
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
@@ -2450,6 +2457,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             await closePosition(hedgeSym);
             closedSymbols.add(hedgeSym);
             addLog(`[hedge] SELL ${hedgeSym}: below 252d SMA — trend off`, "sell");
+              try { journal.closePosition({ symbol: hedgeSym, fillPrice: hedgePos.current_price, exitReason: "hedge-trend-off" }); } catch (_) {}
+              notify.send(`🛡️ HEDGE SELL ${hedgeSym} | Below 252d SMA — trend off`);
           } catch (err) {
             addLog(`[hedge] Failed to sell ${hedgeSym}: ${err.message}`, "error");
           }
@@ -2467,6 +2476,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
                   cycleCash -= shares * hedgePrice;
                   positionStrategy[hedgeSym] = "hedge";
                   addLog(`[hedge] BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} (${(targetPct * 100).toFixed(0)}% target)`, "buy");
+                  notify.send(`🛡️ HEDGE BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} | ${(targetPct * 100).toFixed(0)}% target`);
                 } catch (err) {
                   addLog(`[hedge] Failed to buy ${hedgeSym}: ${err.message}`, "error");
                 }

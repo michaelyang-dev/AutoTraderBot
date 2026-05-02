@@ -74,7 +74,7 @@ class State:
     refresh_task:   Optional[asyncio.Task] = None
     enhanced_data:  dict                   = {}
     # Strategy info
-    strategy_version: str                  = "v9.6"
+    strategy_version: str                  = "v10"
     top_n:          int                    = 8
 
 state = State()
