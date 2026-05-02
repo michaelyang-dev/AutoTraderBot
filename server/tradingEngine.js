@@ -19,7 +19,7 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.115,              // v10: 8 positions * 11.5% = 92% + 4% hedges (2%GLD+2%VIXM) + 4% cash
+  MAX_POSITION_PCT: 0.12,               // v10: 8 positions * 12% = 96% equity + 4% hedges (2%GLD+2%VIXM)
   STOP_LOSS_PCT: -0.25,               // v10: -25% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.6 exits via rebalance
   MAX_OPEN_POSITIONS: 8,              // v9.6 top-8 concentrated picks
@@ -2346,8 +2346,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
-      // v9.6 strategy exits via rebalancing: when a stock drops out of the top-8,
-      // it should be sold. Without this, positions would only exit via stop-loss.
+      // v10: 10-day minimum hold before rebalance sell (backtest validated: 1.09 Sharpe vs 0.51 daily)
+      // Trailing stops still fire immediately regardless of hold period.
+      const REBAL_MIN_HOLD_CYCLES = 10 * 390;  // 10 trading days * 390 cycles/day
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         for (const pos of currentPositions) {
@@ -2359,6 +2360,16 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           if (positionStrategy[sym] && positionStrategy[sym] !== "ml") continue;
 
           if (!mlBuySet.has(sym)) {
+            // Enforce 10-day minimum hold before rebalance exit
+            const entryCycle = mlEntryDates[sym];
+            if (entryCycle != null) {
+              const cyclesHeld = cycleNumber - entryCycle;
+              if (cyclesHeld < REBAL_MIN_HOLD_CYCLES) {
+                const daysHeld = (cyclesHeld / 390).toFixed(1);
+                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld}d / 10d) -- skipping rebalance sell`, "system");
+                continue;
+              }
+            }
             try {
               await closePosition(sym);
               closedSymbols.add(sym);
