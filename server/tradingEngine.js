@@ -1674,7 +1674,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               is_top_5: sig.is_top_5,
               price_at_signal: spyPrice || null,
               regime,
-              model_version: mlData.strategy || mlData.model_version || "v9.6",
+              model_version: mlData.strategy || mlData.model_version || "v10",
             });
           }
         } catch (_) { /* never crash trading loop */ }
@@ -1690,7 +1690,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       if (prevMlStatus === "ok" && mlStatus !== "ok") {
         notify.send("🚨 SIGNAL SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
       } else if (prevMlStatus !== "ok" && mlStatus === "ok") {
-        notify.send("✅ SIGNAL SERVER RECOVERED — v9.6 signals active again.", { immediate: true });
+        notify.send("✅ SIGNAL SERVER RECOVERED — v10 signals active again.", { immediate: true });
       }
       prevMlStatus = mlStatus;
 
@@ -2396,7 +2396,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete positionStrategy[sym];
               delete trailingPeaks[sym];
               const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
-              addLog(`REBALANCE SELL ${sym}: no longer in v9.6 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
+              addLog(`REBALANCE SELL ${sym}: no longer in v10 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
               tradeCount.sells++; mlTradeCount.sells++;
               if (unrealized_pl >= 0) { tradeCount.wins++; mlTradeCount.wins++; }
               else { tradeCount.losses++; mlTradeCount.losses++; }
@@ -2508,7 +2508,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
       if (mlActive) {
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
-        addLog(`v9.6 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
+        addLog(`v10 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
         addLog("Signal server offline -- using consensus engine (fallback mode)", "system");
       }
@@ -2652,7 +2652,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               sym,
               score: mlSig.probability,
               price: prices[prices.length - 1],
-              consensus: `v9.6 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
+              consensus: `v10 #${mlSig.rank} (${(mlSig.probability * 100).toFixed(0)}%)`,
               rsiVal: analysis.indicators.rsi,
               mlConf: mlSig.probability,
             });
@@ -3269,8 +3269,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             else mlPos++;
           }
           const flexUsed = Math.max(0, mlPos + momPos + mrPos - SLOT_CONFIG.ml_medium - SLOT_CONFIG.momentum - SLOT_CONFIG.mean_reversion);
-          summary += `\nSlots: v9.6 ${mlPos}/${SLOT_CONFIG.ml_medium} | MOM ${momPos}/${SLOT_CONFIG.momentum} | MR ${mrPos}/${SLOT_CONFIG.mean_reversion} | Flex ${flexUsed}/${SLOT_CONFIG.flex}`;
-          summary += `\nv9.6 P&L: $${mlTradeCount.totalPnL.toFixed(0)} (${mlTradeCount.wins}W/${mlTradeCount.losses}L)`;
+          summary += `\nSlots: v10 ${mlPos}/${SLOT_CONFIG.ml_medium} | MOM ${momPos}/${SLOT_CONFIG.momentum} | MR ${mrPos}/${SLOT_CONFIG.mean_reversion} | Flex ${flexUsed}/${SLOT_CONFIG.flex}`;
+          summary += `\nv10 P&L: $${mlTradeCount.totalPnL.toFixed(0)} (${mlTradeCount.wins}W/${mlTradeCount.losses}L)`;
           summary += `\nMOM P&L: $${momTradeCount.totalPnL.toFixed(0)} (${momTradeCount.wins}W/${momTradeCount.losses}L)`;
           summary += `\nMR P&L: $${mrTradeCount.totalPnL.toFixed(0)} (${mrTradeCount.wins}W/${mrTradeCount.losses}L)`;
           summary += `\nSPY Idle: ${idleSpyShares} shares ($${spyIdleValue.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
