@@ -142,28 +142,39 @@ const ETF_SYMBOLS = [
 ];
 
 function loadUniverseSymbols() {
-  // Try loading S&P 500 list from the Python-generated cache
-  const cacheFile = path.join(__dirname, "..", "ml_service", "data", "sp500_constituents.json");
-  let sp500 = [];
-  try {
-    const raw = fs.readFileSync(cacheFile, "utf8");
-    sp500 = JSON.parse(raw);
-    if (!Array.isArray(sp500) || sp500.length < 400) sp500 = [];
-  } catch (e) { /* fall through to fallback */ }
+  // v10: Load full SP1500 from weekly Wikipedia scrape
+  const sp1500File = path.join(__dirname, "..", "ml_service", "data", "sp1500_members.json");
+  const sp500File = path.join(__dirname, "..", "ml_service", "data", "sp500_constituents.json");
+  let members = [];
 
-  if (sp500.length === 0) {
-    // Minimal fallback — original 32 stocks
-    sp500 = [
+  // Try SP1500 first (preferred)
+  try {
+    const raw = JSON.parse(fs.readFileSync(sp1500File, "utf8"));
+    members = [...(raw.sp500 || []), ...(raw.sp400 || []), ...(raw.sp600 || [])];
+    if (members.length < 1000) members = [];  // sanity check
+  } catch (e) { /* fall through */ }
+
+  // Fallback to SP500-only
+  if (members.length === 0) {
+    try {
+      members = JSON.parse(fs.readFileSync(sp500File, "utf8"));
+      if (!Array.isArray(members) || members.length < 400) members = [];
+    } catch (e) { /* fall through */ }
+  }
+
+  // Last resort fallback
+  if (members.length === 0) {
+    members = [
       "AAPL","GOOGL","MSFT","AMZN","TSLA","NVDA","META","NFLX","AMD","JPM","V","UNH",
       "CRM","ORCL","ADBE","CSCO","QCOM","COST","WMT","HD","LOW",
       "LLY","JNJ","ABBV","BAC","GS","MS","CVX","XOM","CAT","DE","BA",
     ];
   }
 
-  return [...new Set([...sp500, ...ETF_SYMBOLS])].sort();
+  return [...new Set([...members, ...ETF_SYMBOLS])].sort();
 }
 
-// UNIVERSE_SYMBOLS: flat array of ticker strings (~510)
+// UNIVERSE_SYMBOLS: flat array of ticker strings (~1540 SP1500 + ETFs)
 let UNIVERSE_SYMBOLS = loadUniverseSymbols();
 
 // Batch size for Alpaca API calls (snapshots support up to 200, bars individually)

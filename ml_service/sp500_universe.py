@@ -167,8 +167,25 @@ def get_cross_asset() -> list[str]:
 
 
 def get_all_symbols() -> list[str]:
-    """Get all symbols including cross-asset references (deduplicated)."""
-    return sorted(set(get_full_universe() + CROSS_ASSET))
+    """Get all symbols: SP1500 + ETFs + cross-asset references (deduplicated).
+
+    v10: Loads SP1500 membership from sp1500_members.json (weekly Wikipedia scrape).
+    Falls back to SP500-only if the file is missing.
+    """
+    sp1500_file = Path(__file__).resolve().parent / "data" / "sp1500_members.json"
+    members = []
+    try:
+        with open(sp1500_file) as f:
+            data = json.load(f)
+        members = data.get("sp500", []) + data.get("sp400", []) + data.get("sp600", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    if len(members) < 1000:
+        # Fallback to SP500-only
+        members = get_full_universe()
+
+    return sorted(set(members + ETF_SYMBOLS + CROSS_ASSET))
 
 
 if __name__ == "__main__":
