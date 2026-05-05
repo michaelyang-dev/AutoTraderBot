@@ -1478,8 +1478,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               positionStrategy[p.symbol] = "hedge";
               addLog(`[rehydrate] ${p.symbol} tagged as hedge (known hedge symbol)`, "system");
             } else {
-              positionStrategy[p.symbol] = "legacy";
-              addLog(`[rehydrate] ${p.symbol} has no journal entry — tagged legacy`, "system");
+              // Tag as "ml" (not "legacy") so it counts toward ML slots correctly
+              positionStrategy[p.symbol] = "ml";
+              addLog(`[rehydrate] ${p.symbol} has no journal entry — tagged ml`, "system");
             }
           }
         } catch (err) {
