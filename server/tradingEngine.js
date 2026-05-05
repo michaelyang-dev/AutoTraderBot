@@ -2473,7 +2473,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // v10: permanent 2% VIXM (tail hedge), 2% GLD (trend-following)
       // GLD: buy when above 252-day SMA, sell when below
       // VIXM: always hold 2%
-      const HEDGE_PCT = { GLD: 0.02, VIXM: 0.02 };
+      const HEDGE_PCT = { GLD: 0.02 };  // VIXM removed — decays ~20-30%/yr from contango
       for (const hedgeSym of ["GLD", "VIXM"]) {
         const targetPct = HEDGE_PCT[hedgeSym];
         const hedgePos = activePositions.find(p => p.symbol === hedgeSym);

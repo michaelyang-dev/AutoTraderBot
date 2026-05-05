@@ -457,7 +457,7 @@ if __name__ == "__main__":
     bt = FastBacktester()
 
     configs = [
-        ("v10 PROD: 85/15 t8 r10 trail25 G2V2", {"universe": "sp1500", "mom_w": 0.85, "val_w": 0.15, "lv_w": 0.0, "sec_w": 0.0, "top_n": 8, "rebal_days": 10, "trailing_stop": 0.25, "gld_pct": 0.02, "vixm_pct": 0.02}),
+        ("v10 PROD: 85/15 t8 r10 trail25 G2", {"universe": "sp1500", "mom_w": 0.85, "val_w": 0.15, "lv_w": 0.0, "sec_w": 0.0, "top_n": 8, "rebal_days": 10, "trailing_stop": 0.25, "gld_pct": 0.02}),
         ("v10 NO-HEDGE: 85/15 t8 r10 trail25", {"universe": "sp1500", "mom_w": 0.85, "val_w": 0.15, "lv_w": 0.0, "sec_w": 0.0, "top_n": 8, "rebal_days": 10, "trailing_stop": 0.25}),
     ]
 
