@@ -52,8 +52,38 @@ _uni_cache_date = None
 
 def _load_si_change_data(uni):
     """Load short interest change data and attach to universe for momentum scoring.
-    SI change (shorts covering) adds +3.5% OOS CAGR — structural mechanical edge."""
+    SI change (shorts covering) adds +3.5% OOS CAGR — structural mechanical edge.
+
+    Priority:
+      1. Ortex history (live, auto-updated daily by refresh_data.py)
+      2. WRDS compustat (static file, manual upload)
+    """
     DATA_DIR = Path(__file__).resolve().parent / "data"
+
+    # Try Ortex history first (auto-updated daily)
+    ortex_hist = DATA_DIR / "enhanced_data" / "ortex_short_interest_history.parquet"
+    if ortex_hist.exists():
+        try:
+            df = pd.read_parquet(ortex_hist)
+            df["date"] = pd.to_datetime(df["date"])
+            n_dates = df["date"].nunique()
+            if n_dates >= 2:
+                # Compute SI change: latest vs previous snapshot
+                df = df.sort_values(["ticker", "date"])
+                df["si_prev"] = df.groupby("ticker")["siShares"].shift(1)
+                df["si_change"] = (df["siShares"] - df["si_prev"]) / df["si_prev"]
+                df = df.dropna(subset=["si_change"])
+                # Get latest change per ticker
+                latest = df.sort_values("date").groupby("ticker")["si_change"].last()
+                if len(latest) >= 50:
+                    ranks = (-latest).rank(pct=True)
+                    uni._si_change_rank = ranks.to_dict()
+                    log.info(f"SI change from Ortex history: {len(uni._si_change_rank)} tickers ({n_dates} dates)")
+                    return
+        except Exception as e:
+            log.warning(f"Ortex history SI change failed: {e}")
+
+    # Fallback: WRDS compustat (static file)
     si_file = DATA_DIR / "wrds" / "compustat_short_interest.parquet"
     if not si_file.exists():
         uni._si_change_rank = {}
@@ -66,12 +96,10 @@ def _load_si_change_data(uni):
         si["si_prev"] = si.groupby("tic")["shortintadj"].shift(2)
         si["si_change"] = (si["shortintadj"] - si["si_prev"]) / si["si_prev"]
         si = si.dropna(subset=["si_change"])
-        # Get the latest SI change per ticker
         latest = si.sort_values("datadate").groupby("tic")["si_change"].last()
-        # Rank: negative change (covering) = high rank = bullish
         ranks = (-latest).rank(pct=True)
         uni._si_change_rank = ranks.to_dict()
-        log.info(f"SI change data loaded: {len(uni._si_change_rank)} tickers")
+        log.info(f"SI change from WRDS (static): {len(uni._si_change_rank)} tickers")
     except Exception as e:
         log.warning(f"Could not load SI change data: {e}")
         uni._si_change_rank = {}
