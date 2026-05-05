@@ -2474,7 +2474,16 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // GLD: buy when above 252-day SMA, sell when below
       // VIXM: always hold 2%
       const HEDGE_PCT = { GLD: 0.02 };  // VIXM removed — decays ~20-30%/yr from contango
-      for (const hedgeSym of ["GLD", "VIXM"]) {
+      // Sell any removed hedges (e.g. VIXM) that are still held
+      for (const removedHedge of ["VIXM"]) {
+        const oldPos = activePositions.find(p => p.symbol === removedHedge);
+        if (oldPos && oldPos.qty > 0) {
+          addLog(`[hedge] SELLING removed hedge ${removedHedge}: ${oldPos.qty} shares`, "sell");
+          await placeOrder({ symbol: removedHedge, qty: oldPos.qty, side: "sell", type: "market" });
+          delete positionStrategy[removedHedge];
+        }
+      }
+      for (const hedgeSym of Object.keys(HEDGE_PCT)) {
         const targetPct = HEDGE_PCT[hedgeSym];
         const hedgePos = activePositions.find(p => p.symbol === hedgeSym);
         const hedgeValue = hedgePos ? hedgePos.market_value : 0;
