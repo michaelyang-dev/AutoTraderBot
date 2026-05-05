@@ -1472,8 +1472,15 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             }
             addLog(`[rehydrate] ${p.symbol} tagged as ${entry.strategy} from journal (bought ${entry.submitted_at})`, "system");
           } else {
-            positionStrategy[p.symbol] = "legacy";
-            addLog(`[rehydrate] ${p.symbol} has no journal entry — tagged legacy`, "system");
+            // Tag GLD/VIXM as hedge even without journal entry
+            const hedgeSymbols = new Set(["GLD", "VIXM"]);
+            if (hedgeSymbols.has(p.symbol)) {
+              positionStrategy[p.symbol] = "hedge";
+              addLog(`[rehydrate] ${p.symbol} tagged as hedge (known hedge symbol)`, "system");
+            } else {
+              positionStrategy[p.symbol] = "legacy";
+              addLog(`[rehydrate] ${p.symbol} has no journal entry — tagged legacy`, "system");
+            }
           }
         } catch (err) {
           positionStrategy[p.symbol] = "legacy";
