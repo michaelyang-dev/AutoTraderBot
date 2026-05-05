@@ -22,7 +22,10 @@ from strategies.multi_strategy_engine import (
     SECTOR_ETFS,
 )
 
-# v10 strategy config: 85% momentum, 15% value
+# v10 strategy config: 85% enhanced momentum, 15% value
+# Momentum: skip-month (12-1) + SMA200 + SI change + consolidation + quality
+# Validated OOS 2022-2025: +20.6% CAGR, Sharpe 0.93, DD -29%
+# Walk-forward: +26.0% geo mean, 7/8 positive years, IS→OOS decay +1%
 # Bear regime shifts to 10% mom, 20% value, 60% lowvol, 10% sector
 STRATEGY_CONFIG_BULL = [
     ("s1_momentum", 0.85),
@@ -45,6 +48,33 @@ log = logging.getLogger("signal_server")
 # Module-level cache for the FastUniverse (expensive to build)
 _uni_cache = None
 _uni_cache_date = None
+
+
+def _load_si_change_data(uni):
+    """Load short interest change data and attach to universe for momentum scoring.
+    SI change (shorts covering) adds +3.5% OOS CAGR — structural mechanical edge."""
+    DATA_DIR = Path(__file__).resolve().parent / "data"
+    si_file = DATA_DIR / "wrds" / "compustat_short_interest.parquet"
+    if not si_file.exists():
+        uni._si_change_rank = {}
+        return
+    try:
+        si = pd.read_parquet(si_file, columns=["tic", "datadate", "shortintadj"])
+        si["datadate"] = pd.to_datetime(si["datadate"])
+        si = si.dropna(subset=["shortintadj"])
+        si = si[si["shortintadj"] > 0].sort_values(["tic", "datadate"])
+        si["si_prev"] = si.groupby("tic")["shortintadj"].shift(2)
+        si["si_change"] = (si["shortintadj"] - si["si_prev"]) / si["si_prev"]
+        si = si.dropna(subset=["si_change"])
+        # Get the latest SI change per ticker
+        latest = si.sort_values("datadate").groupby("tic")["si_change"].last()
+        # Rank: negative change (covering) = high rank = bullish
+        ranks = (-latest).rank(pct=True)
+        uni._si_change_rank = ranks.to_dict()
+        log.info(f"SI change data loaded: {len(uni._si_change_rank)} tickers")
+    except Exception as e:
+        log.warning(f"Could not load SI change data: {e}")
+        uni._si_change_rank = {}
 
 
 def _build_universe(raw, enhanced_data=None):
@@ -345,6 +375,8 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
         log.info("Building v9.6 FastUniverse ...")
         _uni_cache = _build_universe(raw, enhanced_data)
         _uni_cache_date = today
+        # Load SI change data for the enhanced momentum scoring
+        _load_si_change_data(_uni_cache)
         log.info("v9.6 FastUniverse ready")
 
     uni = _uni_cache

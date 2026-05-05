@@ -95,6 +95,41 @@ class FastBacktester:
         self.etf_df = pd.DataFrame(etf_prices)
         self.etf_df.index = pd.to_datetime(self.etf_df.index)
 
+        # Short interest (Compustat) — pre-compute percentile ranks per month
+        self._si_ranks_by_month = {}
+        self._si_change_ranks_by_month = {}
+        self._si_months = []
+        try:
+            si = pd.read_parquet("data/wrds/compustat_short_interest.parquet",
+                                 columns=["tic", "datadate", "shortintadj"])
+            si["datadate"] = pd.to_datetime(si["datadate"])
+            si = si.dropna(subset=["shortintadj"])
+            si = si[si["shortintadj"] > 0]
+            si = si.sort_values(["tic", "datadate"])
+
+            # SI level ranks (per month)
+            for month, grp in si.groupby(si["datadate"].dt.to_period("M")):
+                start = month.start_time
+                latest = grp.sort_values("datadate").groupby("tic")["shortintadj"].last()
+                ranks = latest.rank(pct=True)
+                self._si_ranks_by_month[start] = ranks.to_dict()
+            self._si_months = sorted(self._si_ranks_by_month.keys())
+
+            # SI change ranks (shorts covering = bullish)
+            si["si_prev"] = si.groupby("tic")["shortintadj"].shift(2)
+            si["si_change"] = (si["shortintadj"] - si["si_prev"]) / si["si_prev"]
+            si_chg = si.dropna(subset=["si_change"])
+            for month, grp in si_chg.groupby(si_chg["datadate"].dt.to_period("M")):
+                start = month.start_time
+                latest = grp.sort_values("datadate").groupby("tic")["si_change"].last()
+                # Negate: most negative change (covering) = highest rank
+                ranks = (-latest).rank(pct=True)
+                self._si_change_ranks_by_month[start] = ranks.to_dict()
+
+            log.info(f"Short interest loaded: {len(self._si_months)} months (level + change)")
+        except Exception as e:
+            log.warning(f"Could not load short interest: {e}")
+
         log.info(f"FastBacktester loaded in {time.time() - t0:.1f}s")
 
     def _get_sp1500(self, date):
@@ -219,7 +254,7 @@ class FastBacktester:
                         if px > holdings[sym]["peak_px"]:
                             holdings[sym]["peak_px"] = px
                         dd = (px - holdings[sym]["peak_px"]) / holdings[sym]["peak_px"]
-                        if dd < trailing_stop:
+                        if dd < -abs(trailing_stop):
                             cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                             del holdings[sym]
 
@@ -248,6 +283,18 @@ class FastBacktester:
             if day_idx % rebal_days != 0:
                 port_values.append((date, total_val))
                 continue
+
+            # ── Update short interest ranks for this date (pre-computed, O(1)) ─────
+            if self._si_months:
+                midx = np.searchsorted(self._si_months, date, side="right") - 1
+                if midx >= 0:
+                    self.uni._short_interest_rank = self._si_ranks_by_month.get(
+                        self._si_months[midx], {})
+                    self.uni._si_change_rank = self._si_change_ranks_by_month.get(
+                        self._si_months[midx], {})
+                else:
+                    self.uni._short_interest_rank = {}
+                    self.uni._si_change_rank = {}
 
             # ── Strategy signals (EXACT production code) ─────────
             t1 = strategy1_momentum_reversal(date, self.uni, day_idx,
@@ -410,9 +457,9 @@ if __name__ == "__main__":
     bt = FastBacktester()
 
     configs = [
-        ("SP1500: 65/15/10/10 8p", {"universe": "sp1500", "mom_w": 0.65, "val_w": 0.15, "lv_w": 0.10, "sec_w": 0.10, "top_n": 8}),
-        ("SP1500: 65/15/10/10 8p+G+V", {"universe": "sp1500", "mom_w": 0.65, "val_w": 0.15, "lv_w": 0.10, "sec_w": 0.10, "top_n": 8, "gld_pct": 0.05, "vixm_pct": 0.03}),
-        ("SP1500: 60/15/15/10 8p+G+V", {"universe": "sp1500", "mom_w": 0.60, "val_w": 0.15, "lv_w": 0.15, "sec_w": 0.10, "top_n": 8, "gld_pct": 0.05, "vixm_pct": 0.03}),
+        ("v10 PROD: 85/15 t8 r10 trail25", {"universe": "sp1500", "mom_w": 0.85, "val_w": 0.15, "lv_w": 0.0, "sec_w": 0.0, "top_n": 8, "rebal_days": 10, "trailing_stop": 0.25}),
+        ("v10 ALT: 70/30 t8 r10 trail25", {"universe": "sp1500", "mom_w": 0.70, "val_w": 0.30, "lv_w": 0.0, "sec_w": 0.0, "top_n": 8, "rebal_days": 10, "trailing_stop": 0.25}),
+        ("v10 PURE: 100/0 t10 r10 trail25", {"universe": "sp1500", "mom_w": 1.0, "val_w": 0.0, "lv_w": 0.0, "sec_w": 0.0, "top_n": 10, "rebal_days": 10, "trailing_stop": 0.25}),
     ]
 
     print(f"\n{'Config':<40} {'CAGR':>6} {'Shrp':>5} {'DD':>6} {'Time':>5}")
