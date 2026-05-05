@@ -769,6 +769,20 @@ function fetchMLSignals() {
   });
 }
 
+function fetchShortSignals() {
+  return new Promise((resolve) => {
+    const req = http.get("http://localhost:5001/short-signals", { timeout: 5000 }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => data += chunk);
+      res.on("end", () => {
+        try { resolve(JSON.parse(data)); } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
 // ══════════════════════════════════════════
 //  FACTORY — createTradingEngine
 // ══════════════════════════════════════════
@@ -1021,6 +1035,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let prevRegime = "BULLISH";
   let mlSignals = null;
   let mlStatus = "down";
+  let shortSignals = null;
+  let shortStatus = "down";
   let cash = 0;
   let portfolioValue = 0;
   let initialPortfolioValue = null;
@@ -1694,6 +1710,21 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
       prevMlStatus = mlStatus;
 
+      // Fetch Short Sleeve signals
+      const shortData = await fetchShortSignals();
+      if (shortData && Array.isArray(shortData.signals) && !shortData.is_stale) {
+        shortSignals = shortData.signals;
+        shortStatus = "ok";
+        const shortCount = shortSignals.filter(s => s.signal === "SHORT").length;
+        const coverCount = shortSignals.filter(s => s.signal === "COVER").length;
+        if (shortCount > 0 || coverCount > 0) {
+          addLog(`Short sleeve active -- ${shortCount} SHORT, ${coverCount} COVER signals`);
+        }
+      } else {
+        shortSignals = null;
+        shortStatus = shortData ? "stale" : "down";
+      }
+
       // Compute regime with recovery logic
       const regimeResult = computeRegime(priceHist.SPY);
       prevRegime = regime;
@@ -1805,6 +1836,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         let ml = 0, mom = 0, mr = 0, mc = 0, trend = 0, legacy = 0;
         for (const pos of posToCount) {
           if (pos.symbol === "SPY" && idleSpyShares > 0) continue;
+          // Skip hedge positions (GLD, VIXM) — managed separately, don't count toward slot limit
+          if (positionStrategy[pos.symbol] === "hedge") continue;
           // Skip positions with pending sell — they're on the way out
           if (pendingSells.has(pos.symbol)) continue;
           const strat = positionStrategy[pos.symbol] || "legacy";
@@ -3200,6 +3233,64 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           unrealizedPlPct: p.unrealized_plpc,
           marketValue: p.market_value,
         };
+      }
+
+      // ── STEP 4: Short Sleeve Execution ──
+      if (shortSignals && shortSignals.length > 0 && !circuitBreaker.halted) {
+        for (const sig of shortSignals) {
+          try {
+            const sym = sig.symbol;
+            if (!sym) continue;
+
+            // COVER signals — buy to close short positions
+            if (sig.signal === "COVER") {
+              const pos = activePositions.find(p => p.symbol === sym && parseFloat(p.qty) < 0);
+              if (pos) {
+                const qty = Math.abs(parseFloat(pos.qty));
+                addLog(`SHORT COVER: ${sym} | ${sig.exit_reason} | days=${sig.days_held} | pnl=${(sig.current_pnl * 100).toFixed(1)}%`);
+                const order = await alpaca.createOrder({
+                  symbol: sym, qty, side: "buy", type: "market", time_in_force: "day",
+                });
+                journal.recordOrderSubmitted({
+                  alpaca_order_id: order.id, symbol: sym, side: "buy", qty,
+                  strategy: "event_short", signal_prob: sig.probability,
+                  regime, intended_price: parseFloat(pos.current_price),
+                });
+                positionStrategy[sym] = undefined;
+              }
+            }
+
+            // SHORT signals — sell short to open new positions
+            if (sig.signal === "SHORT") {
+              // Check not already held (long or short)
+              if (heldSymbols.has(sym)) continue;
+              // Check circuit breaker
+              if (circuitBreaker.halted) continue;
+
+              const price = parseFloat(priceHist[sym]?.[priceHist[sym]?.length - 1] || 0);
+              if (price <= 0) continue;
+
+              // Position size: 10% of portfolio (1/MAX_POSITIONS)
+              const shortAlloc = portfolioValue * (sig.position_pct || 0.10);
+              const shares = Math.floor(shortAlloc / price);
+              if (shares < 1 || shortAlloc < 2000) continue;
+
+              addLog(`SHORT ENTRY: ${shares} ${sym} @ $${price.toFixed(2)} | event=${sig.event_type} | filed=${sig.filing_date}`);
+              const order = await alpaca.createOrder({
+                symbol: sym, qty: shares, side: "sell", type: "market", time_in_force: "day",
+              });
+              journal.recordOrderSubmitted({
+                alpaca_order_id: order.id, symbol: sym, side: "sell", qty: shares,
+                strategy: "event_short", signal_prob: sig.probability,
+                regime, intended_price: price,
+              });
+              positionStrategy[sym] = "event_short";
+              heldSymbols.add(sym);
+            }
+          } catch (err) {
+            addLog(`Short sleeve error (${sig.symbol}): ${err.message}`, "error");
+          }
+        }
       }
 
       // Daily snapshot + Telegram summary near market close (last 5 minutes)
