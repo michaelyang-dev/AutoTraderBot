@@ -248,7 +248,7 @@ def run_monitor():
 
     # Initial scan: get today's filings to build seen set
     log.info("Initial scan: loading today's filings...")
-    hits = query_edgar_filings(minutes_back=1440)  # last 24 hours
+    hits = query_edgar_filings(days_back=1)  # last 24 hours
     initial_events = extract_events(hits, seen_ids)
     if initial_events:
         log.info(f"Found {len(initial_events)} events in initial scan (not alerting)")
@@ -269,7 +269,7 @@ def run_monitor():
             if et_hour < 7 or et_hour > 20:  # outside extended hours
                 continue
 
-            hits = query_edgar_filings(minutes_back=3)
+            hits = query_edgar_filings(days_back=1)
             new_events = extract_events(hits, seen_ids)
 
             if new_events:
