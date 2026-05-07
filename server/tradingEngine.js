@@ -2490,30 +2490,36 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const targetValue = cyclePortfolioValue * targetPct;
         const currentPct = hedgeValue / cyclePortfolioValue;
 
-        // GLD trend filter: only hold if price > 252-day SMA
-        let shouldHold = true;
+        // GLD trend filter: hold if price > 252-day SMA
+        // Hysteresis band: buy when >2% above SMA, sell when >2% below SMA
+        // This prevents whipsaw when price oscillates around the SMA
+        let shouldBuy = false;   // only buy when clearly above
+        let shouldSell = false;  // only sell when clearly below
         if (hedgeSym === "GLD" && priceHist.GLD) {
           const gldPrices = priceHist.GLD;
           if (gldPrices.length >= 252) {
             const sma252 = gldPrices.slice(-252).reduce((a, b) => a + b, 0) / 252;
             const currGld = gldPrices[gldPrices.length - 1];
-            shouldHold = currGld > sma252;
+            const pctFromSma = (currGld - sma252) / sma252;
+            shouldBuy = pctFromSma > 0.02;   // >2% above SMA to buy
+            shouldSell = pctFromSma < -0.02; // >2% below SMA to sell
+            shouldHold = !shouldSell;         // hold unless clearly below
           }
         }
 
-        if (!shouldHold && hedgePos) {
-          // GLD below trend — sell
+        if (shouldSell && hedgePos) {
+          // GLD >2% below SMA — sell
           try {
             await closePosition(hedgeSym);
             closedSymbols.add(hedgeSym);
-            addLog(`[hedge] SELL ${hedgeSym}: below 252d SMA — trend off`, "sell");
+            addLog(`[hedge] SELL ${hedgeSym}: >2% below 252d SMA — trend off`, "sell");
               try { journal.closePosition({ symbol: hedgeSym, fillPrice: hedgePos.current_price, exitReason: "hedge-trend-off" }); } catch (_) {}
-              notify.send(`🛡️ HEDGE SELL ${hedgeSym} | Below 252d SMA — trend off`);
+              notify.send(`🛡️ HEDGE SELL ${hedgeSym} | >2% below 252d SMA — trend off`);
           } catch (err) {
             addLog(`[hedge] Failed to sell ${hedgeSym}: ${err.message}`, "error");
           }
-        } else if (shouldHold && !hedgePos) {
-          // No position yet — buy to target (only when completely absent)
+        } else if (shouldBuy && !hedgePos) {
+          // GLD >2% above SMA and no position — buy
           const hedgePrice = priceHist[hedgeSym]?.[priceHist[hedgeSym].length - 1];
           if (hedgePrice && hedgePrice > 0 && cycleCash > targetValue * 0.5) {
             const shares = Math.floor(targetValue / hedgePrice);
@@ -2530,7 +2536,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             }
           }
         }
-        // No constant rebalancing — hold the initial position until trend flips
+        // No action in the dead zone (-2% to +2% from SMA) — prevents whipsaw
       }
 
       // Tag hedge positions so they're not sold by rebalance logic
