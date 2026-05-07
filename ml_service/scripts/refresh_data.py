@@ -271,6 +271,30 @@ def refresh_snapshot_history():
             if result is not None:
                 accumulated += 1
 
+        # Also accumulate fundamentals (stored in parent data/ dir, not enhanced_data/)
+        FUND_DIR = DATA_DIR.parent
+        FUND_PAIRS = [
+            ("fundamentals_earnings.parquet", "fundamentals_earnings_history.parquet"),
+            ("fundamentals_ratios.parquet", "fundamentals_ratios_history.parquet"),
+            ("fundamentals_estimates.parquet", "fundamentals_estimates_history.parquet"),
+        ]
+        for snapshot_file, history_file in FUND_PAIRS:
+            result = _accumulate_snapshot(snapshot_file, history_file, FUND_DIR, today)
+            if result is not None:
+                accumulated += 1
+
+        # Version SP1500 membership (copy with date stamp)
+        sp1500_file = FUND_DIR / "sp1500_members.json"
+        sp1500_archive = FUND_DIR / "sp1500_archive"
+        if sp1500_file.exists():
+            sp1500_archive.mkdir(parents=True, exist_ok=True)
+            dated = sp1500_archive / f"sp1500_{today}.json"
+            if not dated.exists():
+                import shutil
+                shutil.copy2(sp1500_file, dated)
+                log(f"  SP1500 membership archived: {dated.name}")
+                accumulated += 1
+
         log(f"Snapshot history updated: {accumulated} datasets accumulated in {time.time() - t0:.0f}s")
         return True
     except Exception as e:
