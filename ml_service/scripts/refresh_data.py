@@ -27,7 +27,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Ensure ml_service is on path
@@ -298,6 +298,78 @@ def _run_with_timeout(func, label, timeout_sec=600):
     return result
 
 
+def archive_daily_prices():
+    """Archive today's closing prices from Massive cache for future backtesting.
+    This builds a point-in-time price database that doesn't rely on WRDS."""
+    import pandas as pd
+    CACHE_DIR = ML_DIR / "data" / "massive_cache"
+    ARCHIVE_DIR = ML_DIR / "data" / "price_archive"
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    archive_file = ARCHIVE_DIR / f"closes_{today}.parquet"
+
+    if archive_file.exists():
+        log(f"Price archive for {today} already exists — skipping")
+        return True
+
+    try:
+        closes = {}
+        parquets = list(CACHE_DIR.glob("*_adj.parquet"))
+        for f in parquets:
+            try:
+                df = pd.read_parquet(f)
+                if "close" in df.columns and len(df) > 0:
+                    sym = f.stem.replace("_adj", "")
+                    closes[sym] = df["close"].iloc[-1]
+            except:
+                continue
+
+        if closes:
+            pd.DataFrame([{"date": today, **closes}]).to_parquet(archive_file, index=False)
+            log(f"Archived {len(closes)} closing prices for {today}")
+
+            # Cleanup: keep last 90 days of daily files, consolidate older into monthly
+            cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            old_files = [f for f in ARCHIVE_DIR.glob("closes_*.parquet")
+                         if f.stem.split("_")[1] < cutoff]
+            if len(old_files) > 30:
+                log(f"Consolidating {len(old_files)} old price archives...")
+                dfs = [pd.read_parquet(f) for f in old_files]
+                combined = pd.concat(dfs, ignore_index=True)
+                combined.to_parquet(ARCHIVE_DIR / "closes_consolidated.parquet", index=False)
+                for f in old_files:
+                    f.unlink()
+                log(f"Consolidated into closes_consolidated.parquet ({len(combined)} rows)")
+        return True
+    except Exception as e:
+        log(f"Price archiving failed: {e}")
+        return False
+
+
+def cleanup_journal_db():
+    """Prevent journal.db from bloating by cleaning old signals/events."""
+    import sqlite3
+    DB_PATH = ML_DIR.parent / "data" / "journal.db"
+    if not DB_PATH.exists():
+        return True
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        # Keep only last 7 days of signals (this table bloats fastest)
+        conn.execute("DELETE FROM signals WHERE timestamp < datetime('now', '-7 days')")
+        conn.execute("DELETE FROM events WHERE timestamp < datetime('now', '-30 days')")
+        deleted = conn.total_changes
+        conn.execute("VACUUM")
+        conn.commit()
+        conn.close()
+        if deleted > 0:
+            log(f"Journal cleanup: deleted {deleted} old rows, vacuumed")
+        return True
+    except Exception as e:
+        log(f"Journal cleanup failed: {e}")
+        return False
+
+
 def main():
     log("=" * 60)
     log("  DAILY DATA REFRESH")
@@ -309,12 +381,14 @@ def main():
     ok4 = _run_with_timeout(refresh_options, "options", 300)
     ok5 = _run_with_timeout(refresh_ortex, "ortex", 600)
     ok6 = _run_with_timeout(refresh_snapshot_history, "snapshots", 120)
+    ok7 = _run_with_timeout(archive_daily_prices, "price_archive", 120)
+    ok8 = _run_with_timeout(cleanup_journal_db, "journal_cleanup", 60)
 
     if ok1 or ok2 or ok3 or ok4 or ok5:
         restart_ml_server()
 
     status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5 and ok6) else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5}, snapshots={ok6})")
+    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5}, snapshots={ok6}, prices={ok7}, journal={ok8})")
 
     # Alert on failure via Telegram
     if status != "OK":
