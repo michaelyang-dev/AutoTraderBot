@@ -2512,28 +2512,25 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           } catch (err) {
             addLog(`[hedge] Failed to sell ${hedgeSym}: ${err.message}`, "error");
           }
-        } else if (shouldHold && Math.abs(currentPct - targetPct) > 0.005) {
-          // Rebalance: buy or trim to target
+        } else if (shouldHold && !hedgePos) {
+          // No position yet — buy to target (only when completely absent)
           const hedgePrice = priceHist[hedgeSym]?.[priceHist[hedgeSym].length - 1];
-          if (hedgePrice && hedgePrice > 0) {
-            if (hedgeValue < targetValue * 0.8 && cycleCash > targetValue * 0.5) {
-              // Under-allocated — buy
-              const buyAmt = targetValue - hedgeValue;
-              const shares = Math.floor(buyAmt / hedgePrice);
-              if (shares > 0) {
-                try {
-                  await placeOrder({ symbol: hedgeSym, qty: shares, side: "buy", type: "market" });
-                  cycleCash -= shares * hedgePrice;
-                  positionStrategy[hedgeSym] = "hedge";
-                  addLog(`[hedge] BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} (${(targetPct * 100).toFixed(0)}% target)`, "buy");
-                  notify.send(`🛡️ HEDGE BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} | ${(targetPct * 100).toFixed(0)}% target`);
-                } catch (err) {
-                  addLog(`[hedge] Failed to buy ${hedgeSym}: ${err.message}`, "error");
-                }
+          if (hedgePrice && hedgePrice > 0 && cycleCash > targetValue * 0.5) {
+            const shares = Math.floor(targetValue / hedgePrice);
+            if (shares > 0) {
+              try {
+                await placeOrder({ symbol: hedgeSym, qty: shares, side: "buy", type: "market" });
+                cycleCash -= shares * hedgePrice;
+                positionStrategy[hedgeSym] = "hedge";
+                addLog(`[hedge] BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} (${(targetPct * 100).toFixed(0)}% target)`, "buy");
+                notify.send(`🛡️ HEDGE BUY ${shares} ${hedgeSym} @ $${hedgePrice.toFixed(2)} | ${(targetPct * 100).toFixed(0)}% target`);
+              } catch (err) {
+                addLog(`[hedge] Failed to buy ${hedgeSym}: ${err.message}`, "error");
               }
             }
           }
         }
+        // No constant rebalancing — hold the initial position until trend flips
       }
 
       // Tag hedge positions so they're not sold by rebalance logic
