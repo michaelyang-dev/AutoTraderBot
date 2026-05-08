@@ -1687,21 +1687,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         mlSignals = mlData.signals;
         mlStatus = "ok";
         // Journal: record each ML signal
-        try {
-          for (const sig of mlSignals) {
-            const spyPrice = priceHist.SPY?.[priceHist.SPY.length - 1];
-            journal.recordSignal({
-              symbol: sig.symbol,
-              signal_type: sig.signal,
-              probability: sig.probability,
-              rank: sig.rank,
-              is_top_5: sig.is_top_5,
-              price_at_signal: spyPrice || null,
-              regime,
-              model_version: mlData.strategy || mlData.model_version || "v10",
-            });
-          }
-        } catch (_) { /* never crash trading loop */ }
+        // Signal recording disabled — was writing 1506 rows every 10s,
+        // bloating journal.db to 2GB+ daily. Signals are already in signal_cache_v9.json.
       } else if (mlData && Array.isArray(mlData.signals) && mlData.is_stale) {
         mlSignals = null;   // stale → don't use for trading decisions
         mlStatus = "stale";
