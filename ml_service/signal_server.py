@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from signal_server_v9 import build_signals_v9
+from event_short_manager import EventShortManager
 
 # ── Paths & env ───────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -78,6 +79,13 @@ class State:
     top_n:          int                    = 8
 
 state = State()
+
+# ── Short Sleeve Manager ─────────────────────────────────────────────────────
+short_manager = EventShortManager(
+    data_dir=str(DATA_DIR),
+    cache_dir=str(DATA_DIR / "short_sleeve"),
+)
+log.info("Event short manager initialized")
 
 
 # ── Data fetching ────────────────────────────────────────────────────────────
@@ -186,6 +194,7 @@ async def _refresh() -> bool:
         state.cache       = new_signals
         state.last_update = datetime.now(ET)
         state.is_stale    = False
+        state._last_raw   = raw  # store for short sleeve price access
         _save_signal_cache(new_signals)
 
         elapsed = time.perf_counter() - t0
@@ -351,6 +360,42 @@ def get_signal(symbol: str):
         "last_update": state.last_update.isoformat() if state.last_update else None,
         "is_stale":    state.is_stale,
     }
+
+
+# ── Short Sleeve Endpoints ───────────────────────────────────────────────────
+
+@app.get("/short-signals")
+def get_short_signals():
+    """Short sleeve signals from event-driven forced-selling strategy."""
+    # Get current long positions for conflict check
+    long_symbols = set(s["symbol"] for s in state.cache if s.get("signal") == "BUY")
+
+    # Update short manager with current prices from our cache
+    price_map = {}
+    sma50_map = {}
+    for s in state.cache:
+        sym = s["symbol"]
+        # The signal cache doesn't have raw prices, but we can extract
+        # from the last refresh cycle's data if available
+        if hasattr(state, '_last_raw') and state._last_raw is not None:
+            if sym in state._last_raw.columns:
+                series = state._last_raw[sym].dropna()
+                if len(series) > 0:
+                    price_map[sym] = float(series.iloc[-1])
+                if len(series) >= 50:
+                    sma50_map[sym] = float(series.tail(50).mean())
+
+    short_manager.update_prices(price_map, sma50_map)
+
+    # Generate short signals
+    result = short_manager.generate_signals(long_positions=long_symbols)
+    return result
+
+
+@app.get("/short-status")
+def get_short_status():
+    """Short sleeve status and active positions."""
+    return short_manager.get_status()
 
 
 # ── Data Status & Quality Monitoring ─────────────────────────────────────────

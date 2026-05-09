@@ -1,38 +1,68 @@
-node_modules/
-build/
-.env
-.DS_Store
-*.log
-backtest_data/
-ml_service/data/
-server/backtest_data/
-*.parquet
-*.lgb
-*.png
-ml_service/venv/
-.venv/
-data/journal.db*
-
-# Env backups (contain secrets)
-.env.*
-.env.backup*
-
-# Config backups (local-only)
-*.aws-backup
-*.preautomation-backup
-*.backup
-
-# Python bytecode
+# Python
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
+*.egg-info/
 
-# Backtest cache
-ml_service/cache/
+# Data (too large for git)
+ml_service/data/wrds/
+ml_service/data/wrds_new_raw/
+ml_service/data/massive_cache/
+ml_service/data/price_archive/
+ml_service/data/sp1500_archive/
+ml_service/data/enhanced_data/
+ml_service/data/short_sleeve/
+ml_service/data/altdata_cache/
+ml_service/data/earnings_cache/
+ml_service/data/fundamentals_cache/
+ml_service/data/backups/
+ml_service/data/walkforward/
+ml_service/data/walkforward_enriched/
+ml_service/data/walkforward_short/
+ml_service/data/russell_short/
+ml_service/data/smallcap/
+ml_service/data/longshort/
+ml_service/research/data/
+server/backtest_data/
 
-# PM2 runtime files
-.pm2/
+# Model files
+ml_service/data/*.pkl
+ml_service/data/*.lgb
+ml_service/data/*.parquet
+ml_service/data/*.png
+ml_service/data/*.json
+ml_service/data/*.md
 
-# Deployment scripts (may contain paths/secrets)
-deploy/
+# Keep specific config files in data/
+!ml_service/data/.gitkeep
+
+# Node
+node_modules/
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
 .claude/
+build/
+ml_service/cache/
+deploy/fix_*
