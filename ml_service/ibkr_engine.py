@@ -103,23 +103,25 @@ class IBKREngine:
         log.info(f"Connected. Account: {self.account_id}")
         send_telegram(f"🟢 IBKR Engine connected. Account: {self.account_id}")
 
-    def get_account_summary(self):
+    async def get_account_summary(self):
         """Get account NAV and buying power."""
         summary = {}
-        for item in self.ib.accountSummary():
+        items = await self.ib.accountSummaryAsync()
+        for item in items:
             if item.tag in ["NetLiquidation", "TotalCashValue", "BuyingPower"]:
                 summary[item.tag] = float(item.value)
         return summary
 
-    def get_portfolio_value(self):
+    async def get_portfolio_value(self):
         """Get current portfolio NAV."""
-        summary = self.get_account_summary()
+        summary = await self.get_account_summary()
         return summary.get("NetLiquidation", 0)
 
-    def update_positions(self):
+    async def update_positions(self):
         """Refresh positions from IBKR."""
         self.positions = {}
-        for pos in self.ib.positions():
+        positions = await self.ib.reqPositionsAsync()
+        for pos in positions:
             if pos.contract.secType == "STK" and pos.position != 0:
                 sym = pos.contract.symbol
                 self.positions[sym] = {
@@ -178,11 +180,11 @@ class IBKREngine:
 
     async def check_trailing_stops(self):
         """Check and execute trailing stops."""
-        portfolio_value = self.get_portfolio_value()
+        portfolio_value = await self.get_portfolio_value()
         if portfolio_value <= 0:
             return
 
-        self.update_positions()
+        await self.update_positions()
 
         for sym, pos in list(self.positions.items()):
             contract = pos.get("contract")
@@ -251,12 +253,12 @@ class IBKREngine:
             log.warning("No signals available — skipping rebalance")
             return
 
-        portfolio_value = self.get_portfolio_value()
+        portfolio_value = await self.get_portfolio_value()
         if portfolio_value <= 0:
             log.error("Portfolio value is 0 — skipping rebalance")
             return
 
-        self.update_positions()
+        await self.update_positions()
 
         target_symbols = set(s["symbol"] for s in signals)
         held_symbols = set(self.positions.keys())
@@ -270,8 +272,8 @@ class IBKREngine:
         # Wait for sells to settle
         if held_symbols - target_symbols:
             await asyncio.sleep(2)
-            self.update_positions()
-            portfolio_value = self.get_portfolio_value()
+            await self.update_positions()
+            portfolio_value = await self.get_portfolio_value()
 
         # 2. Compute target weights
         target_weight = 1.0 / MAX_POSITIONS  # equal weight
@@ -311,7 +313,7 @@ class IBKREngine:
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
 
         self.last_rebalance = datetime.now()
-        self.update_positions()
+        await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
 
     async def run(self):
@@ -327,7 +329,7 @@ class IBKREngine:
         log.info(f"  Rebalance interval: {REBALANCE_INTERVAL}s")
         log.info("=" * 60)
 
-        summary = self.get_account_summary()
+        summary = await self.get_account_summary()
         log.info(f"NAV: ${summary.get('NetLiquidation', 0):,.0f}")
         log.info(f"Cash: ${summary.get('TotalCashValue', 0):,.0f}")
 
@@ -358,7 +360,7 @@ class IBKREngine:
                     await self.rebalance()
 
                     # Log status
-                    summary = self.get_account_summary()
+                    summary = await self.get_account_summary()
                     nav = summary.get("NetLiquidation", 0)
                     cash = summary.get("TotalCashValue", 0)
                     log.info(f"NAV: ${nav:,.0f} | Cash: ${cash:,.0f} | Positions: {len(self.positions)}")
