@@ -3,11 +3,11 @@
 Event Short Manager — Short Sleeve Signal Generator for v10
 =============================================================
 Generates short signals from SEC forced-selling events.
-Runs alongside signal_server_v9.py as an independent sleeve.
+Runs alongside signal_builder.py as an independent sleeve.
 
 Architecture:
   signal_server.py
-    ├── /signals (long signals from signal_server_v9.py)
+    ├── /signals (long signals from signal_builder.py)
     └── /short-signals (short signals from this module)
 
   tradingEngine.js

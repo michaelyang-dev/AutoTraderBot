@@ -39,7 +39,7 @@ from massive_data_provider import fetch_bars_batch_massive, get_provider
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from signal_server_v9 import build_signals_v9
+from signal_builder import build_signals_v9
 from event_short_manager import EventShortManager
 
 # ── Paths & env ───────────────────────────────────────────────────────────────
