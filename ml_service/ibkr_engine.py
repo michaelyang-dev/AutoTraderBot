@@ -96,6 +96,7 @@ class IBKREngine:
     async def connect(self):
         """Connect to IB Gateway."""
         log.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT}...")
+        self.ib = IB()
         await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, readonly=False, timeout=20)
         accounts = self.ib.managedAccounts()
         self.account_id = accounts[0] if accounts else None
@@ -379,7 +380,9 @@ class IBKREngine:
 if __name__ == "__main__":
     engine = IBKREngine()
     try:
-        util.run(engine.run())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(engine.run())
     except KeyboardInterrupt:
         log.info("Stopped by user")
     except Exception as e:
