@@ -73,7 +73,10 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # Short sleeve parameters (event-driven forced selling)
-SHORT_ENABLED = True
+# DISABLED: EDGAR 8-K backtest showed -6.6% CAGR, -0.31 Sharpe (2015-2025)
+# Only auditor_change produced positive returns; restatement/impairment/delisting lose money.
+# Keep EDGAR monitor running for data collection; re-enable when validated.
+SHORT_ENABLED = False
 SHORT_MAX_POSITIONS = 10
 SHORT_HOLD_DAYS = 30
 SHORT_STOP_LOSS = 0.25   # exit if stock RISES 25% from entry
