@@ -107,6 +107,9 @@ class IBKREngine:
         # Short sleeve state
         self.short_positions = {}  # symbol -> {qty, entry_price, entry_date, event_type, days_held}
         self.short_recent = {}     # symbol -> last entry datetime (dedup)
+        self.short_sleeve_value = 0  # track sleeve P&L for kill switch
+        self.short_sleeve_peak = 0
+        self.short_halted = False
 
     async def connect(self):
         """Connect to IB Gateway."""
@@ -428,9 +431,38 @@ class IBKREngine:
             self.short_recent[symbol] = datetime.now()
         return trade
 
+    def check_short_kill_switch(self):
+        """Check sleeve-level circuit breaker (-35% DD → halt)."""
+        if not self.short_positions:
+            return False
+
+        # Compute sleeve cumulative value (sum of all short P&L)
+        sleeve_pnl = sum(
+            pos.get("entry_price", 0) * pos.get("qty", 0)  # this is approximate
+            for pos in self.short_positions.values()
+        )
+        if sleeve_pnl > self.short_sleeve_peak:
+            self.short_sleeve_peak = sleeve_pnl
+
+        if self.short_sleeve_peak > 0:
+            dd = (sleeve_pnl - self.short_sleeve_peak) / self.short_sleeve_peak
+            if dd < -0.35 and not self.short_halted:
+                log.warning(f"SHORT KILL SWITCH: sleeve DD = {dd:.1%}")
+                send_telegram(f"🛑 SHORT KILL SWITCH: DD = {dd:.1%} — halting new entries")
+                self.short_halted = True
+            elif self.short_halted and dd > -0.15:
+                log.info(f"Short kill switch released: DD = {dd:.1%}")
+                self.short_halted = False
+
+        return self.short_halted
+
     async def process_short_events(self):
         """Process new short events from EDGAR monitor."""
         if not SHORT_ENABLED:
+            return
+
+        # Kill switch check
+        if self.check_short_kill_switch():
             return
 
         if len(self.short_positions) >= SHORT_MAX_POSITIONS:
@@ -484,9 +516,24 @@ class IBKREngine:
             if not price or price < SHORT_MIN_PRICE:
                 continue
 
-            # SMA50 filter: must be below 50-day SMA
-            # We can't easily compute SMA here, so we skip this filter for now
-            # The EDGAR monitor already filters for quality events
+            # SMA50 filter: must be below 50-day SMA (critical for avoiding V-recoveries)
+            try:
+                bars = await self.ib.reqHistoricalDataAsync(
+                    contract, endDateTime="", durationStr="70 D",
+                    barSizeSetting="1 day", whatToShow="ADJUSTED_LAST",
+                    useRTH=True, formatDate=1)
+                if bars and len(bars) >= 50:
+                    closes = [b.close for b in bars[-50:]]
+                    sma50 = sum(closes) / len(closes)
+                    if price >= sma50:
+                        log.info(f"Short skip {ticker} — above SMA50 ({price:.0f} >= {sma50:.0f})")
+                        continue
+                else:
+                    log.warning(f"Short skip {ticker} — insufficient price history")
+                    continue
+            except Exception as e:
+                log.warning(f"Short skip {ticker} — SMA50 check failed: {e}")
+                continue
 
             # Size the position
             shares = int(per_position / price)
