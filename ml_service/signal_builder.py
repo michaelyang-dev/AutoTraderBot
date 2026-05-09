@@ -22,10 +22,11 @@ from strategies.multi_strategy_engine import (
     SECTOR_ETFS,
 )
 
-# v10 strategy config: 85% enhanced momentum, 15% value
+# v10.1 strategy config: 85% enhanced momentum, 15% value
 # Momentum: skip-month (12-1) + SMA200 + SI change + consolidation + quality
-# Validated OOS 2022-2025: +20.6% CAGR, Sharpe 0.93, DD -29%
-# Walk-forward: +26.0% geo mean, 7/8 positive years, IS→OOS decay +1%
+# v10.1 changes: rebal 20d (was 10d), stop 35% (was 25%), cap 12.5% (was 15%)
+# Validated OOS 2022-2025: +23.7% CAGR, Sharpe 1.09, DD -24.7%
+# Walk-forward: +26.0% geo mean, 4/4 positive windows, IS→OOS decay -42%
 # Bear regime shifts to 10% mom, 20% value, 60% lowvol, 10% sector
 STRATEGY_CONFIG_BULL = [
     ("s1_momentum", 0.85),

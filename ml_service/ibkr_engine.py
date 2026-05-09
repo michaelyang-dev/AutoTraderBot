@@ -63,8 +63,8 @@ SIGNAL_HEALTH_URL = "http://localhost:5001/health"
 
 # Strategy parameters (must match backtest)
 MAX_POSITIONS = 8
-POSITION_CAP = 0.15     # 15% max per position
-TRAILING_STOP = 0.25    # 25% trailing stop
+POSITION_CAP = 0.125    # v10.1: 12.5% max per position (backtested: Sharpe 1.09)
+TRAILING_STOP = 0.35    # v10.1: 35% trailing stop (wider = less whipsaw, +3.2% OOS CAGR)
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
@@ -281,9 +281,17 @@ class IBKREngine:
         target_symbols = set(s["symbol"] for s in signals)
         held_symbols = set(self.positions.keys())
 
-        # 1. SELL positions not in signals
+        # 1. SELL positions not in signals (enforce 20-day min hold)
+        MIN_HOLD_DAYS = 20
         for sym in held_symbols - target_symbols:
             pos = self.positions[sym]
+            # Check min hold period before rebalance exit
+            entry_date = self.trailing_peaks.get(f"{sym}_entry")
+            if entry_date:
+                days_held = (datetime.now() - entry_date).days
+                if days_held < MIN_HOLD_DAYS:
+                    log.info(f"HOLD {sym}: dropped from top-8 but min-hold active ({days_held}d / {MIN_HOLD_DAYS}d)")
+                    continue
             log.info(f"Selling {sym} — no longer in top-{MAX_POSITIONS}")
             await self.sell_position(sym, pos["qty"], "dropped_from_signals")
 
@@ -324,8 +332,10 @@ class IBKREngine:
             if delta_qty > 0:
                 # BUY
                 await self.buy_position(sym, delta_qty, "rebalance")
-                # Set trailing peak
+                # Set trailing peak and entry date
                 self.trailing_peaks[sym] = price
+                if f"{sym}_entry" not in self.trailing_peaks:
+                    self.trailing_peaks[f"{sym}_entry"] = datetime.now()
             elif delta_qty < 0:
                 # TRIM (sell excess)
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")

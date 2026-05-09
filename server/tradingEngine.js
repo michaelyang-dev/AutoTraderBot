@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.12,               // v10: 8 positions * 12% = 96% equity + 4% hedges (2%GLD+2%VIXM)
-  STOP_LOSS_PCT: -0.25,               // v10: -25% trailing stop from peak
+  MAX_POSITION_PCT: 0.125,              // v10.1: 8 positions * 12.5% = 100% equity (no hedges)
+  STOP_LOSS_PCT: -0.35,               // v10.1: -35% trailing stop from peak (wider = less whipsaw)
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.6 exits via rebalance
   MAX_OPEN_POSITIONS: 8,              // v9.6 top-8 concentrated picks
   MAX_CASH_DEPLOY_PCT: 0.90,
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.25,            // v10: -25% trailing stop from peak
-  USE_TRAILING_STOP: true,            // v10: trailing stop enabled (backtested: -24.1% max DD)
+  TRAILING_STOP_PCT: 0.35,            // v10.1: -35% trailing stop (backtested: +23.7% OOS CAGR, Sharpe 1.09)
+  USE_TRAILING_STOP: true,            // v10.1: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -2392,9 +2392,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
-      // v10: 10-day minimum hold before rebalance sell (backtest validated: 1.09 Sharpe vs 0.51 daily)
+      // v10.1: 20-day minimum hold before rebalance sell (backtested: +23.7% OOS CAGR, Sharpe 1.09 vs 0.99 at 10d)
       // Trailing stops still fire immediately regardless of hold period.
-      const REBAL_MIN_HOLD_CYCLES = 10 * 390;  // 10 trading days * 390 cycles/day
+      const REBAL_MIN_HOLD_CYCLES = 20 * 390;  // 20 trading days * 390 cycles/day
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         for (const pos of currentPositions) {
@@ -2412,7 +2412,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               const cyclesHeld = cycleNumber - entryCycle;
               if (cyclesHeld < REBAL_MIN_HOLD_CYCLES) {
                 const daysHeld = (cyclesHeld / 390).toFixed(1);
-                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld}d / 10d) -- skipping rebalance sell`, "system");
+                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld}d / 20d) -- skipping rebalance sell`, "system");
                 continue;
               }
             }
