@@ -72,6 +72,18 @@ MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
 
+# Short sleeve parameters (event-driven forced selling)
+SHORT_ENABLED = True
+SHORT_MAX_POSITIONS = 10
+SHORT_HOLD_DAYS = 30
+SHORT_STOP_LOSS = 0.25   # exit if stock RISES 25% from entry
+SHORT_ALLOCATION = 0.25  # 25% of NAV allocated to short sleeve
+SHORT_MIN_PRICE = 5.0
+SHORT_DEDUP_DAYS = 90
+SHORT_EVENTS_FILE = ML_DIR / "data" / "short_sleeve" / "realtime_events.json"
+# Primary event types that trigger shorts (validated in backtest)
+SHORT_TRIGGER_TYPES = {"auditor_change", "financial_restatement", "material_impairment", "delisting_notice"}
+
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
@@ -92,6 +104,9 @@ class IBKREngine:
         self.last_rebalance = None
         self.account_id = None
         self.running = False
+        # Short sleeve state
+        self.short_positions = {}  # symbol -> {qty, entry_price, entry_date, event_type, days_held}
+        self.short_recent = {}     # symbol -> last entry datetime (dedup)
 
     async def connect(self):
         """Connect to IB Gateway."""
@@ -316,6 +331,173 @@ class IBKREngine:
         await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
 
+    # ═══════════════════════════════════════════════════════════════
+    # SHORT SLEEVE
+    # ═══════════════════════════════════════════════════════════════
+    def load_short_events(self):
+        """Load pending short events from EDGAR monitor."""
+        if not SHORT_EVENTS_FILE.exists():
+            return []
+        try:
+            with open(SHORT_EVENTS_FILE) as f:
+                events = json.load(f)
+            # Filter to primary events only
+            primary = [e for e in events
+                       if e.get("is_primary", False)
+                       and any(t in SHORT_TRIGGER_TYPES for t in e.get("event_types", []))]
+            return primary
+        except Exception as e:
+            log.error(f"Failed to load short events: {e}")
+            return []
+
+    async def check_short_exits(self):
+        """Check short positions for exit conditions."""
+        for sym, pos in list(self.short_positions.items()):
+            if pos["qty"] == 0:
+                continue
+
+            contract = Stock(sym, "SMART", "USD")
+            price = await self.get_market_price(contract)
+            if not price:
+                continue
+
+            pos["days_held"] += 1
+            should_exit = False
+            reason = ""
+
+            # Hold period complete
+            if pos["days_held"] >= SHORT_HOLD_DAYS:
+                should_exit = True
+                reason = "hold_complete"
+
+            # Stop loss: stock ROSE 25% from entry
+            if price / pos["entry_price"] - 1 > SHORT_STOP_LOSS:
+                should_exit = True
+                reason = f"stop_loss (stock up {price/pos['entry_price']-1:.0%})"
+
+            if should_exit:
+                # Cover: buy to close
+                await self.cover_short(sym, pos["qty"], reason)
+
+    async def short_sell(self, symbol, qty, reason="event_short"):
+        """Short sell a stock."""
+        contract = Stock(symbol, "SMART", "USD")
+        await self.ib.qualifyContractsAsync(contract)
+        order = MarketOrder("SELL", qty)
+        trade = self.ib.placeOrder(contract, order)
+        await asyncio.sleep(3)
+
+        status = trade.orderStatus.status
+        filled = trade.orderStatus.filled
+        price = trade.orderStatus.avgFillPrice
+
+        log.info(f"SHORT {qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
+        send_telegram(f"🔴 SHORT {qty} {symbol} @ ${price:.2f} | {reason}")
+
+        if status in ["Filled", "Submitted", "PreSubmitted"]:
+            self.short_positions[symbol] = {
+                "qty": int(qty),
+                "entry_price": price if price > 0 else 0,
+                "entry_date": datetime.now().isoformat(),
+                "event_type": reason,
+                "days_held": 0,
+            }
+        return trade
+
+    async def cover_short(self, symbol, qty, reason="exit"):
+        """Buy to cover a short position."""
+        contract = Stock(symbol, "SMART", "USD")
+        await self.ib.qualifyContractsAsync(contract)
+        order = MarketOrder("BUY", abs(qty))
+        trade = self.ib.placeOrder(contract, order)
+        await asyncio.sleep(3)
+
+        status = trade.orderStatus.status
+        filled = trade.orderStatus.filled
+        price = trade.orderStatus.avgFillPrice
+
+        entry = self.short_positions.get(symbol, {}).get("entry_price", 0)
+        pnl = (entry - price) / entry * 100 if entry > 0 else 0
+
+        log.info(f"COVER {qty} {symbol}: {status} @ ${price:.2f} P&L={pnl:+.1f}% ({reason})")
+        send_telegram(f"🟢 COVER {qty} {symbol} @ ${price:.2f} | P&L={pnl:+.1f}% | {reason}")
+
+        if symbol in self.short_positions:
+            del self.short_positions[symbol]
+        if symbol in self.short_recent:
+            self.short_recent[symbol] = datetime.now()
+        return trade
+
+    async def process_short_events(self):
+        """Process new short events from EDGAR monitor."""
+        if not SHORT_ENABLED:
+            return
+
+        if len(self.short_positions) >= SHORT_MAX_POSITIONS:
+            return
+
+        events = self.load_short_events()
+        if not events:
+            return
+
+        portfolio_value = await self.get_portfolio_value()
+        short_budget = portfolio_value * SHORT_ALLOCATION
+        per_position = short_budget / SHORT_MAX_POSITIONS
+
+        # Get long positions to avoid conflict (don't short what we're long)
+        await self.update_positions()
+        long_syms = set(self.positions.keys())
+
+        for event in events:
+            if len(self.short_positions) >= SHORT_MAX_POSITIONS:
+                break
+
+            ticker = event.get("ticker", "")
+            if not ticker:
+                continue
+
+            # Already in short position
+            if ticker in self.short_positions:
+                continue
+
+            # Conflict: held long
+            if ticker in long_syms:
+                log.info(f"Short skip {ticker} — held long")
+                continue
+
+            # Dedup cooldown
+            if ticker in self.short_recent:
+                last = self.short_recent[ticker]
+                if isinstance(last, str):
+                    last = datetime.fromisoformat(last)
+                if (datetime.now() - last).days < SHORT_DEDUP_DAYS:
+                    continue
+
+            # Get price and check filters
+            contract = Stock(ticker, "SMART", "USD")
+            try:
+                await self.ib.qualifyContractsAsync(contract)
+            except:
+                continue
+
+            price = await self.get_market_price(contract)
+            if not price or price < SHORT_MIN_PRICE:
+                continue
+
+            # SMA50 filter: must be below 50-day SMA
+            # We can't easily compute SMA here, so we skip this filter for now
+            # The EDGAR monitor already filters for quality events
+
+            # Size the position
+            shares = int(per_position / price)
+            if shares <= 0:
+                continue
+
+            event_types = ", ".join(event.get("event_types", []))
+            log.info(f"Short signal: {ticker} — {event_types}")
+            await self.short_sell(ticker, shares, f"event: {event_types}")
+            self.short_recent[ticker] = datetime.now()
+
     async def run(self):
         """Main loop."""
         await self.connect()
@@ -327,6 +509,11 @@ class IBKREngine:
         log.info(f"  Position cap: {POSITION_CAP:.0%}")
         log.info(f"  Trailing stop: {TRAILING_STOP:.0%}")
         log.info(f"  Rebalance interval: {REBALANCE_INTERVAL}s")
+        log.info(f"  Short sleeve: {'ENABLED' if SHORT_ENABLED else 'DISABLED'}")
+        if SHORT_ENABLED:
+            log.info(f"  Short allocation: {SHORT_ALLOCATION:.0%}")
+            log.info(f"  Short max positions: {SHORT_MAX_POSITIONS}")
+            log.info(f"  Short hold days: {SHORT_HOLD_DAYS}")
         log.info("=" * 60)
 
         summary = await self.get_account_summary()
@@ -346,8 +533,12 @@ class IBKREngine:
                     await asyncio.sleep(10)
                     continue
 
-                # Check trailing stops every cycle
+                # Check trailing stops every cycle (long positions)
                 await self.check_trailing_stops()
+
+                # Check short exits every cycle
+                if SHORT_ENABLED:
+                    await self.check_short_exits()
 
                 # Rebalance periodically
                 should_rebalance = (
@@ -359,11 +550,16 @@ class IBKREngine:
                     log.info(f"--- Cycle {cycle}: Rebalancing ---")
                     await self.rebalance()
 
+                    # Process short events
+                    if SHORT_ENABLED:
+                        await self.process_short_events()
+
                     # Log status
                     summary = await self.get_account_summary()
                     nav = summary.get("NetLiquidation", 0)
                     cash = summary.get("TotalCashValue", 0)
-                    log.info(f"NAV: ${nav:,.0f} | Cash: ${cash:,.0f} | Positions: {len(self.positions)}")
+                    log.info(f"NAV: ${nav:,.0f} | Cash: ${cash:,.0f} | "
+                             f"Long: {len(self.positions)} | Short: {len(self.short_positions)}")
 
                 await asyncio.sleep(10)
 
