@@ -119,6 +119,8 @@ class IBKREngine:
         log.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT}...")
         self.ib = IB()
         await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, readonly=False, timeout=20)
+        # Request delayed market data (type 3) — no subscription needed for paper
+        self.ib.reqMarketDataType(3)
         accounts = self.ib.managedAccounts()
         self.account_id = accounts[0] if accounts else None
         log.info(f"Connected. Account: {self.account_id}")
@@ -187,16 +189,16 @@ class IBKREngine:
         """Get current market price for a contract."""
         await self.ib.qualifyContractsAsync(contract)
         ticker = self.ib.reqMktData(contract, "", False, False)
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)  # longer wait for delayed data
         price = ticker.marketPrice()
         self.ib.cancelMktData(contract)
         if price and price > 0 and not util.isNan(price):
             return price
-        # Fallback: last price
-        if ticker.last and ticker.last > 0:
-            return ticker.last
-        if ticker.close and ticker.close > 0:
-            return ticker.close
+        # Fallback chain: last → close → delayed last → delayed close
+        for attr in ["last", "close", "delayedLast", "delayedClose"]:
+            val = getattr(ticker, attr, None)
+            if val and val > 0 and not util.isNan(val):
+                return val
         return None
 
     async def check_trailing_stops(self):
