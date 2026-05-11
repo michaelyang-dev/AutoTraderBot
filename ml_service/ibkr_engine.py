@@ -185,7 +185,7 @@ class IBKREngine:
 
     async def get_market_price(self, contract):
         """Get current market price for a contract."""
-        self.ib.qualifyContracts(contract)
+        await self.ib.qualifyContractsAsync(contract)
         ticker = self.ib.reqMktData(contract, "", False, False)
         await asyncio.sleep(2)
         price = ticker.marketPrice()
@@ -232,7 +232,7 @@ class IBKREngine:
     async def sell_position(self, symbol, qty, reason="rebalance"):
         """Sell a position."""
         contract = Stock(symbol, "SMART", "USD")
-        self.ib.qualifyContracts(contract)
+        await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("SELL", abs(qty))
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
@@ -253,7 +253,7 @@ class IBKREngine:
     async def buy_position(self, symbol, qty, reason="signal"):
         """Buy a position."""
         contract = Stock(symbol, "SMART", "USD")
-        self.ib.qualifyContracts(contract)
+        await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("BUY", qty)
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
