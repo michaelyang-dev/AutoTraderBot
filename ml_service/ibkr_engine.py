@@ -308,10 +308,11 @@ class IBKREngine:
         for sym, pos in list(self.positions.items()):
             if pos["qty"] < 0:
                 log.warning(f"EMERGENCY COVER: {sym} has short position ({pos['qty']} shares)")
-                contract = pos.get("contract", Stock(sym, "SMART", "USD"))
+                # Use SMART routing (not exchange-specific) to avoid precautionary rejections
+                contract = Stock(sym, "SMART", "USD")
                 await self.ib.qualifyContractsAsync(contract)
                 cover_order = MarketOrder("BUY", abs(pos["qty"]))
-                cover_order.tif = "DAY"  # explicit TIF to prevent cancellation
+                cover_order.tif = "DAY"
                 trade = self.ib.placeOrder(contract, cover_order)
                 await asyncio.sleep(5)
                 log.info(f"Cover order status: {trade.orderStatus.status} filled={trade.orderStatus.filled}")
