@@ -261,6 +261,7 @@ class IBKREngine:
         contract = Stock(symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("SELL", sell_qty)
+        order.tif = "DAY"
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
 
@@ -282,6 +283,7 @@ class IBKREngine:
         contract = Stock(symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("BUY", qty)
+        order.tif = "DAY"
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
 
@@ -309,9 +311,11 @@ class IBKREngine:
                 contract = pos.get("contract", Stock(sym, "SMART", "USD"))
                 await self.ib.qualifyContractsAsync(contract)
                 cover_order = MarketOrder("BUY", abs(pos["qty"]))
-                self.ib.placeOrder(contract, cover_order)
-                await asyncio.sleep(3)
-                send_telegram(f"⚠️ COVERED accidental short: {sym} ({abs(pos['qty'])} shares)")
+                cover_order.tif = "DAY"  # explicit TIF to prevent cancellation
+                trade = self.ib.placeOrder(contract, cover_order)
+                await asyncio.sleep(5)
+                log.info(f"Cover order status: {trade.orderStatus.status} filled={trade.orderStatus.filled}")
+                send_telegram(f"⚠️ COVERING accidental short: {sym} ({abs(pos['qty'])} shares)")
 
         portfolio_value = await self.get_portfolio_value()
         if portfolio_value <= 0:
@@ -439,6 +443,7 @@ class IBKREngine:
         contract = Stock(symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("SELL", qty)
+        order.tif = "DAY"
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
 
