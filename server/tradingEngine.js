@@ -2935,23 +2935,21 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         // Apply volatility targeting scale to ALL strategies
-        // Cash buffer: 2% reserve to absorb slippage/rounding (v9.6 targets ~100% invested)
+        // v10.2: use buying power (portfolio × leverage) not just cash
+        const buyingPower = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;  // 1.25x leverage
         const cashReserve = cyclePortfolioValue * 0.02;
-        const availableCash = Math.max(0, cycleCash - cashReserve);
-        if (availableCash < opp.price) {
-          addLog(`SKIP ${opp.sym} -- cash buffer: $${cycleCash.toFixed(0)} cash - $${cashReserve.toFixed(0)} reserve = $${availableCash.toFixed(0)} available, need $${opp.price.toFixed(2)}/share`, "system");
+        const availableBuyingPower = Math.max(0, buyingPower - (cyclePortfolioValue - cycleCash) - cashReserve);
+        if (availableBuyingPower < opp.price) {
+          addLog(`SKIP ${opp.sym} -- buying power: $${availableBuyingPower.toFixed(0)} available (${RISK.MAX_CASH_DEPLOY_PCT}x leverage), need $${opp.price.toFixed(2)}/share`, "system");
           continue;
         }
 
-        // v10: vol-targeting enabled for ML positions (backtest: 18% vol target)
+        // v10.2: vol-targeting enabled for ML positions
         const volMult = currentVolScale;
         const maxAlloc = cyclePortfolioValue * dynPositionPct * volMult;
-        // ML positions: use full available cash (reserve already subtracted above).
-        // Non-ML: cap at 90% to leave room for other strategies.
-        const deployCap = (opp.strategy === "ml") ? 1.0 : RISK.MAX_CASH_DEPLOY_PCT;
-        const allocCash = Math.min(maxAlloc, availableCash * deployCap);
+        const allocCash = Math.min(maxAlloc, availableBuyingPower);
         if (allocCash < opp.price) {
-          addLog(`SKIP ${opp.sym} -- insufficient cash: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
+          addLog(`SKIP ${opp.sym} -- insufficient buying power: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
           continue;
         }
 
@@ -2968,8 +2966,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           addLog(`[size] SKIP ${opp.sym} -- calculated size $${cost.toFixed(0)} < minimum $${RISK.MIN_POSITION_DOLLARS}`, "system");
           continue;
         }
-        if (cost > cycleCash) {
-          addLog(`SKIP ${opp.sym} -- order cost $${cost.toFixed(0)} exceeds remaining cash $${cycleCash.toFixed(0)}`, "system");
+        if (cost > availableBuyingPower) {
+          addLog(`SKIP ${opp.sym} -- order cost $${cost.toFixed(0)} exceeds buying power $${availableBuyingPower.toFixed(0)}`, "system");
           continue;
         }
 
