@@ -246,10 +246,21 @@ class IBKREngine:
                 await self.sell_position(sym, pos["qty"], f"trailing_stop ({dd:.1%})")
 
     async def sell_position(self, symbol, qty, reason="rebalance"):
-        """Sell a position."""
+        """Sell a position. Never sell more than currently held (prevents accidental shorts)."""
+        # Refresh positions to get actual qty
+        await self.update_positions()
+        actual_pos = self.positions.get(symbol, {})
+        actual_qty = actual_pos.get("qty", 0)
+
+        if actual_qty <= 0:
+            log.warning(f"SKIP SELL {symbol}: no long position (qty={actual_qty})")
+            return None
+
+        sell_qty = min(abs(qty), actual_qty)  # never sell more than held
+
         contract = Stock(symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
-        order = MarketOrder("SELL", abs(qty))
+        order = MarketOrder("SELL", sell_qty)
         trade = self.ib.placeOrder(contract, order)
         await asyncio.sleep(3)
 
@@ -289,6 +300,18 @@ class IBKREngine:
         if not signals:
             log.warning("No signals available — skipping rebalance")
             return
+
+        # SAFETY: Close any accidental short positions first
+        await self.update_positions()
+        for sym, pos in list(self.positions.items()):
+            if pos["qty"] < 0:
+                log.warning(f"EMERGENCY COVER: {sym} has short position ({pos['qty']} shares)")
+                contract = pos.get("contract", Stock(sym, "SMART", "USD"))
+                await self.ib.qualifyContractsAsync(contract)
+                cover_order = MarketOrder("BUY", abs(pos["qty"]))
+                self.ib.placeOrder(contract, cover_order)
+                await asyncio.sleep(3)
+                send_telegram(f"⚠️ COVERED accidental short: {sym} ({abs(pos['qty'])} shares)")
 
         portfolio_value = await self.get_portfolio_value()
         if portfolio_value <= 0:
