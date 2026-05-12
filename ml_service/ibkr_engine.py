@@ -63,8 +63,9 @@ SIGNAL_HEALTH_URL = "http://localhost:5001/health"
 
 # Strategy parameters (must match backtest)
 MAX_POSITIONS = 8
-POSITION_CAP = 0.125    # v10.1: 12.5% max per position (backtested: Sharpe 1.09)
-TRAILING_STOP = 0.35    # v10.1: 35% trailing stop (wider = less whipsaw, +3.2% OOS CAGR)
+POSITION_CAP = 0.156    # v10.2: 15.6% max per position (1.25x leverage: 8 * 15.6% = 125%)
+TRAILING_STOP = 0.35    # v10.2: 35% trailing stop
+LEVERAGE = 1.25         # v10.2: 1.25x leverage via IBKR margin
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
@@ -113,6 +114,19 @@ class IBKREngine:
         self.short_sleeve_value = 0  # track sleeve P&L for kill switch
         self.short_sleeve_peak = 0
         self.short_halted = False
+        # Drawdown-based position scaling
+        self.portfolio_peak = 0.0
+
+    def get_drawdown_scale(self, current_value):
+        """Reduce position sizes as drawdown deepens from peak."""
+        if self.portfolio_peak <= 0:
+            return 1.0
+        dd = 1 - current_value / self.portfolio_peak
+        if dd <= 0.10: return 1.00
+        if dd <= 0.15: return 0.85
+        if dd <= 0.20: return 0.70
+        if dd <= 0.25: return 0.50
+        return 0.35
 
     async def connect(self):
         """Connect to IB Gateway."""
@@ -306,8 +320,8 @@ class IBKREngine:
             await self.update_positions()
             portfolio_value = await self.get_portfolio_value()
 
-        # 2. Compute target weights
-        target_weight = 1.0 / MAX_POSITIONS  # equal weight
+        # 2. Compute target weights (with 1.25x leverage)
+        target_weight = LEVERAGE / MAX_POSITIONS  # 1.25x / 8 = 15.6% per position
         target_value_per_position = portfolio_value * target_weight
 
         # Cap at POSITION_CAP

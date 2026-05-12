@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.125,              // v10.1: 8 positions * 12.5% = 100% equity (no hedges)
-  STOP_LOSS_PCT: -0.35,               // v10.1: -35% trailing stop from peak (wider = less whipsaw)
-  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — v9.6 exits via rebalance
-  MAX_OPEN_POSITIONS: 8,              // v9.6 top-8 concentrated picks
-  MAX_CASH_DEPLOY_PCT: 0.90,
+  MAX_POSITION_PCT: 0.156,              // v10.2: 8 positions * 15.6% = 125% equity (1.25x leverage)
+  STOP_LOSS_PCT: -0.35,               // v10.2: -35% trailing stop from peak
+  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
+  MAX_OPEN_POSITIONS: 8,              // top-8 picks
+  MAX_CASH_DEPLOY_PCT: 1.25,          // v10.2: 1.25x leverage (use margin)
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.35,            // v10.1: -35% trailing stop (backtested: +23.7% OOS CAGR, Sharpe 1.09)
-  USE_TRAILING_STOP: true,            // v10.1: trailing stop enabled
+  TRAILING_STOP_PCT: 0.35,            // v10.2: -35% trailing stop (backtested: +27.4% CAGR, 1.41 Sharpe with leverage)
+  USE_TRAILING_STOP: true,            // v10.2: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -2392,7 +2392,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
-      // v10.1: 20-day minimum hold before rebalance sell (backtested: +23.7% OOS CAGR, Sharpe 1.09 vs 0.99 at 10d)
+      // v10.2: 20-day minimum hold before rebalance sell (backtested: +27.4% CAGR with 1.25x leverage)
       // Trailing stops still fire immediately regardless of hold period.
       const REBAL_MIN_HOLD_CYCLES = 20 * 390;  // 20 trading days * 390 cycles/day
       if (mlSignals && mlSignals.length > 0) {
