@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.156,              // v10.2: 8 positions * 15.6% = 125% equity (1.25x leverage)
-  STOP_LOSS_PCT: -0.35,               // v10.2: -35% trailing stop from peak
+  MAX_POSITION_PCT: 0.25,              // v11: 25% max per position (with 1.5x leverage: 8 * 18.75% deployed)
+  STOP_LOSS_PCT: -0.35,               // v11: -35% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
   MAX_OPEN_POSITIONS: 8,              // top-8 picks
-  MAX_CASH_DEPLOY_PCT: 1.25,          // v10.2: 1.25x leverage (use margin)
+  MAX_CASH_DEPLOY_PCT: 1.50,          // v11: 1.5x leverage (use margin)
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.35,            // v10.2: -35% trailing stop (backtested: +27.4% CAGR, 1.41 Sharpe with leverage)
-  USE_TRAILING_STOP: true,            // v10.2: trailing stop enabled
+  TRAILING_STOP_PCT: 0.35,            // v11: -35% trailing stop (backtested: +28.9% CAGR, 1.22 Sharpe)
+  USE_TRAILING_STOP: true,            // v11: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,

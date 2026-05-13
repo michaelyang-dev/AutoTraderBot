@@ -63,9 +63,9 @@ SIGNAL_HEALTH_URL = "http://localhost:5001/health"
 
 # Strategy parameters (must match backtest)
 MAX_POSITIONS = 8
-POSITION_CAP = 0.156    # v10.2: 15.6% max per position (1.25x leverage: 8 * 15.6% = 125%)
-TRAILING_STOP = 0.35    # v10.2: 35% trailing stop
-LEVERAGE = 1.25         # v10.2: 1.25x leverage via IBKR margin
+POSITION_CAP = 0.25     # v11: 25% max per position (matches backtest cap=0.25)
+TRAILING_STOP = 0.35    # v11: 35% trailing stop
+LEVERAGE = 1.50         # v11: 1.5x leverage via IBKR margin
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
@@ -348,8 +348,8 @@ class IBKREngine:
             await self.update_positions()
             portfolio_value = await self.get_portfolio_value()
 
-        # 2. Compute target weights (with 1.25x leverage)
-        target_weight = LEVERAGE / MAX_POSITIONS  # 1.25x / 8 = 15.6% per position
+        # 2. Compute target weights (with 1.5x leverage)
+        target_weight = LEVERAGE / MAX_POSITIONS  # 1.5x / 8 = 18.75% per position
         target_value_per_position = portfolio_value * target_weight
 
         # Cap at POSITION_CAP

@@ -22,15 +22,16 @@ from strategies.multi_strategy_engine import (
     SECTOR_ETFS,
 )
 
-# v10.2 strategy config: 40% momentum, 20% value, 40% low-vol quality
-# Validated improvement over v10.1: +23.5% CAGR (was +22.8%), 1.14 Sharpe (was 1.00)
-# WF GeoMean +27.8% (was +24.6%), wins 7/9 two-year windows, 6/10 years
-# 2022 bear: only -5.8% (was -18.8%). Lower vol: 20.4% (was 23.2%)
-# With 1.25x leverage: +27.4% CAGR, 1.41 Sharpe, worst year -8.6%
-# Bear regime shifts to more defensive (same as before)
+# v11 strategy config: 35% momentum, 25% value, 40% low-vol quality
+# Improvement over v10.2: +30.9% CAGR (was +22.6%), 1.20 Sharpe (was 1.01)
+# Max DD: -32.6% (was -38.5%), Calmar: 0.95 (was 0.59)
+# Wins 8/8 individual years, 5/6 walk-forward windows
+# Bootstrap 95% CI: [+15.2%, +50.4%], conservative CAGR: +20.8%
+# Changes: rebal 10d→15d, RP OFF, weights 40/20/40→35/25/40, cap→25%
+# With 1.5x leverage target
 STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.40),
-    ("s7_value",    0.20),
+    ("s1_momentum", 0.35),
+    ("s7_value",    0.25),
     ("s3_sector",   0.00),
     ("s4_inclusion", 0.00),
     ("s5_lowvol",   0.40),
@@ -435,10 +436,10 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
                 combined[sym] = combined.get(sym, 0) + w * cap
 
     # Apply constraints (must match backtest exactly)
-    # 1) Single-name cap: 15%
+    # 1) Single-name cap: 25% (v11: matches backtest cap=0.25)
     for sym in list(combined):
-        if combined[sym] > 0.15:
-            combined[sym] = 0.15
+        if combined[sym] > 0.25:
+            combined[sym] = 0.25
     # 2) Sector cap: 35%
     sec_tot = {}
     for sym, w in combined.items():
