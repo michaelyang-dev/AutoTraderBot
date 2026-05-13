@@ -236,68 +236,169 @@ def _compute_features_from_raw(raw, prices):
 
 
 def _fill_fundamentals(features, data_dir):
-    """Fill fundamental columns from FMP parquet caches (same source as backtest)."""
-    ratios_file = data_dir / "fundamentals_ratios.parquet"
-    income_file = data_dir / "fundamentals_income.parquet"
-    metrics_file = data_dir / "fundamentals_metrics.parquet"
-    earnings_file = data_dir / "fundamentals_earnings.parquet"
+    """Fill fundamental columns. Primary: WRDS Compustat/IBES. Fallback: FMP.
 
-    # Ratios: pe_ratio, ps_ratio, debt_to_equity, current_ratio
-    if ratios_file.exists():
-        ratios = pd.read_parquet(ratios_file)
-        # Use filing_date if available (point-in-time safe), else fall back to date
-        rat_date_col = "filing_date" if "filing_date" in ratios.columns else "date"
-        if rat_date_col in ratios.columns:
-            ratios[rat_date_col] = pd.to_datetime(ratios[rat_date_col])
-        ratios_latest = ratios.sort_values(rat_date_col).groupby("symbol").last()
-        for col in ["pe_ratio", "ps_ratio", "debt_to_equity", "current_ratio"]:
-            if col in ratios_latest.columns:
-                sym_vals = ratios_latest[col].to_dict()
-                mask = features["symbol"].isin(sym_vals)
-                features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+    WRDS Compustat provides standardized GAAP financials (gold standard).
+    WRDS IBES provides institutional-grade earnings consensus.
+    FMP is used as fallback if WRDS files are missing.
+    """
+    wrds_dir = data_dir / "wrds"
+    wrds_fund = wrds_dir / "compustat_fundamentals_quarterly.parquet"
+    wrds_ibes = wrds_dir / "ibes_summary_latest.parquet"
 
-    # Income: gross_margin, operating_margin, net_margin
-    if income_file.exists():
-        income = pd.read_parquet(income_file)
-        filing_col = "filing_date" if "filing_date" in income.columns else "date"
-        if filing_col in income.columns:
-            income[filing_col] = pd.to_datetime(income[filing_col])
-        latest = income.sort_values(filing_col).groupby("symbol").last()
-        for margin_name, num_col, den_col in [
-            ("gross_margin", "gross_profit", "revenue"),
-            ("operating_margin", "operating_income", "revenue"),
-            ("net_margin", "net_income", "revenue"),
-        ]:
-            if num_col in latest.columns and den_col in latest.columns:
-                vals = (latest[num_col] / latest[den_col].replace(0, np.nan)).to_dict()
-                mask = features["symbol"].isin(vals)
-                features.loc[mask, margin_name] = features.loc[mask, "symbol"].map(vals)
+    wrds_loaded = False
 
-    # Metrics: roe, roa
-    if metrics_file.exists():
-        metrics = pd.read_parquet(metrics_file)
-        # Use filing_date if available (point-in-time safe)
-        met_date_col = "filing_date" if "filing_date" in metrics.columns else "date"
-        if met_date_col in metrics.columns:
-            metrics[met_date_col] = pd.to_datetime(metrics[met_date_col])
-        latest = metrics.sort_values(met_date_col).groupby("symbol").last()
-        for col in ["roe", "roa"]:
-            if col in latest.columns:
-                sym_vals = latest[col].to_dict()
-                mask = features["symbol"].isin(sym_vals)
-                features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+    # ── PRIMARY: WRDS Compustat fundamentals ──
+    if wrds_fund.exists():
+        try:
+            fund = pd.read_parquet(wrds_fund)
+            fund["datadate"] = pd.to_datetime(fund["datadate"])
+            # Use rdq (report date) for point-in-time if available, else datadate
+            date_col = "rdq" if "rdq" in fund.columns else "datadate"
+            fund[date_col] = pd.to_datetime(fund[date_col], errors="coerce")
+            fund = fund.dropna(subset=[date_col])
+            latest = fund.sort_values(date_col).groupby("tic").last()
 
-    # Earnings: eps_surprise_last
-    if earnings_file.exists():
-        earnings = pd.read_parquet(earnings_file)
-        if "date" in earnings.columns:
-            earnings["date"] = pd.to_datetime(earnings["date"])
-        if "earnings_surprise" in earnings.columns:
-            latest = earnings.sort_values("date").groupby("symbol").last()
-            if "earnings_surprise" in latest.columns:
-                sym_vals = latest["earnings_surprise"].to_dict()
-                mask = features["symbol"].isin(sym_vals)
-                features.loc[mask, "eps_surprise_last"] = features.loc[mask, "symbol"].map(sym_vals)
+            # Compute fundamentals from Compustat fields
+            # gross_margin = (saleq - cogsq) / saleq
+            if "saleq" in latest.columns and "cogsq" in latest.columns:
+                gm = (latest["saleq"] - latest["cogsq"]) / latest["saleq"].replace(0, np.nan)
+                gm_map = gm.to_dict()
+                mask = features["symbol"].isin(gm_map)
+                features.loc[mask, "gross_margin"] = features.loc[mask, "symbol"].map(gm_map)
+            elif "gpq" in latest.columns and "saleq" in latest.columns:
+                gm = latest["gpq"] / latest["saleq"].replace(0, np.nan)
+                gm_map = gm.to_dict()
+                mask = features["symbol"].isin(gm_map)
+                features.loc[mask, "gross_margin"] = features.loc[mask, "symbol"].map(gm_map)
+
+            # operating_margin = oiadpq / saleq
+            if "oiadpq" in latest.columns and "saleq" in latest.columns:
+                om = latest["oiadpq"] / latest["saleq"].replace(0, np.nan)
+                om_map = om.to_dict()
+                mask = features["symbol"].isin(om_map)
+                features.loc[mask, "operating_margin"] = features.loc[mask, "symbol"].map(om_map)
+
+            # net_margin = niq / saleq
+            if "niq" in latest.columns and "saleq" in latest.columns:
+                nm = latest["niq"] / latest["saleq"].replace(0, np.nan)
+                nm_map = nm.to_dict()
+                mask = features["symbol"].isin(nm_map)
+                features.loc[mask, "net_margin"] = features.loc[mask, "symbol"].map(nm_map)
+
+            # roe = niq / ceqq (annualized: *4 for quarterly)
+            if "niq" in latest.columns and "ceqq" in latest.columns:
+                roe = (latest["niq"] * 4) / latest["ceqq"].replace(0, np.nan)
+                roe_map = roe.to_dict()
+                mask = features["symbol"].isin(roe_map)
+                features.loc[mask, "roe"] = features.loc[mask, "symbol"].map(roe_map)
+
+            # roa = niq / atq (annualized)
+            if "niq" in latest.columns and "atq" in latest.columns:
+                roa = (latest["niq"] * 4) / latest["atq"].replace(0, np.nan)
+                roa_map = roa.to_dict()
+                mask = features["symbol"].isin(roa_map)
+                features.loc[mask, "roa"] = features.loc[mask, "symbol"].map(roa_map)
+
+            # debt_to_equity = (dlttq + dlcq) / ceqq
+            if "dlttq" in latest.columns and "ceqq" in latest.columns:
+                dlc = latest.get("dlcq", 0)
+                if isinstance(dlc, (int, float)):
+                    dlc = pd.Series(dlc, index=latest.index)
+                de = (latest["dlttq"].fillna(0) + dlc.fillna(0)) / latest["ceqq"].replace(0, np.nan)
+                de_map = de.to_dict()
+                mask = features["symbol"].isin(de_map)
+                features.loc[mask, "debt_to_equity"] = features.loc[mask, "symbol"].map(de_map)
+
+            # current_ratio = actq / lctq
+            if "actq" in latest.columns and "lctq" in latest.columns:
+                cr = latest["actq"] / latest["lctq"].replace(0, np.nan)
+                cr_map = cr.to_dict()
+                mask = features["symbol"].isin(cr_map)
+                features.loc[mask, "current_ratio"] = features.loc[mask, "symbol"].map(cr_map)
+
+            wrds_loaded = True
+            log.info(f"Fundamentals loaded from WRDS Compustat ({len(latest)} tickers)")
+        except Exception as e:
+            log.warning(f"WRDS Compustat load failed: {e}, falling back to FMP")
+
+    # ── PRIMARY: WRDS IBES for earnings surprise ──
+    if wrds_ibes.exists():
+        try:
+            ibes = pd.read_parquet(wrds_ibes)
+            ibes["ANNDATS_ACT"] = pd.to_datetime(ibes["ANNDATS_ACT"], errors="coerce")
+            # Filter to stocks with actual earnings reported
+            ibes = ibes.dropna(subset=["ACTUAL", "MEANEST", "ANNDATS_ACT"])
+            # EPS surprise = (actual - estimate) / |estimate|
+            ibes["surprise"] = (ibes["ACTUAL"] - ibes["MEANEST"]) / ibes["MEANEST"].abs().replace(0, np.nan)
+            # IBES uses TICKER (not tic), and OFTIC is the "official ticker"
+            ticker_col = "OFTIC" if "OFTIC" in ibes.columns else "TICKER"
+            latest_eps = ibes.sort_values("ANNDATS_ACT").groupby(ticker_col).last()
+            surp_map = latest_eps["surprise"].to_dict()
+            mask = features["symbol"].isin(surp_map)
+            features.loc[mask, "eps_surprise_last"] = features.loc[mask, "symbol"].map(surp_map)
+            log.info(f"Earnings loaded from WRDS IBES ({len(latest_eps)} tickers)")
+        except Exception as e:
+            log.warning(f"WRDS IBES load failed: {e}, falling back to FMP")
+
+    # ── FALLBACK: FMP data (if WRDS not available) ──
+    if not wrds_loaded:
+        log.info("Using FMP fallback for fundamentals")
+        ratios_file = data_dir / "fundamentals_ratios.parquet"
+        income_file = data_dir / "fundamentals_income.parquet"
+        metrics_file = data_dir / "fundamentals_metrics.parquet"
+        earnings_file = data_dir / "fundamentals_earnings.parquet"
+
+        if ratios_file.exists():
+            ratios = pd.read_parquet(ratios_file)
+            rat_date_col = "filing_date" if "filing_date" in ratios.columns else "date"
+            if rat_date_col in ratios.columns:
+                ratios[rat_date_col] = pd.to_datetime(ratios[rat_date_col])
+            ratios_latest = ratios.sort_values(rat_date_col).groupby("symbol").last()
+            for col in ["pe_ratio", "ps_ratio", "debt_to_equity", "current_ratio"]:
+                if col in ratios_latest.columns:
+                    sym_vals = ratios_latest[col].to_dict()
+                    mask = features["symbol"].isin(sym_vals)
+                    features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+
+        if income_file.exists():
+            income = pd.read_parquet(income_file)
+            filing_col = "filing_date" if "filing_date" in income.columns else "date"
+            if filing_col in income.columns:
+                income[filing_col] = pd.to_datetime(income[filing_col])
+            latest = income.sort_values(filing_col).groupby("symbol").last()
+            for margin_name, num_col, den_col in [
+                ("gross_margin", "gross_profit", "revenue"),
+                ("operating_margin", "operating_income", "revenue"),
+                ("net_margin", "net_income", "revenue"),
+            ]:
+                if num_col in latest.columns and den_col in latest.columns:
+                    vals = (latest[num_col] / latest[den_col].replace(0, np.nan)).to_dict()
+                    mask = features["symbol"].isin(vals)
+                    features.loc[mask, margin_name] = features.loc[mask, "symbol"].map(vals)
+
+        if metrics_file.exists():
+            metrics = pd.read_parquet(metrics_file)
+            met_date_col = "filing_date" if "filing_date" in metrics.columns else "date"
+            if met_date_col in metrics.columns:
+                metrics[met_date_col] = pd.to_datetime(metrics[met_date_col])
+            latest = metrics.sort_values(met_date_col).groupby("symbol").last()
+            for col in ["roe", "roa"]:
+                if col in latest.columns:
+                    sym_vals = latest[col].to_dict()
+                    mask = features["symbol"].isin(sym_vals)
+                    features.loc[mask, col] = features.loc[mask, "symbol"].map(sym_vals)
+
+        if earnings_file.exists():
+            earnings = pd.read_parquet(earnings_file)
+            if "date" in earnings.columns:
+                earnings["date"] = pd.to_datetime(earnings["date"])
+            if "earnings_surprise" in earnings.columns:
+                latest = earnings.sort_values("date").groupby("symbol").last()
+                if "earnings_surprise" in latest.columns:
+                    sym_vals = latest["earnings_surprise"].to_dict()
+                    mask = features["symbol"].isin(sym_vals)
+                    features.loc[mask, "eps_surprise_last"] = features.loc[mask, "symbol"].map(sym_vals)
 
     return features
 
