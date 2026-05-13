@@ -59,32 +59,71 @@ def refresh_enhanced_data():
 
 
 def refresh_vix_cache():
-    """Refresh VIX cache from yfinance."""
+    """Refresh VIX cache from Polygon/Massive (primary) or yfinance (fallback)."""
     log("Refreshing VIX cache...")
     t0 = time.time()
     try:
         import pandas as pd
-        import yfinance as yf
+        import requests
 
         DATA_DIR = ML_DIR / "data" / "enhanced_data"
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-        vix_raw = yf.download(
-            ["^VIX", "^VIX3M"],
-            start="2016-01-01",
-            end=(datetime.now().strftime("%Y-%m-%d")),
-            progress=False,
-            auto_adjust=True,
-        )
-        if len(vix_raw) > 0:
-            vix_data = vix_raw["Close"]
-            vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
-            vix_data.to_parquet(DATA_DIR / "vix_cache.parquet")
-            log(f"VIX cache refreshed: {len(vix_data)} rows, latest={vix_data.index[-1].date()}")
-        else:
-            log("WARNING: No VIX data returned from yfinance")
+        api_key = os.environ.get("MASSIVE_API_KEY", "")
+        success = False
+
+        # Primary: Polygon/Massive
+        if api_key:
+            try:
+                vix_frames = {}
+                for ticker, col_name in [("I:VIX", "^VIX"), ("I:VIX3M", "^VIX3M")]:
+                    resp = requests.get(
+                        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/2016-01-01/{datetime.now().strftime('%Y-%m-%d')}",
+                        params={"apiKey": api_key, "limit": 50000, "adjusted": "true"},
+                        timeout=30,
+                    )
+                    if resp.status_code == 200:
+                        results = resp.json().get("results", [])
+                        if results:
+                            df = pd.DataFrame(results)
+                            df["date"] = pd.to_datetime(df["t"], unit="ms")
+                            df = df.set_index("date")["c"].rename(col_name)
+                            vix_frames[col_name] = df
+                    time.sleep(0.15)
+
+                if vix_frames:
+                    vix_data = pd.DataFrame(vix_frames)
+                    vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
+                    vix_data.to_parquet(DATA_DIR / "vix_cache.parquet")
+                    log(f"VIX cache refreshed from Polygon: {len(vix_data)} rows, latest={vix_data.index[-1].date()}")
+                    success = True
+            except Exception as e:
+                log(f"Polygon VIX failed: {e}, trying yfinance fallback...")
+
+        # Fallback: yfinance
+        if not success:
+            try:
+                import yfinance as yf
+                vix_raw = yf.download(
+                    ["^VIX", "^VIX3M"],
+                    start="2016-01-01",
+                    end=(datetime.now().strftime("%Y-%m-%d")),
+                    progress=False,
+                    auto_adjust=True,
+                )
+                if len(vix_raw) > 0:
+                    vix_data = vix_raw["Close"]
+                    vix_data.index = pd.to_datetime(vix_data.index).tz_localize(None)
+                    vix_data.to_parquet(DATA_DIR / "vix_cache.parquet")
+                    log(f"VIX cache refreshed from yfinance: {len(vix_data)} rows, latest={vix_data.index[-1].date()}")
+                    success = True
+                else:
+                    log("WARNING: No VIX data returned from yfinance")
+            except Exception as e:
+                log(f"yfinance VIX also failed: {e}")
+
         log(f"VIX refresh done in {time.time() - t0:.0f}s")
-        return True
+        return success
     except Exception as e:
         log(f"ERROR refreshing VIX: {e}")
         return False
