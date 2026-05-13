@@ -2935,10 +2935,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
 
         // Apply volatility targeting scale to ALL strategies
-        // v10.2: use buying power (portfolio × leverage) not just cash
-        const buyingPower = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;  // 1.25x leverage
-        const cashReserve = cyclePortfolioValue * 0.02;
-        const availableBuyingPower = Math.max(0, buyingPower - (cyclePortfolioValue - cycleCash) - cashReserve);
+        // v11: use buying power (portfolio × leverage) not just cash
+        // Total deployable = equity × 1.5x. Each of 8 positions gets equity × 1.5 / 8.
+        // Available = total deployable - current positions market value
+        const totalDeployable = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;  // 1.5x leverage
+        const currentPositionsValue = cyclePortfolioValue - cycleCash;  // total market value of holdings
+        const availableBuyingPower = Math.max(0, totalDeployable - currentPositionsValue);
         if (availableBuyingPower < opp.price) {
           addLog(`SKIP ${opp.sym} -- buying power: $${availableBuyingPower.toFixed(0)} available (${RISK.MAX_CASH_DEPLOY_PCT}x leverage), need $${opp.price.toFixed(2)}/share`, "system");
           continue;
