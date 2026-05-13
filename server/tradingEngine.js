@@ -2394,7 +2394,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
       // v10.2: 20-day minimum hold before rebalance sell (backtested: +27.4% CAGR with 1.25x leverage)
       // Trailing stops still fire immediately regardless of hold period.
-      const REBAL_MIN_HOLD_CYCLES = 20 * 390;  // 20 trading days * 390 cycles/day
+      const REBAL_MIN_HOLD_CYCLES = 15 * 390;  // 15 trading days (v11: matches backtest rebal_days=15) * 390 cycles/day
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         for (const pos of currentPositions) {
