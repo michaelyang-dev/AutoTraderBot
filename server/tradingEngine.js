@@ -2928,28 +2928,36 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           // Momentum/MR/Mega-cap: fixed % (already computed in signal)
           dynPositionPct = opp.positionPct;
         } else {
-          // v9.6 ML: equal-weight sizing (12% per position, no ATR/regime scaling)
-          // The backtest uses fixed equal weights — ATR scaling and regime multipliers
-          // would cause the live system to diverge from backtested performance.
-          dynPositionPct = RISK.MAX_POSITION_PCT;
+          // v11: equal-weight sizing = leverage / max_positions per position
+          // 1.5x / 8 = 18.75% of equity per position (matches backtest exactly)
+          dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
         }
 
-        // Apply volatility targeting scale to ALL strategies
-        // v11: use buying power (portfolio × leverage) not just cash
-        // Total deployable = equity × 1.5x. Each of 8 positions gets equity × 1.5 / 8.
-        // Available = total deployable - current positions market value
-        const totalDeployable = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;  // 1.5x leverage
-        const currentPositionsValue = cyclePortfolioValue - cycleCash;  // total market value of holdings
+        // v11: target position size = equity × leverage / n_positions
+        // Each position gets exactly the same dollar amount
+        const targetPositionValue = cyclePortfolioValue * dynPositionPct;
+
+        // Check if we already hold this stock — if so, only buy the DELTA
+        const existingValue = currentPositions.find(p => p.symbol === opp.sym)
+          ? parseFloat(currentPositions.find(p => p.symbol === opp.sym).market_value || 0)
+          : 0;
+        const neededValue = targetPositionValue - existingValue;
+
+        // Check total deployment limit
+        const totalDeployable = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;
+        const currentPositionsValue = cyclePortfolioValue - cycleCash;
         const availableBuyingPower = Math.max(0, totalDeployable - currentPositionsValue);
-        if (availableBuyingPower < opp.price) {
-          addLog(`SKIP ${opp.sym} -- buying power: $${availableBuyingPower.toFixed(0)} available (${RISK.MAX_CASH_DEPLOY_PCT}x leverage), need $${opp.price.toFixed(2)}/share`, "system");
+
+        if (neededValue <= 0) {
+          // Already at or above target — skip
           continue;
         }
 
-        // v10.2: vol-targeting enabled for ML positions
-        const volMult = currentVolScale;
-        const maxAlloc = cyclePortfolioValue * dynPositionPct * volMult;
-        const allocCash = Math.min(maxAlloc, availableBuyingPower);
+        const allocCash = Math.min(neededValue, availableBuyingPower);
+        if (allocCash < opp.price) {
+          addLog(`SKIP ${opp.sym} -- insufficient: need $${neededValue.toFixed(0)}, available $${availableBuyingPower.toFixed(0)}`, "system");
+          continue;
+        }
         if (allocCash < opp.price) {
           addLog(`SKIP ${opp.sym} -- insufficient buying power: need $${opp.price.toFixed(2)}/share, alloc $${allocCash.toFixed(2)} (${(dynPositionPct * 100).toFixed(1)}% of portfolio)`, "system");
           continue;
