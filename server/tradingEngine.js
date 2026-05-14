@@ -2441,7 +2441,33 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // Refresh positions and cash after stop-loss + rebalance sells so slot counts are accurate
+      // ── STEP 1g: Trim oversized positions to equal weight ──
+      // v11: backtest uses equal weight (leverage/n_positions per position)
+      // If a position grows beyond 1.3× target, sell down to target
+      if (mlSignals && mlSignals.length > 0) {
+        const targetValue = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+        const trimThreshold = targetValue * 1.3;  // only trim if >30% above target
+        for (const pos of currentPositions) {
+          const sym = pos.symbol;
+          if (closedSymbols.has(sym)) continue;
+          const mv = parseFloat(pos.market_value || 0);
+          if (mv > trimThreshold) {
+            const excessValue = mv - targetValue;
+            const excessShares = Math.floor(excessValue / parseFloat(pos.current_price || mv / pos.qty));
+            if (excessShares > 0) {
+              try {
+                await placeOrder({ symbol: sym, qty: excessShares, side: "sell", type: "market" });
+                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (selling ${excessShares} shares to match backtest equal-weight)`, "sell");
+                cycleCash += excessShares * parseFloat(pos.current_price);
+              } catch (err) {
+                addLog(`Trim failed ${sym}: ${err.message}`, "error");
+              }
+            }
+          }
+        }
+      }
+
+      // Refresh positions and cash after stop-loss + rebalance sells + trims so slot counts are accurate
       let activePositions = currentPositions;
       if (closedSymbols.size > 0) {
         try {
