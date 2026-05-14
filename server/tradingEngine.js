@@ -2441,26 +2441,48 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1g: Trim oversized positions to equal weight ──
+      // ── STEP 1g: Rebalance ALL positions to equal weight ──
       // v11: backtest uses equal weight (leverage/n_positions per position)
-      // If a position grows beyond 1.3× target, sell down to target
+      // Trim oversized (>30% above target) and top-up undersized (>15% below target)
       if (mlSignals && mlSignals.length > 0) {
+        const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         const targetValue = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
-        const trimThreshold = targetValue * 1.3;  // only trim if >30% above target
+        const trimThreshold = targetValue * 1.3;
+        const topUpThreshold = targetValue * 0.85;
+
         for (const pos of currentPositions) {
           const sym = pos.symbol;
           if (closedSymbols.has(sym)) continue;
+          if (!mlBuySet.has(sym)) continue;  // only rebalance stocks still in top-8
           const mv = parseFloat(pos.market_value || 0);
+          const price = parseFloat(pos.current_price || pos.avg_entry_price || 1);
+
+          // TRIM oversized
           if (mv > trimThreshold) {
             const excessValue = mv - targetValue;
-            const excessShares = Math.floor(excessValue / parseFloat(pos.current_price || mv / pos.qty));
+            const excessShares = Math.floor(excessValue / price);
             if (excessShares > 0) {
               try {
                 await placeOrder({ symbol: sym, qty: excessShares, side: "sell", type: "market" });
-                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (selling ${excessShares} shares to match backtest equal-weight)`, "sell");
-                cycleCash += excessShares * parseFloat(pos.current_price);
+                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (selling ${excessShares} shares)`, "sell");
+                cycleCash += excessShares * price;
               } catch (err) {
                 addLog(`Trim failed ${sym}: ${err.message}`, "error");
+              }
+            }
+          }
+
+          // TOP-UP undersized
+          if (mv < topUpThreshold) {
+            const shortfall = targetValue - mv;
+            const buyShares = Math.floor(shortfall / price);
+            if (buyShares > 0 && shortfall > RISK.MIN_POSITION_DOLLARS) {
+              try {
+                await placeOrder({ symbol: sym, qty: buyShares, side: "buy", type: "market" });
+                addLog(`TOP-UP ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (buying ${buyShares} shares)`, "buy");
+                cycleCash -= buyShares * price;
+              } catch (err) {
+                addLog(`Top-up failed ${sym}: ${err.message}`, "error");
               }
             }
           }
