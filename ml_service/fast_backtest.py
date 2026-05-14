@@ -162,7 +162,7 @@ class FastBacktester:
                 continue
             if r < 0.05 or g < 0.15:
                 continue
-            if dv is not None and dv < -0.15:
+            if dv is None or np.isnan(dv) or dv < -0.15:
                 continue
             if debt is not None and not np.isnan(debt) and debt > 3.0:
                 continue
@@ -170,6 +170,15 @@ class FastBacktester:
         if not scores:
             return {}
         ss = sorted(scores, key=scores.get, reverse=True)[:top_n]
+        # Score-proportional weights for proper differentiation
+        sc_vals = [max(scores[s], 0.001) for s in ss]
+        total = sum(sc_vals)
+        if total > 0:
+            weights = {s: min(v / total, 2.0 / len(ss)) for s, v in zip(ss, sc_vals)}
+            wt = sum(weights.values())
+            if wt > 0:
+                weights = {s: w / wt for s, w in weights.items()}
+            return weights
         return {s: 1.0 / len(ss) for s in ss}
 
     def _apply_rp(self, picks, date, power=1.0):

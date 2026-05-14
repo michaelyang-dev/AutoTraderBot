@@ -2367,9 +2367,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
 
       // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
-      // v10.2: 20-day minimum hold before rebalance sell (backtested: +27.4% CAGR with 1.25x leverage)
+      // v11: 15-day minimum hold before rebalance sell (matches backtest rebal_days=15)
       // Trailing stops still fire immediately regardless of hold period.
-      const REBAL_MIN_HOLD_CYCLES = 15 * 390;  // 15 trading days (v11: matches backtest rebal_days=15) * 390 cycles/day
+      const REBAL_MIN_HOLD_CYCLES = 15 * 390;  // 15 trading days * 390 cycles/day
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         for (const pos of currentPositions) {
@@ -2381,15 +2381,21 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           if (positionStrategy[sym] && positionStrategy[sym] !== "ml") continue;
 
           if (!mlBuySet.has(sym)) {
-            // Enforce 10-day minimum hold before rebalance exit
+            // Enforce 15-day minimum hold before rebalance exit
             const entryCycle = mlEntryDates[sym];
             if (entryCycle != null) {
               const cyclesHeld = cycleNumber - entryCycle;
               if (cyclesHeld < REBAL_MIN_HOLD_CYCLES) {
                 const daysHeld = (cyclesHeld / 390).toFixed(1);
-                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld}d / 20d) -- skipping rebalance sell`, "system");
+                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld.replace(/\.0$/, '')}d / 15d) -- skipping rebalance sell`, "system");
                 continue;
               }
+            } else {
+              // No entry date recorded (e.g. after restart without journal) —
+              // conservatively assume it was just bought and enforce min-hold
+              mlEntryDates[sym] = cycleNumber;
+              addLog(`HOLD ${sym}: dropped from top-8 but no entry date — assuming recent buy, enforcing min-hold`, "system");
+              continue;
             }
             try {
               await closePosition(sym);
