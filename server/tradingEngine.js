@@ -769,20 +769,6 @@ function fetchMLSignals() {
   });
 }
 
-function fetchShortSignals() {
-  return new Promise((resolve) => {
-    const req = http.get("http://localhost:5001/short-signals", { timeout: 5000 }, (res) => {
-      let data = "";
-      res.on("data", (chunk) => data += chunk);
-      res.on("end", () => {
-        try { resolve(JSON.parse(data)); } catch { resolve(null); }
-      });
-    });
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => { req.destroy(); resolve(null); });
-  });
-}
-
 // ══════════════════════════════════════════
 //  FACTORY — createTradingEngine
 // ══════════════════════════════════════════
@@ -1705,20 +1691,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       }
       prevMlStatus = mlStatus;
 
-      // Fetch Short Sleeve signals
-      const shortData = await fetchShortSignals();
-      if (shortData && Array.isArray(shortData.signals) && !shortData.is_stale) {
-        shortSignals = shortData.signals;
-        shortStatus = "ok";
-        const shortCount = shortSignals.filter(s => s.signal === "SHORT").length;
-        const coverCount = shortSignals.filter(s => s.signal === "COVER").length;
-        if (shortCount > 0 || coverCount > 0) {
-          addLog(`Short sleeve active -- ${shortCount} SHORT, ${coverCount} COVER signals`);
-        }
-      } else {
-        shortSignals = null;
-        shortStatus = shortData ? "stale" : "down";
-      }
+      // Short sleeve disabled (v11 — no viable short strategy found)
+      shortSignals = null;
+      shortStatus = "disabled";
 
       // Compute regime with recovery logic
       const regimeResult = computeRegime(priceHist.SPY);

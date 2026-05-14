@@ -132,6 +132,13 @@ def _compute_features_from_raw(raw, prices):
         if sym not in raw or len(raw[sym]) == 0:
             continue
         df = raw[sym]
+        # Fix: require minimum 252 bars of non-null close data
+        # Stocks with insufficient history (e.g. FISV with 126 bars) produce
+        # NaN for ret_252d and other long-lookback features, corrupting signals
+        valid_bars = df["close"].dropna().shape[0]
+        if valid_bars < 252:
+            log.warning(f"Skipping {sym}: only {valid_bars} bars (need 252+)")
+            continue
         c = df["close"].reindex(date_index)
         v = df["volume"].reindex(date_index) if "volume" in df.columns else pd.Series(1, index=date_index)
 

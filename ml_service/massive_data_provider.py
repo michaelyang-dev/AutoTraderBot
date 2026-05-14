@@ -692,6 +692,44 @@ def fetch_bars_batch_massive(symbols: list,
         except Exception as e:
             log.warning("Validation against yfinance failed: %s", e)
 
+    # Per-ticker yfinance fallback for symbols with insufficient Polygon data
+    # Polygon occasionally has data gaps (e.g. FISV returns only 126 bars).
+    # Patch these individually from yfinance rather than rejecting them.
+    MIN_BARS = 252
+    short_syms = [s for s in symbols
+                  if s in bars and 0 < len(bars[s]) < MIN_BARS]
+    if short_syms:
+        log.warning("Polygon returned <252 bars for %d symbols: %s — "
+                    "patching from yfinance",
+                    len(short_syms),
+                    [(s, len(bars[s])) for s in short_syms])
+        try:
+            import yfinance as yf
+            start = (datetime.today() - timedelta(days=warmup_days)).strftime("%Y-%m-%d")
+            end = datetime.today().strftime("%Y-%m-%d")
+            yf_data = yf.download(short_syms, start=start, end=end,
+                                  auto_adjust=True, progress=False, threads=True)
+            if isinstance(yf_data.columns, pd.MultiIndex):
+                for sym in short_syms:
+                    try:
+                        df = yf_data.xs(sym, level=1, axis=1).dropna(how="all")
+                        df.columns = [c.lower() for c in df.columns]
+                        if len(df) >= MIN_BARS:
+                            bars[sym] = df[["open", "high", "low", "close", "volume"]]
+                            log.info("  %s: patched %d → %d bars via yfinance",
+                                     sym, len(bars.get(sym, [])), len(df))
+                    except Exception:
+                        pass
+            elif len(short_syms) == 1:
+                df = yf_data.dropna(how="all")
+                df.columns = [c.lower() for c in df.columns]
+                if len(df) >= MIN_BARS:
+                    bars[short_syms[0]] = df[["open", "high", "low", "close", "volume"]]
+                    log.info("  %s: patched via yfinance (%d bars)",
+                             short_syms[0], len(df))
+        except Exception as e:
+            log.warning("yfinance per-ticker fallback failed: %s", e)
+
     return bars
 
 

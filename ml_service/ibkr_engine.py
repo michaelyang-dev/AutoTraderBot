@@ -673,8 +673,19 @@ class IBKREngine:
                 self.running = False
             except Exception as e:
                 log.error(f"Error in main loop: {e}")
-                send_telegram(f"⚠️ IBKR Engine error: {e}")
-                await asyncio.sleep(30)
+                # Auto-reconnect if connection dropped
+                if not self.ib.isConnected():
+                    log.warning("IB connection lost — reconnecting in 30s...")
+                    send_telegram(f"⚠️ IBKR connection lost, reconnecting...")
+                    await asyncio.sleep(30)
+                    try:
+                        await self.connect()
+                        log.info("Reconnected successfully")
+                    except Exception as ce:
+                        log.error(f"Reconnect failed: {ce}")
+                else:
+                    send_telegram(f"⚠️ IBKR Engine error: {e}")
+                    await asyncio.sleep(30)
 
         self.ib.disconnect()
         log.info("IBKR Engine stopped")
