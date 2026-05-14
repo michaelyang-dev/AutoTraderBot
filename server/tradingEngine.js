@@ -2677,12 +2677,25 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         }
 
-        // Pre-filter: already held or regime blocks ALL buys
+        // Pre-filter: already held — check if needs top-up to equal weight
         if (heldSymbols.has(sym)) {
           if (isMLBuy) {
-            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: already holding position`, "system");
+            // v11: check if position is undersized and needs top-up
+            const existingPos = activePositions.find(p => p.symbol === sym);
+            const existingValue = existingPos ? parseFloat(existingPos.market_value || 0) : 0;
+            const targetValue = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+            const shortfall = targetValue - existingValue;
+            if (shortfall > targetValue * 0.15) {
+              // Undersized by >15% — add to buy candidates for top-up
+              addLog(`EVAL ${sym}: undersized $${existingValue.toFixed(0)} vs target $${targetValue.toFixed(0)} — adding to top-up candidates`, "system");
+              // Don't continue — let it proceed to buying logic
+            } else {
+              addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | OK: at target weight`, "system");
+              continue;
+            }
+          } else {
+            continue;
           }
-          continue;
         }
         if (regime === "BEARISH") {
           if (isMLBuy) {
