@@ -541,11 +541,39 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     if vix > 40:
         paused = {"s1_momentum", "s4_inclusion"}
 
+    # UMD crash regime (matches backtest: shift to value-heavy when momentum crashes)
+    umd_crash = False
+    try:
+        _data_dir = Path(__file__).resolve().parent / "data"
+        ff_file = _data_dir / "wrds" / "fama_french_5factors_momentum_daily.parquet"
+        if ff_file.exists():
+            ff = pd.read_parquet(ff_file)
+            ff["date"] = pd.to_datetime(ff["date"])
+            ff = ff.set_index("date").sort_index()
+            umd_20d = ff["umd"].rolling(20).sum()
+            recent = umd_20d.loc[:today]
+            if len(recent) > 0 and pd.notna(recent.iloc[-1]) and recent.iloc[-1] < -0.05:
+                umd_crash = True
+                log.info(f"UMD CRASH detected: 20d sum = {recent.iloc[-1]:.4f} — shifting to value-heavy weights")
+    except Exception as e:
+        log.warning(f"UMD check failed: {e}")
+
+    # Override bull weights during momentum crash (matches backtest exactly)
+    if umd_crash:
+        crash_weights = {
+            "s1_momentum": 0.15, "s7_value": 0.45,
+            "s5_lowvol": 0.30, "s3_sector": 0.10, "s4_inclusion": 0.00,
+        }
+    else:
+        crash_weights = None
+
     # Combine with dynamic allocation
     combined = {}
     for name, bull_pct in STRATEGY_CONFIG_BULL:
         if name in paused:
             continue
+        if crash_weights:
+            bull_pct = crash_weights.get(name, 0)
         bear_pct = dict(STRATEGY_CONFIG_BEAR).get(name, 0)
         cap = bull_pct * blend + bear_pct * (1 - blend)
         for sym, w in targets.get(name, {}).items():
@@ -557,17 +585,7 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     for sym in list(combined):
         if combined[sym] > 0.25:
             combined[sym] = 0.25
-    # 2) Sector cap: 35%
-    sec_tot = {}
-    for sym, w in combined.items():
-        sec = uni.sector_map.get(sym, "X")
-        sec_tot[sec] = sec_tot.get(sec, 0) + w
-    for sec, tot in sec_tot.items():
-        if tot > 0.35:
-            scale = 0.35 / tot
-            for sym in list(combined):
-                if uni.sector_map.get(sym, "X") == sec:
-                    combined[sym] *= scale
+    # 2) Sector cap: removed (backtest has no sector cap)
     # 3) Gross exposure cap: 100%
     gross = sum(combined.values())
     if gross > 1.0:

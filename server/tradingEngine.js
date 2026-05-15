@@ -2422,30 +2422,40 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1g: Rebalance ALL positions to equal weight ──
-      // v11: backtest uses equal weight (leverage/n_positions per position)
+      // ── STEP 1g: Rebalance positions to signal-proportional weight ──
+      // v11: backtest uses signal-proportional weights (higher conviction = more $)
       // Trim oversized (>30% above target) and top-up undersized (>15% below target)
       if (mlSignals && mlSignals.length > 0) {
-        const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
-        const targetValue = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
-        const trimThreshold = targetValue * 1.3;
-        const topUpThreshold = targetValue * 0.85;
-
+        const mlBuys = mlSignals.filter(s => s.signal === "BUY");
+        const mlBuySet = new Set(mlBuys.map(s => s.symbol));
+        const totalProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
+        // Compute per-symbol target based on signal weight
+        const mlTargets = {};
+        for (const s of mlBuys) {
+          const w = totalProb > 0 ? (s.probability / totalProb) : (1.0 / mlBuys.length);
+          mlTargets[s.symbol] = Math.min(w, RISK.MAX_POSITION_PCT) * cyclePortfolioValue;
+        }
+        // Fallback if targets not computed
+        const defaultTarget = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+        const getTarget = (sym) => mlTargets[sym] || defaultTarget;
         for (const pos of currentPositions) {
           const sym = pos.symbol;
           if (closedSymbols.has(sym)) continue;
           if (!mlBuySet.has(sym)) continue;  // only rebalance stocks still in top-8
           const mv = parseFloat(pos.market_value || 0);
           const price = parseFloat(pos.current_price || pos.avg_entry_price || 1);
+          const symTarget = getTarget(sym);
+          const trimThreshold = symTarget * 1.3;
+          const topUpThreshold = symTarget * 0.85;
 
           // TRIM oversized
           if (mv > trimThreshold) {
-            const excessValue = mv - targetValue;
+            const excessValue = mv - symTarget;
             const excessShares = Math.floor(excessValue / price);
             if (excessShares > 0) {
               try {
                 await placeOrder({ symbol: sym, qty: excessShares, side: "sell", type: "market" });
-                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (selling ${excessShares} shares)`, "sell");
+                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${symTarget.toFixed(0)} (selling ${excessShares} shares)`, "sell");
                 cycleCash += excessShares * price;
               } catch (err) {
                 addLog(`Trim failed ${sym}: ${err.message}`, "error");
@@ -2455,12 +2465,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
           // TOP-UP undersized
           if (mv < topUpThreshold) {
-            const shortfall = targetValue - mv;
+            const shortfall = symTarget - mv;
             const buyShares = Math.floor(shortfall / price);
             if (buyShares > 0 && shortfall > RISK.MIN_POSITION_DOLLARS) {
               try {
                 await placeOrder({ symbol: sym, qty: buyShares, side: "buy", type: "market" });
-                addLog(`TOP-UP ${sym}: $${mv.toFixed(0)} → $${targetValue.toFixed(0)} (buying ${buyShares} shares)`, "buy");
+                addLog(`TOP-UP ${sym}: $${mv.toFixed(0)} → $${symTarget.toFixed(0)} (buying ${buyShares} shares)`, "buy");
                 cycleCash -= buyShares * price;
               } catch (err) {
                 addLog(`Top-up failed ${sym}: ${err.message}`, "error");
@@ -2970,9 +2980,18 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           // Momentum/MR/Mega-cap: fixed % (already computed in signal)
           dynPositionPct = opp.positionPct;
         } else {
-          // v11: equal-weight sizing = leverage / max_positions per position
-          // 1.5x / 8 = 18.75% of equity per position (matches backtest exactly)
-          dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+          // v11: signal-proportional sizing (matches backtest exactly)
+          // The signal server outputs combined weights as probabilities.
+          // Convert: each stock's weight = its probability / sum(all BUY probabilities) * leverage
+          const mlBuys = mlSignals ? mlSignals.filter(s => s.signal === "BUY") : [];
+          const totalProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
+          if (totalProb > 0 && opp.mlConf > 0) {
+            dynPositionPct = (opp.mlConf / totalProb) * RISK.MAX_CASH_DEPLOY_PCT;
+            // Cap at MAX_POSITION_PCT (25%) to match backtest cap
+            dynPositionPct = Math.min(dynPositionPct, RISK.MAX_POSITION_PCT);
+          } else {
+            dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+          }
         }
 
         // v11: target position size = equity × leverage / n_positions
