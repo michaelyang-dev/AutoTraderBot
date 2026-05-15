@@ -210,19 +210,19 @@ def refresh_ortex():
 
 
 def restart_ml_server():
-    """Restart ml-server via PM2 to pick up fresh data."""
-    log("Restarting ml-server to load fresh data...")
+    """Restart signal-server via PM2 to pick up fresh data."""
+    log("Restarting signal-server to load fresh data...")
     try:
         result = subprocess.run(
-            ["pm2", "restart", "ml-server"],
+            ["pm2", "restart", "signal-server"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
-            log("ml-server restarted successfully")
+            log("signal-server restarted successfully")
         else:
             log(f"WARNING: pm2 restart returned code {result.returncode}: {result.stderr}")
     except Exception as e:
-        log(f"ERROR restarting ml-server: {e}")
+        log(f"ERROR restarting signal-server: {e}")
 
 
 def _accumulate_snapshot(snapshot_file, history_file, data_dir, today):

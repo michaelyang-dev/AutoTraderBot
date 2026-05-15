@@ -328,8 +328,8 @@ class IBKREngine:
         target_symbols = set(s["symbol"] for s in signals)
         held_symbols = set(self.positions.keys())
 
-        # 1. SELL positions not in signals (enforce 20-day min hold)
-        MIN_HOLD_DAYS = 20
+        # 1. SELL positions not in signals (enforce 15-day min hold, matches backtest)
+        MIN_HOLD_DAYS = 15
         for sym in held_symbols - target_symbols:
             pos = self.positions[sym]
             # Check min hold period before rebalance exit
@@ -348,13 +348,18 @@ class IBKREngine:
             await self.update_positions()
             portfolio_value = await self.get_portfolio_value()
 
-        # 2. Compute target weights (with 1.5x leverage)
-        target_weight = LEVERAGE / MAX_POSITIONS  # 1.5x / 8 = 18.75% per position
-        target_value_per_position = portfolio_value * target_weight
-
-        # Cap at POSITION_CAP
-        if target_weight > POSITION_CAP:
-            target_value_per_position = portfolio_value * POSITION_CAP
+        # 2. Compute target weights — signal-proportional (matches backtest)
+        # Higher conviction picks get more capital
+        total_prob = sum(s.get("probability", 0) for s in signals)
+        signal_targets = {}
+        for sig in signals:
+            prob = sig.get("probability", 0)
+            if total_prob > 0 and prob > 0:
+                w = (prob / total_prob) * LEVERAGE
+                w = min(w, POSITION_CAP)  # cap at 25%
+            else:
+                w = LEVERAGE / MAX_POSITIONS  # fallback equal weight
+            signal_targets[sig["symbol"]] = portfolio_value * w
 
         # 3. BUY new positions / adjust existing
         for sig in signals:
@@ -366,6 +371,7 @@ class IBKREngine:
                 log.warning(f"Cannot get price for {sym} — skipping")
                 continue
 
+            target_value_per_position = signal_targets.get(sym, portfolio_value * LEVERAGE / MAX_POSITIONS)
             current_qty = self.positions.get(sym, {}).get("qty", 0)
             current_value = current_qty * price
             target_qty = int(target_value_per_position / price)
