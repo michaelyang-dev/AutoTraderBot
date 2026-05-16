@@ -816,7 +816,6 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       const alpacaSym = toAlpacaSymbol(symbol);
 
       // Pre-order validation: check for duplicate pending orders for same symbol+side
-      // This is a last-resort guard in case heldSymbols check was bypassed
       if (side === "buy") {
         try {
           await rateLimitWait();
@@ -828,17 +827,40 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         } catch (err) {
           if (err.message.includes("Duplicate buy blocked")) throw err;
-          // If order check fails, proceed cautiously — Alpaca will reject if truly invalid
         }
       }
 
-      // Use client_order_id for idempotency
       const clientOrderId = `${symbol}_${side}_${Date.now()}`;
       await rateLimitWait();
-      return await alpaca.createOrder({
+      const order = await alpaca.createOrder({
         symbol: alpacaSym, qty, side, type, time_in_force,
         client_order_id: clientOrderId,
       });
+
+      // Reconcile fill: market orders fill almost instantly
+      // Poll for fill status so journal entry dates persist across restarts
+      if (order && order.id) {
+        setTimeout(async () => {
+          try {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              await rateLimitWait();
+              const filled = await alpaca.getOrder(order.id);
+              if (filled.status === "filled") {
+                journal.recordOrderFilled({
+                  alpaca_order_id: order.id,
+                  filled_qty: parseFloat(filled.filled_qty),
+                  fill_price: parseFloat(filled.filled_avg_price),
+                  fill_time: filled.filled_at || new Date().toISOString(),
+                });
+                break;
+              }
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          } catch (_) { /* never crash trading loop */ }
+        }, 3000);
+      }
+
+      return order;
     } catch (err) {
       notify.send(`🚨 ORDER REJECTED — ${symbol} ${side} ${qty} shares | Reason: ${err.message}`, { deduplicate: true, immediate: true });
       throw err;
@@ -863,6 +885,28 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           intended_price: pos ? pos.current_price : null,
         });
       } catch (_) { /* never crash trading loop */ }
+
+      // Reconcile fill asynchronously
+      if (result && result.id) {
+        setTimeout(async () => {
+          try {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              await rateLimitWait();
+              const filled = await alpaca.getOrder(result.id);
+              if (filled.status === "filled") {
+                journal.recordOrderFilled({
+                  alpaca_order_id: result.id,
+                  filled_qty: parseFloat(filled.filled_qty),
+                  fill_price: parseFloat(filled.filled_avg_price),
+                  fill_time: filled.filled_at || new Date().toISOString(),
+                });
+                break;
+              }
+              await new Promise(r => setTimeout(r, 2000));
+            }
+          } catch (_) { /* never crash trading loop */ }
+        }, 3000);
+      }
 
       return result;
     } catch (err) {

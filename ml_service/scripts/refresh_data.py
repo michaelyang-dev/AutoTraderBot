@@ -447,6 +447,8 @@ def main():
     ok7 = _run_with_timeout(archive_daily_prices, "price_archive", 120)
     ok8 = _run_with_timeout(cleanup_journal_db, "journal_cleanup", 60)
 
+    ok9 = _run_with_timeout(check_data_gaps, "data_gaps", 120)
+
     if ok1 or ok2 or ok3 or ok4 or ok5:
         restart_ml_server()
 
@@ -469,6 +471,64 @@ def main():
         )
     else:
         log("All refreshes succeeded — no alerts needed")
+
+
+def check_data_gaps():
+    """Scan Massive cache for stocks with insufficient price history.
+    Stocks with <252 bars will produce NaN features and get rejected
+    by signal_builder. This check identifies them proactively.
+    """
+    import json
+    import pandas as pd
+    from pathlib import Path
+
+    data_root = Path(__file__).resolve().parent.parent / "data"
+    cache_dir = data_root / "massive_cache"
+    members_file = data_root / "sp1500_members.json"
+
+    if not cache_dir.exists():
+        log("No massive_cache directory — skipping data gap check")
+        return
+
+    # Load SP1500 members
+    sp1500 = set()
+    if members_file.exists():
+        with open(members_file) as f:
+            data = json.load(f)
+        for key in ["sp500", "sp400", "sp600"]:
+            sp1500.update(data.get(key, []))
+
+    short_bars = []
+    missing = []
+    total = 0
+
+    for sym in sorted(sp1500):
+        f = cache_dir / f"{sym}_adj.parquet"
+        if not f.exists():
+            missing.append(sym)
+            continue
+        total += 1
+        try:
+            df = pd.read_parquet(f)
+            n = len(df)
+            if n < 252:
+                short_bars.append((sym, n))
+        except Exception:
+            short_bars.append((sym, 0))
+
+    log(f"Data gap check: {total} cached, {len(missing)} missing, {len(short_bars)} with <252 bars")
+
+    if short_bars:
+        log(f"  Short bars: {short_bars[:20]}")
+
+    if missing and len(missing) < 50:
+        log(f"  Missing: {missing[:20]}")
+
+    if len(short_bars) > 30 or len(missing) > 100:
+        _send_telegram_alert(
+            f"⚠️ DATA GAPS: {len(short_bars)} stocks with <252 bars, "
+            f"{len(missing)} missing from cache"
+        )
 
 
 def _send_telegram_alert(message):
