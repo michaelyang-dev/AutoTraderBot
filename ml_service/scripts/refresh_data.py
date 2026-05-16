@@ -524,6 +524,49 @@ def check_data_gaps():
     if missing and len(missing) < 50:
         log(f"  Missing: {missing[:20]}")
 
+    # Auto-fix: patch short-bar stocks from yfinance
+    to_fix = [sym for sym, n in short_bars if n > 0] + missing[:50]
+    if to_fix:
+        log(f"  Auto-patching {len(to_fix)} symbols from yfinance...")
+        try:
+            import yfinance as yf
+            from datetime import datetime, timedelta
+            start = (datetime.today() - timedelta(days=550)).strftime("%Y-%m-%d")
+            end = datetime.today().strftime("%Y-%m-%d")
+
+            CHUNK = 50
+            patched = 0
+            for i in range(0, len(to_fix), CHUNK):
+                chunk = to_fix[i:i + CHUNK]
+                try:
+                    data = yf.download(chunk, start=start, end=end,
+                                       auto_adjust=True, progress=False, threads=True)
+                    if isinstance(data.columns, pd.MultiIndex):
+                        for sym in chunk:
+                            try:
+                                df = data.xs(sym, level=1, axis=1).dropna(how="all")
+                                df.columns = [c.lower() for c in df.columns]
+                                if len(df) >= 252:
+                                    df[["open", "high", "low", "close", "volume"]].to_parquet(
+                                        cache_dir / f"{sym}_adj.parquet"
+                                    )
+                                    patched += 1
+                            except Exception:
+                                pass
+                    elif len(chunk) == 1:
+                        data.columns = [c.lower() for c in data.columns]
+                        if len(data.dropna(how="all")) >= 252:
+                            data[["open", "high", "low", "close", "volume"]].to_parquet(
+                                cache_dir / f"{chunk[0]}_adj.parquet"
+                            )
+                            patched += 1
+                except Exception as e:
+                    log(f"  yfinance chunk failed: {e}")
+
+            log(f"  Patched {patched}/{len(to_fix)} symbols from yfinance")
+        except ImportError:
+            log("  yfinance not available — skipping auto-patch")
+
     if len(short_bars) > 30 or len(missing) > 100:
         _send_telegram_alert(
             f"⚠️ DATA GAPS: {len(short_bars)} stocks with <252 bars, "
