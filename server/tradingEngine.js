@@ -2690,13 +2690,19 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         }
 
-        // Pre-filter: already held — check if needs top-up to equal weight
+        // Pre-filter: already held — check if needs top-up to signal-proportional weight
         if (heldSymbols.has(sym)) {
           if (isMLBuy) {
             // v11: check if position is undersized and needs top-up
             const existingPos = activePositions.find(p => p.symbol === sym);
             const existingValue = existingPos ? parseFloat(existingPos.market_value || 0) : 0;
-            const targetValue = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+            // Signal-proportional target (matches backtest)
+            const mlBuysForTarget = mlSignals ? mlSignals.filter(s => s.signal === "BUY") : [];
+            const totalProbForTarget = mlBuysForTarget.reduce((sum, s) => sum + s.probability, 0);
+            const myProb = mlMap[sym] ? mlMap[sym].probability : 0;
+            const targetValue = totalProbForTarget > 0 && myProb > 0
+              ? Math.min((myProb / totalProbForTarget) * RISK.MAX_CASH_DEPLOY_PCT, RISK.MAX_POSITION_PCT) * cyclePortfolioValue
+              : cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
             const shortfall = targetValue - existingValue;
             if (shortfall > targetValue * 0.15) {
               // Undersized by >15% — add to buy candidates for top-up
