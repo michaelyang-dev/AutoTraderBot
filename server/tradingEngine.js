@@ -44,7 +44,7 @@ const ENABLE_SPY_PARKING = false;  // Walk-forward validated OFF: +0.42 Sharpe, 
 // ── Multi-strategy slot allocation ──
 // v9.6: all slots go to factor strategy (multi-strategy engine handles diversification)
 const SLOT_CONFIG = {
-  ml_medium: 8,          // v9.6 top-8 picks (kept as "ml_medium" for API compatibility)
+  ml_medium: 30,         // hold all combined sleeve picks (~25-28, matches backtest)
   momentum: 0,           // Disabled — v9.6 has its own momentum strategy (S1)
   mean_reversion: 0,     // Disabled
   mega_cap: 0,           // Disabled
