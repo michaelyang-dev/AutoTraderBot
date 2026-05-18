@@ -1777,6 +1777,36 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
         notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v10 signals: ${buyCount} BUY.`);
       }
+
+      // Market CLOSE transition — record daily snapshot
+      if (!marketOpen && prevMarketOpen && portfolioValue > 0) {
+        try {
+          const today = new Date().toISOString().split("T")[0];
+          const activePos = positionsRaw ? positionsRaw.filter(p => p.symbol !== "SPY").length : 0;
+          const dailyPnl = circuitBreaker.marketOpenValue
+            ? portfolioValue - circuitBreaker.marketOpenValue : 0;
+          const dailyPnlPct = circuitBreaker.marketOpenValue
+            ? dailyPnl / circuitBreaker.marketOpenValue : 0;
+          const spyClose = priceHist.SPY?.[priceHist.SPY.length - 1] || null;
+          journal.writeDailySnapshot({
+            date: today,
+            portfolio_value: portfolioValue,
+            cash,
+            equity: portfolioValue,
+            positions_count: activePos,
+            day_pnl: dailyPnl,
+            day_pnl_pct: dailyPnlPct,
+            regime,
+            spy_close: spyClose,
+            peak_value: circuitBreaker.peakValue,
+            drawdown_pct: circuitBreaker.peakValue > 0 ? (1 - portfolioValue / circuitBreaker.peakValue) : 0,
+          });
+          addLog(`[snapshot] Daily snapshot recorded: $${portfolioValue.toFixed(0)}, P&L: $${dailyPnl.toFixed(0)}`, "system");
+        } catch (err) {
+          addLog(`[snapshot] Failed to write daily snapshot: ${err.message}`, "error");
+        }
+      }
+
       prevMarketOpen = marketOpen;
 
       connected = true;
