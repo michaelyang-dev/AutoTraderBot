@@ -134,6 +134,17 @@ def refresh_fundamentals():
     log("Refreshing FMP fundamentals parquets...")
     t0 = time.time()
     try:
+        # Clear stale JSON cache first (rebuilds from API, prevents 900MB bloat)
+        from pathlib import Path
+        cache_dir = Path(__file__).resolve().parent.parent / "data" / "fundamentals_cache"
+        if cache_dir.exists():
+            import glob
+            old_files = glob.glob(str(cache_dir / "*.json"))
+            if len(old_files) > 100:
+                for f in old_files:
+                    Path(f).unlink(missing_ok=True)
+                log(f"  Cleared {len(old_files)} stale JSON cache files")
+
         from fmp_fundamentals_pipeline import main as fmp_main
         fmp_main()
         log(f"Fundamentals refreshed in {time.time() - t0:.0f}s")
