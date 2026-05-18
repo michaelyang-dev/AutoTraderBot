@@ -62,7 +62,7 @@ SIGNAL_URL = "http://localhost:5001/signals"
 SIGNAL_HEALTH_URL = "http://localhost:5001/health"
 
 # Strategy parameters (must match backtest)
-MAX_POSITIONS = 8
+MAX_POSITIONS = 30  # hold all combined sleeve picks (~25-28, matches backtest)
 POSITION_CAP = 0.25     # v11: 25% max per position (matches backtest cap=0.25)
 TRAILING_STOP = 0.35    # v11: 35% trailing stop
 LEVERAGE = 1.50         # v11: 1.5x leverage via IBKR margin

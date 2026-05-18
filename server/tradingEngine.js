@@ -22,7 +22,7 @@ const RISK = {
   MAX_POSITION_PCT: 0.25,              // v11: 25% max per position (with 1.5x leverage: 8 * 18.75% deployed)
   STOP_LOSS_PCT: -0.35,               // v11: -35% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
-  MAX_OPEN_POSITIONS: 8,              // top-8 picks
+  MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
   MAX_CASH_DEPLOY_PCT: 1.50,          // v11: 1.5x leverage (use margin)
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.35,            // v11: -35% trailing stop (backtested: +28.9% CAGR, 1.22 Sharpe)
@@ -49,7 +49,7 @@ const SLOT_CONFIG = {
   mean_reversion: 0,     // Disabled
   mega_cap: 0,           // Disabled
   flex: 0,
-  max: 8,                // Hard cap (= RISK.MAX_OPEN_POSITIONS)
+  max: 30,               // Hard cap (= RISK.MAX_OPEN_POSITIONS)
 };
 
 // ── Momentum strategy parameters ──
@@ -210,10 +210,12 @@ const PRICE_POLL_MS = 15000;
 const TRADE_CYCLE_MS = 60000;
 
 // ── Volatility Targeting ──
-const VOL_TARGET = 0.18;    // v10: 18% annualized target (backtested: 1.09 Sharpe)
+// Vol targeting DISABLED — not in backtest, hurts CAGR by 6-8%
+// Backtest uses fixed weights without vol scaling
+const VOL_TARGET = 999;     // effectively disabled (scale always = 1.0)
 const MAX_LEVERAGE = 1.5;
-const MIN_LEVERAGE = 0.3;
-const VOL_LOOKBACK = 40;    // v10: 40-day lookback (matches backtest)
+const MIN_LEVERAGE = 1.0;   // never scale below 1.0
+const VOL_LOOKBACK = 40;
 
 const SECTOR_MAP = {
   AAPL: "Tech", MSFT: "Tech", GOOGL: "Tech", GOOG: "Tech", META: "Tech",
@@ -2496,63 +2498,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1g: Rebalance positions to signal-proportional weight ──
-      // v11: backtest uses signal-proportional weights (higher conviction = more $)
-      // Trim oversized (>30% above target) and top-up undersized (>15% below target)
-      if (mlSignals && mlSignals.length > 0) {
-        const mlBuys = mlSignals.filter(s => s.signal === "BUY");
-        const mlBuySet = new Set(mlBuys.map(s => s.symbol));
-        const totalProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
-        // Compute per-symbol target based on signal weight
-        const mlTargets = {};
-        for (const s of mlBuys) {
-          const w = totalProb > 0 ? (s.probability / totalProb) : (1.0 / mlBuys.length);
-          mlTargets[s.symbol] = Math.min(w, RISK.MAX_POSITION_PCT) * cyclePortfolioValue;
-        }
-        // Fallback if targets not computed
-        const defaultTarget = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
-        const getTarget = (sym) => mlTargets[sym] || defaultTarget;
-        for (const pos of currentPositions) {
-          const sym = pos.symbol;
-          if (closedSymbols.has(sym)) continue;
-          if (!mlBuySet.has(sym)) continue;  // only rebalance stocks still in top-8
-          const mv = parseFloat(pos.market_value || 0);
-          const price = parseFloat(pos.current_price || pos.avg_entry_price || 1);
-          const symTarget = getTarget(sym);
-          const trimThreshold = symTarget * 1.3;
-          const topUpThreshold = symTarget * 0.85;
-
-          // TRIM oversized
-          if (mv > trimThreshold) {
-            const excessValue = mv - symTarget;
-            const excessShares = Math.floor(excessValue / price);
-            if (excessShares > 0) {
-              try {
-                await placeOrder({ symbol: sym, qty: excessShares, side: "sell", type: "market" });
-                addLog(`TRIM ${sym}: $${mv.toFixed(0)} → $${symTarget.toFixed(0)} (selling ${excessShares} shares)`, "sell");
-                cycleCash += excessShares * price;
-              } catch (err) {
-                addLog(`Trim failed ${sym}: ${err.message}`, "error");
-              }
-            }
-          }
-
-          // TOP-UP undersized
-          if (mv < topUpThreshold) {
-            const shortfall = symTarget - mv;
-            const buyShares = Math.floor(shortfall / price);
-            if (buyShares > 0 && shortfall > RISK.MIN_POSITION_DOLLARS) {
-              try {
-                await placeOrder({ symbol: sym, qty: buyShares, side: "buy", type: "market" });
-                addLog(`TOP-UP ${sym}: $${mv.toFixed(0)} → $${symTarget.toFixed(0)} (buying ${buyShares} shares)`, "buy");
-                cycleCash -= buyShares * price;
-              } catch (err) {
-                addLog(`Top-up failed ${sym}: ${err.message}`, "error");
-              }
-            }
-          }
-        }
-      }
+      // STEP 1g: Trim/top-up REMOVED — not in backtest, adds costly turnover
+      // Backtest lets positions drift between 15-day rebalances (lets winners run)
+      // Full rebalance every 15 days handles weight correction
 
       // Refresh positions and cash after stop-loss + rebalance sells + trims so slot counts are accurate
       let activePositions = currentPositions;
@@ -2764,38 +2712,13 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           }
         }
 
-        // Pre-filter: already held — check if needs top-up to signal-proportional weight
+        // Already held — skip (position sizes adjust at 15-day rebalance, not between)
+        // Backtest lets positions drift between rebalances (lets winners run)
         if (heldSymbols.has(sym)) {
-          if (isMLBuy) {
-            // v11: check if position is undersized and needs top-up
-            const existingPos = activePositions.find(p => p.symbol === sym);
-            const existingValue = existingPos ? parseFloat(existingPos.market_value || 0) : 0;
-            // Signal-proportional target (matches backtest)
-            const mlBuysForTarget = mlSignals ? mlSignals.filter(s => s.signal === "BUY") : [];
-            const totalProbForTarget = mlBuysForTarget.reduce((sum, s) => sum + s.probability, 0);
-            const myProb = mlMap[sym] ? mlMap[sym].probability : 0;
-            const targetValue = totalProbForTarget > 0 && myProb > 0
-              ? Math.min((myProb / totalProbForTarget) * RISK.MAX_CASH_DEPLOY_PCT, RISK.MAX_POSITION_PCT) * cyclePortfolioValue
-              : cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
-            const shortfall = targetValue - existingValue;
-            if (shortfall > targetValue * 0.15) {
-              // Undersized by >15% — add to buy candidates for top-up
-              addLog(`EVAL ${sym}: undersized $${existingValue.toFixed(0)} vs target $${targetValue.toFixed(0)} — adding to top-up candidates`, "system");
-              // Don't continue — let it proceed to buying logic
-            } else {
-              addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | OK: at target weight`, "system");
-              continue;
-            }
-          } else {
-            continue;
-          }
-        }
-        if (regime === "BEARISH") {
-          if (isMLBuy) {
-            addLog(`EVAL ${sym}: conf ${(mlMap[sym].probability * 100).toFixed(0)}% | cash $${cycleCash.toFixed(0)} | regime ${regime} | slots ${activePositionCount}/${RISK.MAX_OPEN_POSITIONS} | BLOCKED: BEARISH regime, all buys suspended`, "system");
-          }
           continue;
         }
+        // BEARISH buy-halt REMOVED — backtest uses breadth blend for regime shifts
+        // (signal_builder already reduces momentum and increases lowvol in bear markets)
 
         if (isOnCooldown(sym, "ml")) {
           const cdKey = `${sym}:ml`;

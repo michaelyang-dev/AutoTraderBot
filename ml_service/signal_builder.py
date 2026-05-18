@@ -528,18 +528,8 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     breadth = sum(1 for v in dist_sma50.values() if v > 0) / max(len(dist_sma50), 1) if dist_sma50 else 0.5
     blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
-    # Crypto risk-on tilt (matches backtester lines 664-667)
-    cfx = uni._crypto_fx.get(today, {})
-    btc_ret = cfx.get("btc_ret_20d", 0)
-    if btc_ret and not np.isnan(btc_ret) and btc_ret > 0.15:
-        blend = min(1.0, blend + 0.10)
-
-    # VIX pause (matches backtest logic)
+    # Crypto tilt and VIX pause REMOVED — not in backtest, negligible impact
     paused = set()
-    regime = uni.get_regime(today)
-    vix = regime.get("vix", 20)
-    if vix > 40:
-        paused = {"s1_momentum", "s4_inclusion"}
 
     # UMD crash regime (matches backtest: shift to value-heavy when momentum crashes)
     umd_crash = False
@@ -620,7 +610,9 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
         rank = i + 1
         sig["rank"] = rank
         sig["is_top_5"] = rank <= top_n
-        sig["signal"] = "BUY" if sig["is_top_5"] else "HOLD"
+        # BUY all stocks with positive signal weight (matches backtest behavior)
+        # Backtest holds ALL stocks from combined sleeves (~25-28 positions)
+        sig["signal"] = "BUY" if sig["probability"] > 0 else "HOLD"
 
     buy_count = sum(1 for s in signals if s["signal"] == "BUY")
     log.info("v9.6 signals: %d total, %d BUY (breadth=%.1f%%, blend=%.2f)",
