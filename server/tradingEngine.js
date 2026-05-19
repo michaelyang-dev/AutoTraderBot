@@ -1158,6 +1158,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
   // ── ML strategy state ──
   let mlEntryDates = {};             // { symbol → cycleNumber at entry }
+  let lastRebalanceCycle = 0;        // cycle when last full rebalance happened
+  const REBAL_INTERVAL_CYCLES = 15 * 390;  // 15 trading days (matches backtest rebal_days=15)
   let mlTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
 
   // ── Mean Reversion strategy state ──
@@ -2480,6 +2482,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete mlEntryDates[sym];
               delete positionStrategy[sym];
               delete trailingPeaks[sym];
+              lastRebalanceCycle = cycleNumber;  // mark rebalance happened
               const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
               addLog(`REBALANCE SELL ${sym}: no longer in v10 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
               tradeCount.sells++; mlTradeCount.sells++;
@@ -2716,6 +2719,20 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         // Backtest lets positions drift between rebalances (lets winners run)
         if (heldSymbols.has(sym)) {
           continue;
+        }
+
+        // Batch rebalance: only allow NEW ml buys every 15 trading days
+        // Backtest does full reconstruction every rebal_days=15, NOT continuous buying
+        // This prevents mid-cycle entries that the backtest wouldn't make
+        if (opp.strategy === undefined || opp.strategy === "ml" || !opp.strategy) {
+          const cyclesSinceRebal = cycleNumber - lastRebalanceCycle;
+          if (cyclesSinceRebal < REBAL_INTERVAL_CYCLES) {
+            if (isMLBuy) {
+              const daysLeft = ((REBAL_INTERVAL_CYCLES - cyclesSinceRebal) / 390).toFixed(1);
+              addLog(`EVAL ${sym}: NEW BUY blocked — next rebalance in ${daysLeft}d (batch mode, matches backtest)`, "system");
+            }
+            continue;
+          }
         }
         // BEARISH buy-halt REMOVED — backtest uses breadth blend for regime shifts
         // (signal_builder already reduces momentum and increases lowvol in bear markets)
@@ -3083,6 +3100,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           } else {
             liveCounts.ml++;
             mlEntryDates[opp.sym] = cycleNumber;
+            lastRebalanceCycle = cycleNumber;  // mark rebalance happened
           }
           liveCounts.total++;
 
