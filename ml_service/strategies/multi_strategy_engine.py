@@ -193,7 +193,7 @@ class FastUniverse:
 
             # Insider trades
             ins = enhanced_data.get("insiders")
-            if ins is not None and len(ins) > 0:
+            if ins is not None and len(ins) > 0 and "date" in ins.columns:
                 ins["date"] = pd.to_datetime(ins["date"])
                 for sym, grp in ins.groupby("symbol"):
                     self._insiders[sym] = grp.sort_values("date")
