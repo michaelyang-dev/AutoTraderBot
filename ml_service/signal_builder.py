@@ -220,11 +220,18 @@ def _compute_features_from_raw(raw, prices):
 
         feat["in_sp500"] = True  # will be filtered per-date by strategy
 
-        # Only keep last row (today) — live server doesn't need historical lookbacks
-        # This saves ~1.35 GB of memory (was storing 380 days × 1540 symbols)
-        today_feat = feat.dropna(subset=["ret_20d"]).tail(1)
-        if len(today_feat) > 0:
-            all_features.append(today_feat)
+        # Only keep the canonical "today" row — use SPY's last date as reference
+        # This prevents date mismatches when a few stocks have newer bars than SPY
+        spy_last = prices["SPY"].dropna().index[-1] if "SPY" in prices.columns else date_index[-1]
+        if spy_last in feat.index:
+            today_feat = feat.loc[[spy_last]]
+            if not today_feat["ret_20d"].isna().all():
+                all_features.append(today_feat)
+        else:
+            # Fallback: use last valid row
+            today_feat = feat.dropna(subset=["ret_20d"]).tail(1)
+            if len(today_feat) > 0:
+                all_features.append(today_feat)
 
     if not all_features:
         return pd.DataFrame()
