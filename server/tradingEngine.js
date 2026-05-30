@@ -19,14 +19,14 @@ const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 const INITIAL_CASH = 100000;
 
 const RISK = {
-  MAX_POSITION_PCT: 0.25,              // v11: 25% max per position (with 1.5x leverage: 8 * 18.75% deployed)
-  STOP_LOSS_PCT: -0.35,               // v11: -35% trailing stop from peak
+  MAX_POSITION_PCT: 0.15,              // v12: 15% max per position (prevents single-stock concentration)
+  STOP_LOSS_PCT: -0.40,               // v12: -40% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
   MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
-  MAX_CASH_DEPLOY_PCT: 1.50,          // v11: 1.5x leverage (use margin)
+  MAX_CASH_DEPLOY_PCT: 1.50,          // v12: 1.5x leverage (use margin)
   REBALANCE_INTERVAL: 5,
-  TRAILING_STOP_PCT: 0.35,            // v11: -35% trailing stop (backtested: +28.9% CAGR, 1.22 Sharpe)
-  USE_TRAILING_STOP: true,            // v11: trailing stop enabled
+  TRAILING_STOP_PCT: 0.40,            // v12: -40% trailing stop (wider = fewer whipsaws, better CAGR)
+  USE_TRAILING_STOP: true,            // v12: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
   MIN_POSITION_PCT: 0.03,
   LOSS_COOLDOWN_CYCLES: 3,
@@ -759,7 +759,8 @@ function computeTrendStatus(prices) {
 
 function fetchMLSignals() {
   return new Promise((resolve) => {
-    const req = http.get("http://localhost:5001/signals", { timeout: 5000 }, (res) => {
+    const signalPort = process.env.SIGNAL_SERVER_PORT || "5001";
+    const req = http.get(`http://localhost:${signalPort}/signals`, { timeout: 5000 }, (res) => {
       let data = "";
       res.on("data", (chunk) => data += chunk);
       res.on("end", () => {
@@ -1158,8 +1159,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
   // ── ML strategy state ──
   let mlEntryDates = {};             // { symbol → cycleNumber at entry }
-  let lastRebalanceCycle = 0;        // cycle when last full rebalance happened
-  const REBAL_INTERVAL_CYCLES = 15 * 390;  // 15 trading days (matches backtest rebal_days=15)
+  const REBAL_INTERVAL_CYCLES = 20 * 390;  // 20 trading days (v12: matches backtest rebal_days=20)
+  let lastRebalanceCycle = -REBAL_INTERVAL_CYCLES;  // allow immediate rebalance after restart
   let mlTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
 
   // ── Mean Reversion strategy state ──
@@ -2444,10 +2445,13 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // ── STEP 1f: Rebalance exits — sell positions no longer in v9.6 top-N ──
-      // v11: 15-day minimum hold before rebalance sell (matches backtest rebal_days=15)
-      // Trailing stops still fire immediately regardless of hold period.
-      const REBAL_MIN_HOLD_CYCLES = 15 * 390;  // 15 trading days * 390 cycles/day
+      // ── STEP 1f: Rebalance exits — sell positions no longer in target set ──
+      // v12: On rebalance day (every 20 trading days), sell ALL positions not in
+      // target — NO min-hold. This matches backtest exactly (full reconstruction).
+      // Between rebalance days, no selling (only trailing stops fire).
+      const cyclesSinceLastRebal = cycleNumber - lastRebalanceCycle;
+      const isRebalDay = cyclesSinceLastRebal >= REBAL_INTERVAL_CYCLES;
+
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
         for (const pos of currentPositions) {
@@ -2455,26 +2459,14 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           if (closedSymbols.has(sym)) continue;
           if (sym === "SPY" && idleSpyShares > 0) continue;
           if (trendPositions[sym]) continue;
-          // Only rebalance-sell ML positions (not momentum/trend/etc)
           if (positionStrategy[sym] && positionStrategy[sym] !== "ml") continue;
 
           if (!mlBuySet.has(sym)) {
-            // Enforce 15-day minimum hold before rebalance exit
-            const entryCycle = mlEntryDates[sym];
-            if (entryCycle != null) {
-              const cyclesHeld = cycleNumber - entryCycle;
-              if (cyclesHeld < REBAL_MIN_HOLD_CYCLES) {
-                const daysHeld = (cyclesHeld / 390).toFixed(1);
-                addLog(`HOLD ${sym}: dropped from top-8 but min-hold active (${daysHeld.replace(/\.0$/, '')}d / 15d) -- skipping rebalance sell`, "system");
-                continue;
-              }
-            } else {
-              // No entry date recorded (e.g. after restart without journal) —
-              // conservatively assume it was just bought and enforce min-hold
-              mlEntryDates[sym] = cycleNumber;
-              addLog(`HOLD ${sym}: dropped from top-8 but no entry date — assuming recent buy, enforcing min-hold`, "system");
+            if (!isRebalDay) {
+              // Not rebal day — don't sell (let positions drift, matches backtest)
               continue;
             }
+            // Rebal day — sell immediately, no min-hold (matches backtest)
             try {
               await closePosition(sym);
               closedSymbols.add(sym);
@@ -2482,7 +2474,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete mlEntryDates[sym];
               delete positionStrategy[sym];
               delete trailingPeaks[sym];
-              lastRebalanceCycle = cycleNumber;  // mark rebalance happened
+              // NOTE: don't set lastRebalanceCycle here — wait until buys are done too
               const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
               addLog(`REBALANCE SELL ${sym}: no longer in v10 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
               tradeCount.sells++; mlTradeCount.sells++;
@@ -2721,18 +2713,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           continue;
         }
 
-        // Batch rebalance: only allow NEW ml buys every 15 trading days
-        // Backtest does full reconstruction every rebal_days=15, NOT continuous buying
-        // This prevents mid-cycle entries that the backtest wouldn't make
-        if (opp.strategy === undefined || opp.strategy === "ml" || !opp.strategy) {
-          const cyclesSinceRebal = cycleNumber - lastRebalanceCycle;
-          if (cyclesSinceRebal < REBAL_INTERVAL_CYCLES) {
-            if (isMLBuy) {
-              const daysLeft = ((REBAL_INTERVAL_CYCLES - cyclesSinceRebal) / 390).toFixed(1);
-              addLog(`EVAL ${sym}: NEW BUY blocked — next rebalance in ${daysLeft}d (batch mode, matches backtest)`, "system");
-            }
-            continue;
-          }
+        // Batch rebalance: only allow NEW ml buys on rebalance day (v12)
+        // Uses isRebalDay computed once at top of cycle — same check as sells
+        if (isMLBuy && !isRebalDay) {
+          const daysLeft = ((REBAL_INTERVAL_CYCLES - cyclesSinceLastRebal) / 390).toFixed(1);
+          addLog(`EVAL ${sym}: NEW BUY blocked — next rebalance in ${daysLeft}d (batch mode, matches backtest)`, "system");
+          continue;
         }
         // BEARISH buy-halt REMOVED — backtest uses breadth blend for regime shifts
         // (signal_builder already reduces momentum and increases lowvol in bear markets)
@@ -3137,6 +3123,13 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         } catch (err) {
           addLog(`Buy failed ${opp.sym}: ${err.message}`, "error");
         }
+      }
+
+      // Mark rebalance complete ONLY if we actually traded
+      // (prevents marking done during bar-loading cycles when no trades execute)
+      if (isRebalDay && (dailyStats.buys > 0 || dailyStats.sells > 0)) {
+        lastRebalanceCycle = cycleNumber;
+        addLog(`REBALANCE COMPLETE — next rebalance in ${REBAL_INTERVAL_CYCLES / 390} trading days`, "system");
       }
 
       // ── STEP 4: Trend trailing stop (10%) ──

@@ -45,6 +45,7 @@ from event_short_manager import EventShortManager
 # ── Paths & env ───────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)  # ensure data dir exists
 load_dotenv(BASE_DIR.parent / ".env")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -61,6 +62,25 @@ from sp500_universe import get_all_symbols
 
 ALL_SYMBOLS = get_all_symbols()
 
+# ── Startup data validation ──────────────────────────────────────────────────
+def _validate_data_files():
+    """Check critical data files exist at startup."""
+    critical = [
+        DATA_DIR / "wrds" / "fama_french_5factors_momentum_daily.parquet",
+    ]
+    optional = [
+        DATA_DIR / "sp1500_members.json",
+        DATA_DIR / "cache_sectors.json",
+    ]
+    for f in critical:
+        if not f.exists():
+            log.warning(f"CRITICAL DATA MISSING: {f.name} — some features disabled")
+    for f in optional:
+        if not f.exists():
+            log.info(f"Optional data missing: {f.name}")
+
+_validate_data_files()
+
 # Warmup: 252d for SMA200 + buffer → 550 calendar days
 WARMUP_DAYS     = 550
 REFRESH_MINUTES = 15
@@ -75,8 +95,8 @@ class State:
     refresh_task:   Optional[asyncio.Task] = None
     enhanced_data:  dict                   = {}
     # Strategy info
-    strategy_version: str                  = "v11"
-    top_n:          int                    = 8
+    strategy_version: str                  = "v12"
+    top_n:          int                    = 5
 
 state = State()
 
@@ -161,12 +181,19 @@ def _save_signal_cache(signals):
 
 
 def _load_signal_cache():
-    """Load last known signals from disk (for fast startup)."""
+    """Load last known signals from disk (for fast startup).
+    Rejects cache older than 60 minutes to avoid serving stale data."""
     try:
         if _SIGNAL_CACHE_FILE.exists():
             with open(_SIGNAL_CACHE_FILE) as f:
                 data = _json.load(f)
-            return data.get("signals", []), data.get("ts")
+            ts = data.get("ts")
+            if ts:
+                cache_time = datetime.fromisoformat(ts)
+                age_minutes = (datetime.now(ET) - cache_time).total_seconds() / 60
+                if age_minutes > 60:
+                    log.warning(f"Signal cache is {age_minutes:.0f}min old — will refresh soon")
+            return data.get("signals", []), ts
     except Exception:
         pass
     return [], None

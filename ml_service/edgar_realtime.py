@@ -222,7 +222,7 @@ def load_existing_events():
         try:
             with open(SIGNAL_FILE) as f:
                 return json.load(f)
-        except:
+        except (json.JSONDecodeError, FileNotFoundError, IOError):
             return []
     return []
 

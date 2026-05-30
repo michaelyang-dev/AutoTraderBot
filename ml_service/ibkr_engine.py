@@ -55,17 +55,18 @@ log = logging.getLogger("ibkr_engine")
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
-IB_HOST = "127.0.0.1"
-IB_PORT = 4002          # paper trading
-IB_CLIENT_ID = 1
-SIGNAL_URL = "http://localhost:5001/signals"
-SIGNAL_HEALTH_URL = "http://localhost:5001/health"
+IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
+IB_PORT = int(os.getenv("IB_PORT", "4002"))       # 4001=live, 4002=paper
+IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
+SIGNAL_PORT = os.getenv("SIGNAL_SERVER_PORT", "5001")
+SIGNAL_URL = f"http://localhost:{SIGNAL_PORT}/signals"
+SIGNAL_HEALTH_URL = f"http://localhost:{SIGNAL_PORT}/health"
 
-# Strategy parameters (must match backtest)
-MAX_POSITIONS = 30  # hold all combined sleeve picks (~25-28, matches backtest)
-POSITION_CAP = 0.25     # v11: 25% max per position (matches backtest cap=0.25)
-TRAILING_STOP = 0.35    # v11: 35% trailing stop
-LEVERAGE = 1.50         # v11: 1.5x leverage via IBKR margin
+# v12 strategy parameters (must match backtest + signal_builder + tradingEngine.js)
+MAX_POSITIONS = 30      # hold all combined sleeve picks (~22-25)
+POSITION_CAP = 0.15     # v12: 15% max per position
+TRAILING_STOP = 0.40    # v12: 40% trailing stop
+LEVERAGE = 1.50         # 1.5x leverage via IBKR margin
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
@@ -95,8 +96,8 @@ def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": msg}, timeout=10)
-    except:
-        pass
+    except Exception:
+        pass  # never crash trading loop for telegram
 
 
 class IBKREngine:
@@ -169,8 +170,14 @@ class IBKREngine:
         log.info(f"Positions: {list(self.positions.keys())} ({len(self.positions)} total)")
 
     def fetch_signals(self):
-        """Fetch BUY signals from signal server."""
+        """Fetch BUY signals from signal server (with health check)."""
         try:
+            # Quick health check first
+            health = requests.get(SIGNAL_HEALTH_URL, timeout=5)
+            if health.status_code == 200:
+                h = health.json()
+                if h.get("is_stale"):
+                    log.warning(f"Signal server data is STALE (last update: {h.get('last_update')})")
             resp = requests.get(SIGNAL_URL, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
@@ -190,8 +197,8 @@ class IBKREngine:
             resp = requests.get(SIGNAL_HEALTH_URL, timeout=5)
             if resp.status_code == 200:
                 return resp.json().get("market_open", False)
-        except:
-            pass
+        except Exception:
+            log.debug("Signal server unreachable for market_open check, using time fallback")
         # Fallback: check time
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("US/Eastern"))
@@ -297,18 +304,49 @@ class IBKREngine:
         return trade
 
     async def rebalance(self):
-        """Rebalance portfolio to match signal server picks."""
+        """Rebalance portfolio to match signal server picks.
+
+        v12: Matches backtest exactly:
+        - Full reconstruction every REBAL_DAYS trading days
+        - On rebal day: sell ALL not-in-target, buy ALL in-target, resize ALL
+        - Between rebal days: only trailing stops fire, NO buying/selling
+        """
+        REBAL_DAYS = 20  # must match backtest rebal_days
+
+        # Check if it's a rebalance day
+        if not hasattr(self, '_last_rebal_date'):
+            self._last_rebal_date = None
+            self._trading_days_since_rebal = REBAL_DAYS  # allow immediate first rebal
+            self._last_counted_day = None
+
+        # Only count trading days when market is open
+        if not self.is_market_open():
+            return
+
+        # Count trading days (only increment once per calendar day)
+        today = datetime.now().date()
+        if self._last_counted_day != today:
+            self._last_counted_day = today
+            self._trading_days_since_rebal += 1
+            log.info(f"Trading day count: {self._trading_days_since_rebal}/{REBAL_DAYS}")
+
+        if self._trading_days_since_rebal < REBAL_DAYS:
+            return  # only trailing stops fire between rebal days
+
         signals = self.fetch_signals()
         if not signals:
             log.warning("No signals available — skipping rebalance")
             return
+
+        log.info(f"═══ REBALANCE DAY ({self._trading_days_since_rebal}d since last) ═══")
+        self._trading_days_since_rebal = 0
+        self._last_rebal_date = today
 
         # SAFETY: Close any accidental short positions first
         await self.update_positions()
         for sym, pos in list(self.positions.items()):
             if pos["qty"] < 0:
                 log.warning(f"EMERGENCY COVER: {sym} has short position ({pos['qty']} shares)")
-                # Use SMART routing (not exchange-specific) to avoid precautionary rejections
                 contract = Stock(sym, "SMART", "USD")
                 await self.ib.qualifyContractsAsync(contract)
                 cover_order = MarketOrder("BUY", abs(pos["qty"]))
@@ -328,19 +366,11 @@ class IBKREngine:
         target_symbols = set(s["symbol"] for s in signals)
         held_symbols = set(self.positions.keys())
 
-        # 1. SELL positions not in signals (enforce 15-day min hold, matches backtest)
-        MIN_HOLD_DAYS = 15
+        # 1. SELL ALL positions not in signals (no min-hold on rebal day — matches backtest)
         for sym in held_symbols - target_symbols:
             pos = self.positions[sym]
-            # Check min hold period before rebalance exit
-            entry_date = self.trailing_peaks.get(f"{sym}_entry")
-            if entry_date:
-                days_held = (datetime.now() - entry_date).days
-                if days_held < MIN_HOLD_DAYS:
-                    log.info(f"HOLD {sym}: dropped from top-8 but min-hold active ({days_held}d / {MIN_HOLD_DAYS}d)")
-                    continue
-            log.info(f"Selling {sym} — no longer in top-{MAX_POSITIONS}")
-            await self.sell_position(sym, pos["qty"], "dropped_from_signals")
+            log.info(f"REBAL SELL {sym} — no longer in target set")
+            await self.sell_position(sym, pos["qty"], "rebalance_exit")
 
         # Wait for sells to settle
         if held_symbols - target_symbols:
@@ -356,7 +386,7 @@ class IBKREngine:
             prob = sig.get("probability", 0)
             if total_prob > 0 and prob > 0:
                 w = (prob / total_prob) * LEVERAGE
-                w = min(w, POSITION_CAP)  # cap at 25%
+                w = min(w, POSITION_CAP)  # v12: cap at 15%
             else:
                 w = LEVERAGE / MAX_POSITIONS  # fallback equal weight
             signal_targets[sig["symbol"]] = portfolio_value * w
@@ -573,7 +603,8 @@ class IBKREngine:
             contract = Stock(ticker, "SMART", "USD")
             try:
                 await self.ib.qualifyContractsAsync(contract)
-            except:
+            except Exception:
+                log.debug(f"Failed to qualify contract for {ticker}")
                 continue
 
             price = await self.get_market_price(contract)

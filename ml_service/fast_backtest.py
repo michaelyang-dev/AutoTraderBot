@@ -305,6 +305,23 @@ class FastBacktester:
                     self.uni._short_interest_rank = {}
                     self.uni._si_change_rank = {}
 
+            # ── Update point-in-time enhanced data (if provided) ────
+            pit_earnings = config.get("_pit_earnings_snapshots")
+            if pit_earnings:
+                # Find latest snapshot before current date
+                prior_dates = [d for d in pit_earnings.keys() if d <= date]
+                if prior_dates:
+                    snap = pit_earnings[max(prior_dates)]
+                    # Update fin_growth with point-in-time eps/rev surprise
+                    pit_fg = {}
+                    for sym, eps_s in snap.get('eps_surprise', {}).items():
+                        rev_s = snap.get('rev_surprise', {}).get(sym, 0)
+                        pit_fg[sym] = {"rev_growth": rev_s, "eps_growth": eps_s}
+                    self.uni._fin_growth = pit_fg
+                    # Update beat streak and revenue surprise
+                    self.uni._beat_streak = snap.get('beat_streak', {})
+                    self.uni._revenue_surprise = snap.get('rev_surprise', {})
+
             # ── Strategy signals (EXACT production code) ─────────
             t1 = strategy1_momentum_reversal(date, self.uni, day_idx,
                                              top_n=top_n, rebal_days=rebal_days)
@@ -365,6 +382,20 @@ class FastBacktester:
             combined = {s: w for s, w in longs.items() if w >= 0.005}
 
             eq_pct = 1.0 - vixm_pct - (gld_pct if gld_pct > 0 else 0)
+
+            # Market trend exposure scaling: reduce exposure when SPY < SMA200
+            trend_scale = config.get("trend_scale", None)
+            if trend_scale and "SPY" in self.prices.columns:
+                spy_px = today.get("SPY", 0)
+                spy_hist = self.prices["SPY"].loc[:date].dropna()
+                if len(spy_hist) >= 200:
+                    spy_sma200 = spy_hist.tail(200).mean()
+                    spy_sma50 = spy_hist.tail(50).mean()
+                    if spy_px < spy_sma200:
+                        eq_pct *= trend_scale.get("bear", 0.5)
+                    elif spy_px < spy_sma50:
+                        eq_pct *= trend_scale.get("caution", 0.75)
+
             target_d = {s: w * total_val * eq_pct for s, w in combined.items()}
 
             for sym in list(holdings):

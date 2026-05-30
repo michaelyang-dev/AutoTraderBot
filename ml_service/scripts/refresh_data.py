@@ -220,6 +220,107 @@ def refresh_ortex():
         return False
 
 
+def refresh_fama_french():
+    """Update Fama-French factors from Ken French's website (free, daily)."""
+    log("Refreshing Fama-French factors...")
+    try:
+        import pandas as pd
+        from pathlib import Path
+        import io, zipfile, urllib.request
+
+        data_dir = Path(__file__).resolve().parent.parent / "data" / "wrds"
+
+        # Download from Ken French's website (canonical source, free)
+        url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"
+        mom_url = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_daily_CSV.zip"
+
+        # 5 factors
+        resp = urllib.request.urlopen(url, timeout=30)
+        z = zipfile.ZipFile(io.BytesIO(resp.read()))
+        csv_name = [n for n in z.namelist() if n.endswith('.CSV') or n.endswith('.csv')][0]
+        raw = z.read(csv_name).decode('utf-8')
+        # Skip header rows (find first line that starts with a date)
+        lines = raw.strip().split('\n')
+        data_start = 0
+        for i, line in enumerate(lines):
+            if line.strip() and line.strip()[0].isdigit() and len(line.strip().split(',')[0]) == 8:
+                data_start = i
+                break
+        data_lines = []
+        for line in lines[data_start:]:
+            parts = line.strip().split(',')
+            if len(parts) >= 6 and parts[0].strip().isdigit():
+                data_lines.append(parts)
+            else:
+                break
+
+        ff5 = pd.DataFrame(data_lines, columns=['date', 'mktrf', 'smb', 'hml', 'rmw', 'cma', 'rf'])
+        ff5['date'] = pd.to_datetime(ff5['date'].str.strip(), format='%Y%m%d')
+        for col in ['mktrf', 'smb', 'hml', 'rmw', 'cma', 'rf']:
+            ff5[col] = pd.to_numeric(ff5[col].str.strip(), errors='coerce') / 100
+
+        # Momentum factor
+        resp2 = urllib.request.urlopen(mom_url, timeout=30)
+        z2 = zipfile.ZipFile(io.BytesIO(resp2.read()))
+        csv2 = [n for n in z2.namelist() if n.endswith('.CSV') or n.endswith('.csv')][0]
+        raw2 = z2.read(csv2).decode('utf-8')
+        lines2 = raw2.strip().split('\n')
+        data_start2 = 0
+        for i, line in enumerate(lines2):
+            if line.strip() and line.strip()[0].isdigit() and len(line.strip().split(',')[0]) == 8:
+                data_start2 = i
+                break
+        mom_lines = []
+        for line in lines2[data_start2:]:
+            parts = line.strip().split(',')
+            if len(parts) >= 2 and parts[0].strip().isdigit():
+                mom_lines.append(parts[:2])
+            else:
+                break
+
+        mom = pd.DataFrame(mom_lines, columns=['date', 'umd'])
+        mom['date'] = pd.to_datetime(mom['date'].str.strip(), format='%Y%m%d')
+        mom['umd'] = pd.to_numeric(mom['umd'].str.strip(), errors='coerce') / 100
+
+        # Merge
+        ff = ff5.merge(mom, on='date', how='outer').sort_values('date').dropna(subset=['date'])
+        ff.to_parquet(data_dir / "fama_french_5factors_momentum_daily.parquet", index=False)
+
+        log(f"Fama-French updated: {len(ff)} rows, latest={ff['date'].max().date()}")
+        return True
+    except Exception as e:
+        log(f"ERROR refreshing Fama-French: {e}")
+        return False
+
+
+def flush_old_fundamentals():
+    """Remove fundamentals cache files older than 1 day to save disk.
+    The daily refresh rebuilds the full cache, so old files are just wasting space.
+    886MB/day × 7 days = 6GB — disk only has 2GB free."""
+    log("Flushing old fundamentals cache...")
+    try:
+        from pathlib import Path
+        cache_dir = Path(__file__).resolve().parent.parent / "data" / "fundamentals_cache"
+        if not cache_dir.exists():
+            return True
+
+        cutoff = time.time() - 1 * 86400  # 1 day — keep only today's data
+        removed = 0
+        for f in cache_dir.glob("*.json"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+
+        if removed > 0:
+            log(f"  Removed {removed} stale cache files (>1 day old)")
+        else:
+            log(f"  No stale cache files found")
+        return True
+    except Exception as e:
+        log(f"ERROR flushing cache: {e}")
+        return False
+
+
 def restart_ml_server():
     """Restart signal-server via PM2 to pick up fresh data."""
     log("Restarting signal-server to load fresh data...")
@@ -352,23 +453,34 @@ def refresh_snapshot_history():
         return False
 
 
-def _run_with_timeout(func, label, timeout_sec=600):
-    """Run a refresh function with a hard timeout."""
+def _run_with_timeout(func, label, timeout_sec=600, retries=1):
+    """Run a refresh function with a hard timeout and optional retry."""
     import signal as _sig
 
     def _handler(signum, frame):
         raise TimeoutError(f"{label} exceeded {timeout_sec}s timeout")
 
-    old = _sig.signal(_sig.SIGALRM, _handler)
-    _sig.alarm(timeout_sec)
-    try:
-        result = func()
-    except TimeoutError as e:
-        log(f"TIMEOUT: {e}")
-        result = False
-    finally:
-        _sig.alarm(0)
-        _sig.signal(_sig.SIGALRM, old)
+    for attempt in range(1 + retries):
+        old = _sig.signal(_sig.SIGALRM, _handler)
+        _sig.alarm(timeout_sec)
+        try:
+            result = func()
+            return result
+        except TimeoutError as e:
+            log(f"TIMEOUT: {e}")
+            if attempt < retries:
+                log(f"  Retrying {label} (attempt {attempt + 2}/{retries + 1})...")
+                time.sleep(5)
+            result = False
+        except Exception as e:
+            log(f"ERROR in {label}: {e}")
+            if attempt < retries:
+                log(f"  Retrying {label} (attempt {attempt + 2}/{retries + 1})...")
+                time.sleep(5)
+            result = False
+        finally:
+            _sig.alarm(0)
+            _sig.signal(_sig.SIGALRM, old)
     return result
 
 
@@ -396,7 +508,7 @@ def archive_daily_prices():
                 if "close" in df.columns and len(df) > 0:
                     sym = f.stem.replace("_adj", "")
                     closes[sym] = df["close"].iloc[-1]
-            except:
+            except Exception:
                 continue
 
         if closes:
@@ -429,15 +541,26 @@ def cleanup_journal_db():
         return True
     try:
         conn = sqlite3.connect(str(DB_PATH))
-        # Keep only last 7 days of signals (this table bloats fastest)
-        conn.execute("DELETE FROM signals WHERE timestamp < datetime('now', '-7 days')")
-        conn.execute("DELETE FROM events WHERE timestamp < datetime('now', '-30 days')")
-        deleted = conn.total_changes
-        conn.execute("VACUUM")
+        # Get actual table/column names to avoid errors
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        deleted = 0
+        for table in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+            # Find a date column
+            date_col = None
+            for c in ['timestamp', 'created_at', 'date', 'time']:
+                if c in cols:
+                    date_col = c
+                    break
+            if date_col:
+                days = 7 if table == 'signals' else 30
+                conn.execute(f"DELETE FROM {table} WHERE {date_col} < datetime('now', '-{days} days')")
+                deleted += conn.total_changes
+        if deleted > 0:
+            conn.execute("VACUUM")
+            log(f"Journal cleanup: deleted {deleted} old rows, vacuumed")
         conn.commit()
         conn.close()
-        if deleted > 0:
-            log(f"Journal cleanup: deleted {deleted} old rows, vacuumed")
         return True
     except Exception as e:
         log(f"Journal cleanup failed: {e}")
@@ -449,22 +572,25 @@ def main():
     log("  DAILY DATA REFRESH")
     log("=" * 60)
 
-    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 300)
-    ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60)
-    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 600)
-    ok4 = _run_with_timeout(refresh_options, "options", 300)
-    ok5 = _run_with_timeout(refresh_ortex, "ortex", 600)
+    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 300, retries=1)
+    ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60, retries=1)
+    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 600, retries=1)
+    ok4 = _run_with_timeout(refresh_options, "options", 300, retries=1)
+    # v12: Ortex REMOVED (subscription canceled, SI hurts returns)
+    ok5 = True  # skip Ortex
     ok6 = _run_with_timeout(refresh_snapshot_history, "snapshots", 120)
     ok7 = _run_with_timeout(archive_daily_prices, "price_archive", 120)
     ok8 = _run_with_timeout(cleanup_journal_db, "journal_cleanup", 60)
+    ok_ff = _run_with_timeout(refresh_fama_french, "fama_french", 120)
 
     ok9 = _run_with_timeout(check_data_gaps, "data_gaps", 120)
+    ok10 = _run_with_timeout(flush_old_fundamentals, "cache_flush", 60)
 
-    if ok1 or ok2 or ok3 or ok4 or ok5:
+    if ok1 or ok2 or ok3 or ok4:
         restart_ml_server()
 
-    status = "OK" if (ok1 and ok2 and ok3 and ok4 and ok5 and ok6) else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, ortex={ok5}, snapshots={ok6}, prices={ok7}, journal={ok8})")
+    status = "OK" if (ok1 and ok2 and ok3 and ok6) else "PARTIAL"
+    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, fama_french={ok_ff}, snapshots={ok6}, prices={ok7}, journal={ok8}, cache_flush={ok10})")
 
     # Alert on failure via Telegram
     if status != "OK":
@@ -472,8 +598,6 @@ def main():
         if not ok1: failures.append("enhanced_data")
         if not ok2: failures.append("VIX")
         if not ok3: failures.append("fundamentals")
-        if not ok4: failures.append("options")
-        if not ok5: failures.append("ortex")
         if not ok6: failures.append("snapshots")
         _send_telegram_alert(
             f"⚠️ DATA REFRESH {status}\n"

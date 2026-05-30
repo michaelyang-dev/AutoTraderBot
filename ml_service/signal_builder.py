@@ -22,27 +22,27 @@ from strategies.multi_strategy_engine import (
     SECTOR_ETFS,
 )
 
-# v11 strategy config: 35% momentum, 25% value, 40% low-vol quality
-# Improvement over v10.2: +30.9% CAGR (was +22.6%), 1.20 Sharpe (was 1.01)
-# Max DD: -32.6% (was -38.5%), Calmar: 0.95 (was 0.59)
-# Wins 8/8 individual years, 5/6 walk-forward windows
-# Bootstrap 95% CI: [+15.2%, +50.4%], conservative CAGR: +20.8%
-# Changes: rebal 10d→15d, RP OFF, weights 40/20/40→35/25/40, cap→25%
+# v12 strategy config: 50% momentum, 35% value, 15% low-vol quality
+# Honest backtest (no look-ahead, no SI, start-day averaged, 2018-2025):
+#   25.4% CAGR, 1.00 Sharpe, -26.4% MaxDD at 1x
+#   25-year (2001-2025): 16.9% CAGR, 0.79 Sharpe, -37.1% MaxDD
+# Changes from v11: weights 35/25/40→50/35/15, top_n 8→5, rebal 15→20d,
+#   stop 35%→40%, cap 25%→15%, bear 50%→40%, SI DISABLED (hurts -3pp)
 # With 1.5x leverage target
 STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.35),
-    ("s7_value",    0.25),
+    ("s1_momentum", 0.50),
+    ("s7_value",    0.35),
     ("s3_sector",   0.00),
     ("s4_inclusion", 0.00),
-    ("s5_lowvol",   0.40),
+    ("s5_lowvol",   0.15),
 ]
 
 STRATEGY_CONFIG_BEAR = [
     ("s1_momentum", 0.10),
-    ("s7_value",    0.20),
+    ("s7_value",    0.30),
     ("s3_sector",   0.10),
     ("s4_inclusion", 0.00),
-    ("s5_lowvol",   0.60),
+    ("s5_lowvol",   0.50),
 ]
 
 log = logging.getLogger("signal_server")
@@ -484,7 +484,7 @@ def _strategy_value(uni, date, members, top_n=10):
     return {s: 1.0 / len(ss) for s in ss}
 
 
-def build_signals_v9(raw, enhanced_data=None, top_n=8):
+def build_signals_v9(raw, enhanced_data=None, top_n=5):
     """
     Build signals using v9.6 multi-strategy framework.
 
@@ -505,8 +505,9 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
         log.info("Building v9.6 FastUniverse ...")
         _uni_cache = _build_universe(raw, enhanced_data)
         _uni_cache_date = today
-        # Load SI change data for the enhanced momentum scoring
-        _load_si_change_data(_uni_cache)
+        # v12: SI DISABLED — hurts returns by -3pp (verified May 2026)
+        # _load_si_change_data(_uni_cache)
+        _uni_cache._si_change_rank = {}
         log.info("v9.6 FastUniverse ready")
 
     uni = _uni_cache
@@ -543,7 +544,9 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
     try:
         _data_dir = Path(__file__).resolve().parent / "data"
         ff_file = _data_dir / "wrds" / "fama_french_5factors_momentum_daily.parquet"
-        if ff_file.exists():
+        if not ff_file.exists():
+            log.warning("Fama-French file MISSING — UMD crash detection disabled!")
+        elif ff_file.exists():
             ff = pd.read_parquet(ff_file)
             ff["date"] = pd.to_datetime(ff["date"])
             ff = ff.set_index("date").sort_index()
@@ -578,10 +581,10 @@ def build_signals_v9(raw, enhanced_data=None, top_n=8):
                 combined[sym] = combined.get(sym, 0) + w * cap
 
     # Apply constraints (must match backtest exactly)
-    # 1) Single-name cap: 25% (v11: matches backtest cap=0.25)
+    # 1) Single-name cap: 15% (v12: matches backtest cap=0.15)
     for sym in list(combined):
-        if combined[sym] > 0.25:
-            combined[sym] = 0.25
+        if combined[sym] > 0.15:
+            combined[sym] = 0.15
     # 2) Sector cap: removed (backtest has no sector cap)
     # 3) Gross exposure cap: 100%
     gross = sum(combined.values())

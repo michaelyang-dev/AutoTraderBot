@@ -26,9 +26,17 @@ log = logging.getLogger("scrape_sp1500")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 OUTPUT_FILE = DATA_DIR / "sp1500_members.json"
 
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+# SSL context: try default first, fall back to unverified if Wikipedia blocks
+try:
+    _SSL_CTX = ssl.create_default_context()
+    # Test with a simple request
+    urllib.request.urlopen("https://en.wikipedia.org/robots.txt",
+                           context=_SSL_CTX, timeout=5)
+except Exception:
+    _SSL_CTX = ssl.create_default_context()
+    _SSL_CTX.check_hostname = False
+    _SSL_CTX.verify_mode = ssl.CERT_NONE
+    log.warning("Using unverified SSL (default context failed for Wikipedia)")
 
 URLS = {
     "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
@@ -181,13 +189,13 @@ if __name__ == "__main__":
         scrape()
 
         # Auto-update sector map if FMP key is available
+        # Load .env via dotenv if available, fall back to manual parse
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+        except ImportError:
+            pass
         fmp_key = os.environ.get("FMP_API_KEY", "")
-        if not fmp_key:
-            env_file = Path(__file__).resolve().parent.parent / ".env"
-            if env_file.exists():
-                for line in env_file.read_text().splitlines():
-                    if line.startswith("FMP_API_KEY="):
-                        fmp_key = line.split("=", 1)[1].strip()
         if fmp_key:
             update_sector_map(fmp_key)
         else:
