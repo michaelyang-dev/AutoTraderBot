@@ -215,8 +215,10 @@ async def _refresh() -> bool:
         log.info("Refreshing v9.6 signals ...")
         t0 = time.perf_counter()
         raw = await asyncio.get_event_loop().run_in_executor(None, _fetch_bars_batch)
+        # v12: pass None for enhanced_data — PIT backtest proved enhanced data
+        # HURTS returns by -2pp (quality boosts dilute pure momentum signal)
         new_signals = await asyncio.get_event_loop().run_in_executor(
-            None, build_signals_v9, raw, state.enhanced_data, state.top_n
+            None, build_signals_v9, raw, None, state.top_n
         )
         state.cache       = new_signals
         state.last_update = datetime.now(ET)
