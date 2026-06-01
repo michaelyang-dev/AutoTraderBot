@@ -2493,9 +2493,39 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // STEP 1g: Trim/top-up REMOVED — not in backtest, adds costly turnover
-      // Backtest lets positions drift between 15-day rebalances (lets winners run)
-      // Full rebalance every 15 days handles weight correction
+      // STEP 1g: TRIM oversized positions on rebalance day (v12 — matches backtest)
+      // Backtest reconstructs ALL weights every 20 days. Live must do the same.
+      if (isRebalDay && mlSignals && mlSignals.length > 0) {
+        const mlBuys = mlSignals.filter(s => s.signal === "BUY");
+        const tProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
+        if (tProb > 0) {
+          for (const pos of currentPositions) {
+            const sym = pos.symbol;
+            if (closedSymbols.has(sym)) continue;
+            const sig = mlBuys.find(s => s.symbol === sym);
+            if (!sig) continue; // already handled by sell section
+
+            let targetPct = (sig.probability / tProb) * RISK.MAX_CASH_DEPLOY_PCT;
+            targetPct = Math.min(targetPct, RISK.MAX_POSITION_PCT);
+            const targetVal = cyclePortfolioValue * targetPct;
+            const currentVal = Math.abs(parseFloat(pos.market_value || 0));
+
+            // Trim if >20% above target (avoid churning on small drifts)
+            if (currentVal > targetVal * 1.20 && currentVal - targetVal > 5000) {
+              const trimAmount = currentVal - targetVal;
+              const trimShares = Math.floor(trimAmount / pos.current_price);
+              if (trimShares > 0) {
+                try {
+                  await closePosition(sym, trimShares);
+                  addLog(`TRIM ${sym}: ${trimShares} shares ($${trimAmount.toFixed(0)} over target ${(targetPct*100).toFixed(1)}%)`, "system");
+                } catch (err) {
+                  addLog(`Trim failed ${sym}: ${err.message}`, "error");
+                }
+              }
+            }
+          }
+        }
+      }
 
       // Refresh positions and cash after stop-loss + rebalance sells + trims so slot counts are accurate
       let activePositions = currentPositions;
@@ -2993,7 +3023,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           const totalProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
           if (totalProb > 0 && opp.mlConf > 0) {
             dynPositionPct = (opp.mlConf / totalProb) * RISK.MAX_CASH_DEPLOY_PCT;
-            // Cap at MAX_POSITION_PCT (25%) to match backtest cap
+            // Cap at MAX_POSITION_PCT (15%) to match backtest cap
             dynPositionPct = Math.min(dynPositionPct, RISK.MAX_POSITION_PCT);
           } else {
             dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
