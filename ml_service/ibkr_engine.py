@@ -100,11 +100,13 @@ def send_telegram(msg):
         pass  # never crash trading loop for telegram
 
 
+TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
+
 class IBKREngine:
     def __init__(self):
         self.ib = IB()
         self.positions = {}       # symbol -> {qty, avg_cost, market_value, peak_price}
-        self.trailing_peaks = {}  # symbol -> peak price since entry
+        self.trailing_peaks = self._load_trailing_peaks()
         self.last_signals = []
         self.last_rebalance = None
         self.account_id = None
@@ -117,6 +119,31 @@ class IBKREngine:
         self.short_halted = False
         # Drawdown-based position scaling
         self.portfolio_peak = 0.0
+
+    def _load_trailing_peaks(self):
+        """Load trailing peaks from disk (survives restarts)."""
+        try:
+            if TRAILING_PEAKS_FILE.exists():
+                import json
+                with open(TRAILING_PEAKS_FILE) as f:
+                    data = json.load(f)
+                log.info(f"Loaded {len(data)} trailing peaks from disk")
+                return data
+        except Exception as e:
+            log.warning(f"Could not load trailing peaks: {e}")
+        return {}
+
+    def _save_trailing_peaks(self):
+        """Persist trailing peaks to disk."""
+        try:
+            import json
+            # Only save numeric peak prices, not datetime entries
+            peaks = {k: v for k, v in self.trailing_peaks.items()
+                     if isinstance(v, (int, float))}
+            with open(TRAILING_PEAKS_FILE, "w") as f:
+                json.dump(peaks, f)
+        except Exception:
+            pass
 
     def get_drawdown_scale(self, current_value):
         """Reduce position sizes as drawdown deepens from peak."""
@@ -204,7 +231,11 @@ class IBKREngine:
         now = datetime.now(ZoneInfo("US/Eastern"))
         if now.weekday() >= 5:
             return False
-        return now.hour >= 9 and (now.hour < 16 or (now.hour == 9 and now.minute >= 30))
+        if now.hour < 9 or now.hour >= 16:
+            return False
+        if now.hour == 9 and now.minute < 30:
+            return False
+        return True
 
     async def get_market_price(self, contract):
         """Get current market price for a contract."""
@@ -251,6 +282,10 @@ class IBKREngine:
             if dd < -TRAILING_STOP:
                 log.warning(f"TRAILING STOP: {sym} dropped {dd:.1%} from peak ${peak:.2f}")
                 await self.sell_position(sym, pos["qty"], f"trailing_stop ({dd:.1%})")
+                del self.trailing_peaks[sym]
+
+        # Persist peaks to disk after every check
+        self._save_trailing_peaks()
 
     async def sell_position(self, symbol, qty, reason="rebalance"):
         """Sell a position. Never sell more than currently held (prevents accidental shorts)."""
@@ -276,8 +311,8 @@ class IBKREngine:
         filled = trade.orderStatus.filled
         price = trade.orderStatus.avgFillPrice
 
-        log.info(f"SELL {qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
-        send_telegram(f"📉 SELL {qty} {symbol} @ ${price:.2f} | {reason}")
+        log.info(f"SELL {sell_qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
+        send_telegram(f"📉 SELL {sell_qty} {symbol} @ ${price:.2f} | {reason}")
 
         # Clean up tracking
         if symbol in self.trailing_peaks:
@@ -287,6 +322,13 @@ class IBKREngine:
 
     async def buy_position(self, symbol, qty, reason="signal"):
         """Buy a position."""
+        if qty <= 0:
+            log.warning(f"SKIP BUY {symbol}: invalid qty={qty}")
+            return None
+        if qty > 10000:
+            log.error(f"SANITY CHECK: {symbol} qty={qty} exceeds 10000 — aborting buy")
+            send_telegram(f"🔴 SANITY CHECK: tried to buy {qty} shares of {symbol}!")
+            return None
         contract = Stock(symbol, "SMART", "USD")
         await self.ib.qualifyContractsAsync(contract)
         order = MarketOrder("BUY", qty)
@@ -709,7 +751,7 @@ class IBKREngine:
                 # Rebalance periodically
                 should_rebalance = (
                     self.last_rebalance is None or
-                    (datetime.now() - self.last_rebalance).seconds >= REBALANCE_INTERVAL
+                    (datetime.now() - self.last_rebalance).total_seconds() >= REBALANCE_INTERVAL
                 )
 
                 if should_rebalance:
@@ -741,7 +783,11 @@ class IBKREngine:
                     await asyncio.sleep(30)
                     try:
                         await self.connect()
-                        log.info("Reconnected successfully")
+                        # Cancel any pending orders from before disconnect
+                        self.ib.reqGlobalCancel()
+                        await asyncio.sleep(2)
+                        log.info("Reconnected successfully — cancelled pending orders")
+                        send_telegram(f"🟢 IBKR reconnected, pending orders cancelled")
                     except Exception as ce:
                         log.error(f"Reconnect failed: {ce}")
                 else:
