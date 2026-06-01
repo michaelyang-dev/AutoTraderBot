@@ -16,7 +16,7 @@ Features:
     - Fetches top-8 BUY signals from signal server
     - Rebalances portfolio to match signals
     - 15% position cap
-    - 25% trailing stop per position
+    - 40% trailing stop per position (v12)
     - Regime detection (SPY vs SMA200)
     - Runs continuously during market hours
     - Telegram alerts for trades
@@ -645,12 +645,15 @@ class IBKREngine:
         await self.connect()
 
         log.info("=" * 60)
-        log.info("  IBKR Trading Engine Started")
+        log.info("  IBKR Trading Engine v12 Started")
         log.info(f"  Account: {self.account_id}")
+        log.info(f"  Port: {IB_PORT} ({'LIVE' if IB_PORT == 4001 else 'PAPER'})")
         log.info(f"  Max positions: {MAX_POSITIONS}")
         log.info(f"  Position cap: {POSITION_CAP:.0%}")
         log.info(f"  Trailing stop: {TRAILING_STOP:.0%}")
-        log.info(f"  Rebalance interval: {REBALANCE_INTERVAL}s")
+        log.info(f"  Leverage: {LEVERAGE:.1f}x")
+        log.info(f"  Rebalance: every 20 trading days")
+        log.info(f"  Rebalance check interval: {REBALANCE_INTERVAL}s")
         log.info(f"  Short sleeve: {'ENABLED' if SHORT_ENABLED else 'DISABLED'}")
         if SHORT_ENABLED:
             log.info(f"  Short allocation: {SHORT_ALLOCATION:.0%}")
@@ -672,6 +675,27 @@ class IBKREngine:
                 if not self.is_market_open():
                     if cycle % 60 == 1:  # log once per ~10 min
                         log.info("Market closed — waiting...")
+                    # Send daily end-of-day summary at 4:05 PM ET
+                    if not hasattr(self, '_eod_sent_today'):
+                        self._eod_sent_today = None
+                    from zoneinfo import ZoneInfo
+                    now_et = datetime.now(ZoneInfo("US/Eastern"))
+                    today_str = now_et.strftime("%Y-%m-%d")
+                    if now_et.hour == 16 and now_et.minute >= 5 and self._eod_sent_today != today_str:
+                        self._eod_sent_today = today_str
+                        try:
+                            summary = await self.get_account_summary()
+                            nav = summary.get("NetLiquidation", 0)
+                            n_pos = len(self.positions)
+                            signals = self.fetch_signals()
+                            n_signals = len(signals) if signals else 0
+                            send_telegram(
+                                f"📊 IBKR Daily Summary ({today_str})\n"
+                                f"NAV: ${nav:,.0f} | Positions: {n_pos}/{n_signals} signals\n"
+                                f"Port: {IB_PORT} ({'LIVE' if IB_PORT == 4001 else 'PAPER'})"
+                            )
+                        except Exception:
+                            pass
                     await asyncio.sleep(10)
                     continue
 
