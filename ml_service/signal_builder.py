@@ -300,9 +300,10 @@ def _fill_fundamentals(features, data_dir):
                 mask = features["symbol"].isin(nm_map)
                 features.loc[mask, "net_margin"] = features.loc[mask, "symbol"].map(nm_map)
 
-            # roe = niq / ceqq (annualized: *4 for quarterly)
-            if "niq" in latest.columns and "ceqq" in latest.columns:
-                roe = (latest["niq"] * 4) / latest["ceqq"].replace(0, np.nan)
+            # roe = niq / seqq (annualized: *4 for quarterly) — matches backtest exactly
+            # Note: ceqq (common equity) != seqq (stockholders' equity) for ~10% of stocks
+            if "niq" in latest.columns and "seqq" in latest.columns:
+                roe = (latest["niq"] * 4) / latest["seqq"].replace(0, np.nan)
                 roe_map = roe.to_dict()
                 mask = features["symbol"].isin(roe_map)
                 features.loc[mask, "roe"] = features.loc[mask, "symbol"].map(roe_map)
@@ -314,12 +315,12 @@ def _fill_fundamentals(features, data_dir):
                 mask = features["symbol"].isin(roa_map)
                 features.loc[mask, "roa"] = features.loc[mask, "symbol"].map(roa_map)
 
-            # debt_to_equity = (dlttq + dlcq) / ceqq
-            if "dlttq" in latest.columns and "ceqq" in latest.columns:
+            # debt_to_equity = (dlttq + dlcq) / seqq — matches backtest exactly
+            if "dlttq" in latest.columns and "seqq" in latest.columns:
                 dlc = latest.get("dlcq", 0)
                 if isinstance(dlc, (int, float)):
                     dlc = pd.Series(dlc, index=latest.index)
-                de = (latest["dlttq"].fillna(0) + dlc.fillna(0)) / latest["ceqq"].replace(0, np.nan)
+                de = (latest["dlttq"].fillna(0) + dlc.fillna(0)) / latest["seqq"].replace(0, np.nan)
                 de_map = de.to_dict()
                 mask = features["symbol"].isin(de_map)
                 features.loc[mask, "debt_to_equity"] = features.loc[mask, "symbol"].map(de_map)
