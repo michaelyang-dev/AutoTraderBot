@@ -151,10 +151,10 @@ def _compute_features_from_raw(raw, prices):
                          (60, "ret_60d"), (120, "ret_120d"), (126, "ret_126d"), (252, "ret_252d")]:
             feat[name] = c.pct_change(n)
 
-        # Volatility
+        # Volatility (annualized — must match backtest wrds_universe.py)
         daily_r = c.pct_change()
         for n, name in [(10, "vol_10d"), (20, "vol_20d"), (60, "vol_60d")]:
-            feat[name] = daily_r.rolling(n).std()
+            feat[name] = daily_r.rolling(n).std() * np.sqrt(252)
 
         # RSI
         delta = c.diff()

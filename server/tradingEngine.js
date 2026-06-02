@@ -2063,6 +2063,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         if (stopTriggered) {
           try {
             const strat = positionStrategy[symbol] || "legacy";
+            const peakBeforeDelete = trailingPeaks[symbol] || curr;
             await closePosition(symbol);
             delete trailingPeaks[symbol];
             closedSymbols.add(symbol);
@@ -2095,7 +2096,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             dailyStats.sells++;
             if (unrealized_pl >= 0) dailyStats.wins++; else dailyStats.losses++;
             if (RISK.USE_TRAILING_STOP) {
-              const peak = trailingPeaks[symbol] || curr;
+              const peak = peakBeforeDelete || curr;
               const drop = ((curr - peak) / peak * 100).toFixed(1);
               notify.send(`🛑 TRAIL-STOP ${symbol} | ${qty} shares @ $${curr.toFixed(2)} | Peak $${peak.toFixed(2)}, drop ${drop}% | P&L: $${unrealized_pl.toFixed(2)}`);
             } else {
@@ -2516,7 +2517,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               const trimShares = Math.floor(trimAmount / pos.current_price);
               if (trimShares > 0) {
                 try {
-                  await closePosition(sym, trimShares);
+                  // Use placeOrder to sell specific qty (closePosition sells ALL)
+                  await placeOrder({ symbol: sym, qty: trimShares, side: "sell", type: "market" });
                   addLog(`TRIM ${sym}: ${trimShares} shares ($${trimAmount.toFixed(0)} over target ${(targetPct*100).toFixed(1)}%)`, "system");
                 } catch (err) {
                   addLog(`Trim failed ${sym}: ${err.message}`, "error");

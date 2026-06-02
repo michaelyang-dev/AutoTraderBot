@@ -455,12 +455,12 @@ class IBKREngine:
                 continue
 
             if delta_qty > 0:
-                # BUY
+                # BUY (new position or top-up)
                 await self.buy_position(sym, delta_qty, "rebalance")
-                # Set trailing peak and entry date
-                self.trailing_peaks[sym] = price
-                if f"{sym}_entry" not in self.trailing_peaks:
-                    self.trailing_peaks[f"{sym}_entry"] = datetime.now()
+                # Only set trailing peak if new position or price is higher than existing peak
+                existing_peak = self.trailing_peaks.get(sym, 0)
+                if price > existing_peak:
+                    self.trailing_peaks[sym] = price
             elif delta_qty < 0:
                 # TRIM (sell excess)
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
