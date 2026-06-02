@@ -362,9 +362,38 @@ Extensive testing conducted May 2026 across ML, alternative factors, and portfol
 | Risk-adjusted momentum | 10.4% |
 | Quality-gated | 11-15% |
 
+### Concentration Analysis (n=5 vs broader)
+
+Bootstrap confidence intervals show the Sharpe difference between n=5 and n=30 is **not statistically significant** (Sharpe diff CI: [-0.76, +1.19]). On 25-year data, n=5 (16.9% CAGR) and n=10 (16.6% CAGR) are essentially identical. The concentration choice is a **risk decision, not a return decision** — n=5 has higher tail risk (max single position drifts to 44%) but statistically indistinguishable returns.
+
+| n | 25yr CAGR | 25yr Sharpe | Max Position Drift |
+|---|-----------|-------------|-------------------|
+| 5 | 16.9% | 0.79 | 44% |
+| 10 | 16.6% | 0.80 | 37% |
+| 15 | ~16% | ~0.80 | 29% |
+
+### NLP / Alternative Data
+
+| Signal | Gate 1 (Predictive?) | Gate 2 (Orthogonal?) | Gate 3 (Binds on picks?) |
+|--------|---------------------|---------------------|------------------------|
+| Lazy Prices filing similarity (Cohen et al.) | IC=+0.079, CI: [+0.010, +0.146] — YES | Correlation -0.017 — YES | **0% binding rate — FAILS** |
+
+The filing similarity signal is real and orthogonal but **never fires on momentum picks** — companies with strong momentum don't gut their filing language. Signals that flag losers are redundant with momentum by construction. Useful signals must create dispersion **within winners**.
+
+### Uncorrelated Strategy Combinations
+
+| Strategy | CAGR | Sharpe | Correlation with Momentum |
+|----------|------|--------|--------------------------|
+| Our momentum | 27.6% | 1.15 | — |
+| GLD trend-following | 6.6% | 0.87 | **-0.023** |
+| SPY index trend | 6.5% | 0.58 | +0.48 |
+| Short-horizon mean reversion | 6.2% | 0.35 | +0.47 |
+
+GLD trend has near-zero correlation — the diversification thesis is validated. A 70/30 momentum/GLD combo cuts MaxDD from -18% to -12% but costs ~6pp CAGR. The proper version is a diversified managed-futures sleeve (gold + commodities + FX + rates) at 10-15% allocation — future research.
+
 ### Key Conclusion
 
-Pure momentum with signal-proportional sizing is the efficient frontier with price + quarterly fundamental data. Institutional-grade ML requires alternative data sources: NLP on earnings calls, options flow/skew, order book microstructure, satellite imagery, credit card transactions.
+The strategy is at its efficient frontier with available data. Every signal-level improvement either dilutes momentum (fundamentals, ML) or is redundant (NLP distress detection). The remaining gains live at the **portfolio level** — combining uncorrelated return streams (cross-asset trend) rather than improving the stock selection engine. The strategy resists improvement because momentum is already doing most of the work that other signals would do.
 
 ---
 
@@ -411,7 +440,13 @@ AutoTraderBot/
 │   │   ├── manual_rebalance.py       ← Manual rebalance tool
 │   │   └── buy_missing.py            ← Buy missing positions tool
 │   │
-│   ├── research/                     ← ML research (LightGBM, regime, factors, etc.)
+│   ├── research/                     ← Research scripts:
+│   │   ├── *ML*: alpha_engine, train_alpha, xgboost_ranker
+│   │   ├── *Factors*: compustat_alpha_factors, sleeve_attribution
+│   │   ├── *Validation*: concentration_validation, n_risk_and_costs
+│   │   ├── *Improvements*: improvements_v12, adaptive_stop, tier1
+│   │   ├── *NLP*: lazy_prices (EDGAR filing similarity)
+│   │   └── *Portfolio*: uncorrelated_strategies
 │   │
 │   └── data/
 │       ├── wrds/                     ← WRDS parquets (Compustat, IBES, FF, FRED)
@@ -545,9 +580,20 @@ tail -3 logs/refresh_data.log
 ### Strategic Limitations
 
 - **Momentum crashes:** Rare (~2-3 per decade) but violent. The UMD crash detector and SMA200 filter provide partial protection, but the first few days of a crash are unavoidable.
-- **Concentration risk:** 50% in the momentum sleeve with only 5 picks means heavy exposure to momentum reversal.
+- **Concentration risk:** 50% in the momentum sleeve with only 5 picks. Max single position drifts to ~44% between rebalances. Bootstrap analysis shows n=5 vs n=10 Sharpe is statistically indistinguishable — concentration is a risk choice, not a return advantage.
+- **Statistical significance:** Paired bootstrap shows the strategy's Sharpe advantage over SPY buy-and-hold is NOT statistically significant on 8 years of data (Sharpe diff CI: [-0.45, +0.75]). The point estimate favors the strategy (+0.19 Sharpe) but the confidence interval includes zero. 25-year data narrows the interval but still doesn't achieve significance.
+- **Cost sensitivity:** Annual turnover ~1,100%. At realistic 20bps round-trip costs (vs 10bps in backtest), cost drag is ~2.2% annually. This is the highest-leverage variable — every additional 10bps costs ~1.1% of return.
+- **Regime dependence:** The n=5 concentration advantage exists mainly in the 2019-2024 AI/megacap momentum era. On pre-2018 data, broader portfolios perform similarly. The strategy may underperform in a different regime.
 - **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
 - **Single-country exposure:** SP1500 only (US equities). No international diversification.
+- **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
+
+### Future Research Directions
+
+1. **Diversified trend sleeve** (highest priority): Gold + commodities + FX + rates trend-following at 10-15% allocation. Validated as genuinely uncorrelated (-0.023 with momentum). Requires futures/ETF data.
+2. **International momentum**: Japanese, European, EM equities — uncorrelated with US momentum, IBKR already supports international trading.
+3. **Dispersion within winners**: Signals that differentiate among stocks all going up — earnings revision momentum, positioning/crowding, management tone. Harder target but the only way to improve stock selection.
+4. **Intra-rebalance drift trigger**: Trim positions when they cross 25% weight instead of waiting 20 days. Reduces tail risk from position concentration drift.
 
 ---
 
