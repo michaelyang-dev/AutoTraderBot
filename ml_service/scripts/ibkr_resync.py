@@ -5,7 +5,7 @@ import requests
 from ib_insync import *
 
 LEVERAGE = 1.5
-POSITION_CAP = 0.25
+POSITION_CAP = 0.15  # v12: must match backtest
 ALPACA_HOLDS = {"EA", "EOG", "FISV", "GILD", "GPN", "MRK", "MU", "SNDK"}
 
 

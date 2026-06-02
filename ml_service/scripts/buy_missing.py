@@ -30,7 +30,7 @@ total_prob = sum(s["probability"] for s in buys)
 missing = []
 for s in sorted(buys, key=lambda x: -x["probability"]):
     if s["symbol"] not in held:
-        w = min((s["probability"] / total_prob) * 1.5, 0.25)
+        w = min((s["probability"] / total_prob) * 1.5, 0.15)
         missing.append((s["symbol"], w * pv, s["probability"]))
 
 print("Missing: %d" % len(missing))

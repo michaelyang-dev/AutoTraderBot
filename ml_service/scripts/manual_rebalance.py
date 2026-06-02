@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 ALPACA_BASE = None  # read from .env
 LEVERAGE = 1.5
-MAX_POS_PCT = 0.25
+MAX_POS_PCT = 0.15  # v12: must match backtest
 COST_BUFFER = 0.98  # keep 2% cash buffer
 
 def get_headers():
