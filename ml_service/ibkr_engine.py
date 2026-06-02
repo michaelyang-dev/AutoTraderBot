@@ -199,12 +199,14 @@ class IBKREngine:
     def fetch_signals(self):
         """Fetch BUY signals from signal server (with health check)."""
         try:
-            # Quick health check first
+            # Quick health check first — refuse stale signals
             health = requests.get(SIGNAL_HEALTH_URL, timeout=5)
             if health.status_code == 200:
                 h = health.json()
                 if h.get("is_stale"):
-                    log.warning(f"Signal server data is STALE (last update: {h.get('last_update')})")
+                    log.warning(f"Signal server data is STALE (last update: {h.get('last_update')}) — NOT trading")
+                    send_telegram(f"⚠️ IBKR skipping rebalance — signals are STALE")
+                    return []
             resp = requests.get(SIGNAL_URL, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
