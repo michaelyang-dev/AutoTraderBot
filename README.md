@@ -6,11 +6,11 @@ Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P
 
 | Metric | At 1x | At 1.5x leverage |
 |--------|-------|-----------------|
-| **CAGR** | 25.4% +/- 1.8% | ~20-22% (estimated, not simulated) |
+| **CAGR** | 25.4% +/- 1.8% | ~33-35% (estimated, not simulated) |
 | **Sharpe** | 1.00 | ~1.00 |
 | **Max Drawdown** | -26.4% | ~-40% (estimated) |
 
-> **Note on leverage:** The 1.5x numbers are linear estimates. The backtest runs at 1x only. Leveraged drawdowns compound asymmetrically and margin costs (~5-6% annually) reduce CAGR by ~3pp. The honest expectation at 1.5x is 20-22% CAGR, not 38%.
+> **Note on leverage:** The 1.5x numbers are estimates — the backtest runs at 1x only. At 1.5x, returns scale by 1.5x minus margin interest (~5-6% on the borrowed 50% = ~2.75pp drag), giving ~33-35% CAGR. Drawdowns also amplify by ~1.5x. Margin call risk exists if portfolio drops below maintenance margin (~25%).
 
 ---
 
