@@ -488,6 +488,7 @@ class FastBacktester:
             "cagr": cagr, "sharpe": sharpe, "sortino": sortino,
             "max_dd": max_dd, "vol": vol, "alpha": cagr - spy_cagr,
             "final": vals.iloc[-1], "yearly": yearly,
+            "daily_values": vals,  # daily NAV series for proper statistical tests
         }
 
 
