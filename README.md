@@ -1,353 +1,216 @@
-# ⚡ AutoTrader Engine
+# AutoTrader v12
 
-Fully autonomous paper trading bot with Alpaca integration. Two modes: **Simulated** (fake prices, no API keys needed) and **Alpaca Paper** (real market data, real paper orders).
+Autonomous multi-factor equity trading system. Runs 24/5 on AWS, trades the SP1500 universe via Alpaca and Interactive Brokers with 1.5x leverage.
 
-Includes a 5-strategy signal consensus engine, ATR-based position sizing, trailing stop-loss, an earnings calendar filter, a SPY market regime filter, and a market hours window guard.
+**Backtest (2018-2025, honest, no look-ahead):** 25.4% CAGR | 1.00 Sharpe | -26.4% MaxDD at 1x
 
 ---
 
-## 🚀 Quick Start
+## Strategy
 
-### 1. Install
+Three-sleeve momentum/value/quality approach with 20-day batch rebalancing:
 
-```bash
-git clone <your-repo> auto-trader
-cd auto-trader
-npm install
+| Sleeve | Weight | What it does |
+|--------|--------|-------------|
+| **Momentum** | 50% | Skip-month momentum (12-1), top 5 picks, SMA200 trend filter, quality boosts |
+| **Value** | 35% | ROE + gross margin + low debt + momentum composite, top 10 picks |
+| **Low-Vol Quality** | 15% | Inverse volatility + margins + 6-month momentum, top 10 picks |
+
+**Risk management:**
+- 15% max per position (prevents concentration)
+- 40% trailing stop per position
+- UMD crash regime detection (shifts to defensive weights)
+- Breadth-based bull/bear weight blending
+- 20-day batch rebalance (no mid-cycle trading)
+
+**What's disabled (tested, hurts returns):**
+- Short interest data (-3pp CAGR)
+- Enhanced FMP data / analyst estimates (-2pp CAGR)
+- ML cross-sectional ranking (IC=0.014, too weak)
+- All Compustat alpha factors (dilute momentum signal)
+
+---
+
+## Architecture
+
+```
+                    ┌─────────────────────────────────┐
+                    │          Signal Server           │
+                    │      (FastAPI, port 5001)        │
+                    │                                  │
+                    │  Massive/Polygon ─→ Prices       │
+                    │  WRDS Compustat  ─→ Fundamentals  │
+                    │  Fama-French     ─→ UMD Regime    │
+                    │  Wikipedia       ─→ SP1500 Members│
+                    │                                  │
+                    │  strategy1_momentum_reversal()    │
+                    │  strategy5_lowvol_quality()       │
+                    │  _strategy_value()                │
+                    │         ↓                        │
+                    │  22 BUY signals + weights         │
+                    └──────────┬──────────────────────┘
+                               │ HTTP /signals
+                    ┌──────────┴──────────┐
+                    ↓                     ↓
+          ┌─────────────────┐   ┌─────────────────┐
+          │  Alpaca Engine  │   │   IBKR Engine    │
+          │  (Node.js)      │   │   (Python)       │
+          │  Port 3000      │   │   Port 4001/4002 │
+          │                 │   │                  │
+          │  Paper/Live     │   │  Paper/Live      │
+          │  1.5x leverage  │   │  1.5x leverage   │
+          │  Trailing stops │   │  Trailing stops  │
+          │  Batch rebal    │   │  Batch rebal     │
+          └─────────────────┘   └─────────────────┘
 ```
 
-### 2. Get API Keys
+All services managed by PM2 on AWS EC2.
 
-**Alpaca (required for live mode)**
-1. Sign up at **https://app.alpaca.markets** (free)
-2. Select **Paper Trading** in the top-left
-3. Go to **API Keys → Generate New Key**
-4. Copy your **Key ID** and **Secret Key**
+---
 
-**Financial Modeling Prep (optional — earnings calendar)**
-1. Sign up at **https://financialmodelingprep.com/developer/docs** (free tier: 250 req/day)
-2. Copy your API key
+## Data Pipeline
 
-### 3. Configure
+Fully automated via cron (Mon-Fri):
+
+| Time (ET) | Job | What it does |
+|-----------|-----|-------------|
+| 6:00 AM | `scrape_sp1500.py` | SP500/SP400/SP600 membership from Wikipedia |
+| 5:30 PM | `refresh_data.py` | FMP fundamentals, VIX, Fama-French, options, price archive, cache flush |
+| 5:50 PM | `pm2 restart signal-server` | Reload signals with fresh data |
+
+**Manual (quarterly):** WRDS Compustat + IBES data upload for backtesting.
+
+---
+
+## Files
+
+```
+ml_service/
+├── signal_builder.py              ← Signal generation (v12 config)
+├── signal_server.py               ← FastAPI server, serves /signals and /health
+├── ibkr_engine.py                 ← IBKR trading engine (async, ib_insync)
+├── wrds_universe.py               ← Universe builder from WRDS data
+├── fast_backtest.py               ← Backtester (uses exact production strategy code)
+├── massive_data_provider.py       ← Polygon/Massive price data provider
+├── scrape_sp1500.py               ← Daily SP1500 membership scraper
+├── strategies/
+│   └── multi_strategy_engine.py   ← Strategy functions (momentum, value, lowvol)
+├── scripts/
+│   ├── refresh_data.py            ← Daily data refresh (cron)
+│   ├── rebalance_now.py           ← Manual one-time rebalance
+│   └── build_universe_2000.py     ← Build 25-year backtest universe
+├── research/                      ← ML research scripts (LightGBM, regime, etc.)
+└── data/
+    ├── wrds/                      ← WRDS parquets (Compustat, IBES, FF, FRED)
+    ├── enhanced_data/             ← FMP snapshots + history
+    ├── massive_cache/             ← Polygon price bar cache
+    └── fundamentals_cache/        ← FMP fundamentals (daily flush)
+
+server/
+└── tradingEngine.js               ← Alpaca trading engine (Node.js)
+```
+
+---
+
+## Configuration (v12)
+
+All parameters match between backtest and live:
+
+| Parameter | Value |
+|-----------|-------|
+| Sleeve weights | 50% momentum / 35% value / 15% low-vol |
+| Momentum picks | Top 5 |
+| Rebalance | Every 20 trading days |
+| Trailing stop | 40% from peak |
+| Position cap | 15% max per stock |
+| Leverage | 1.5x (Reg T margin) |
+| Universe | SP1500 (~1,500 stocks) |
+| Short interest | Disabled |
+| Enhanced data | Disabled |
+
+---
+
+## Backtest Results
+
+**2018-2025 (7-day start-day averaged, no look-ahead, 10bps costs):**
+
+| Metric | At 1x | At 1.5x |
+|--------|-------|---------|
+| CAGR | 25.4% | ~38% |
+| Sharpe | 1.00 | ~1.00 |
+| Max Drawdown | -26.4% | ~-40% |
+
+| Year | Strategy | SPY |
+|------|----------|-----|
+| 2018 | +16.2% | -5.2% |
+| 2019 | +13.5% | +31.1% |
+| 2020 | +26.1% | +17.3% |
+| 2021 | +23.5% | +30.5% |
+| 2022 | -5.2% | -18.6% |
+| 2023 | +32.5% | +26.7% |
+| 2024 | +49.5% | +25.6% |
+| 2025 | +17.2% | +18.0% |
+
+**25-year (2001-2025):** 16.9% CAGR, 0.79 Sharpe, -37.1% MaxDD
+
+---
+
+## Research Findings
+
+Extensive testing of ML and alternative approaches (May 2026):
+
+| Approach | Result |
+|----------|--------|
+| LightGBM cross-sectional ranker | IC=0.014 (too weak to beat factors) |
+| Compustat alpha factors (accruals, B/M, CF yield) | All hurt momentum by -2 to -15pp |
+| Crash risk model (AUC=0.673) | Filtering risky stocks kills returns |
+| Regime detection (FF + FRED macro) | 58% accuracy, marginal |
+| Factor timing / dynamic weights | Noise, momentum wins in all conditions |
+| Risk-adjusted momentum | Worse than raw momentum |
+| Inverse-vol position sizing | Worse than signal-proportional |
+| Quality gates | Remove best momentum stocks |
+
+**Conclusion:** Pure momentum with signal-proportional sizing is the efficient frontier with available data. Institutional-grade ML requires alternative data (NLP, options flow, order book).
+
+---
+
+## Quick Start
 
 ```bash
+# Clone
+git clone https://github.com/michaelyang-dev/AutoTraderBot.git
+cd AutoTraderBot
+
+# Configure
 cp .env.example .env
-```
+# Edit .env with your API keys (Alpaca, FMP, Massive, Telegram)
 
-Edit `.env`:
+# Install Python dependencies
+cd ml_service && python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 
-```env
-ALPACA_API_KEY=PKxxxxxxxxxxxxxxxx
-ALPACA_SECRET_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-ALPACA_DATA_URL=https://data.alpaca.markets
-PORT=3001
+# Install Node dependencies
+cd ../server && npm install
 
-# Optional — earnings calendar filter
-FMP_API_KEY=your_fmp_api_key_here
-```
+# Start services
+pm2 start ecosystem.config.js
 
-If `FMP_API_KEY` is omitted the bot runs normally — earnings filtering is silently skipped.
-
-### 4. Run
-
-```bash
-npm start          # server + frontend together
-
-npm run server     # Express API only  → http://localhost:3001
-npm run client     # React app only    → http://localhost:3000
-```
-
-### 5. Switch Modes
-
-Use the toggle at the top of the UI:
-- **⚡ Simulated** — fake prices, instant feedback, no API keys needed
-- **🔌 Alpaca Paper** — real market data, real paper orders
-
----
-
-## 📁 Project Structure
-
-```
-auto-trader/
-├── .env.example                  ← Copy to .env, fill in your keys
-├── package.json
-│
-├── server/
-│   └── index.js                  ← Express backend — proxies Alpaca + FMP APIs
-│
-└── src/
-    ├── App.js                    ← Root — mode selector, layout, ConnectionBanner
-    │
-    ├── config/
-    │   └── constants.js          ← All tunable parameters (RISK, MARKET_HOURS, UNIVERSE…)
-    │
-    ├── engine/
-    │   ├── indicators.js         ← SMA, EMA, RSI, MACD, Bollinger Bands, ATR
-    │   ├── signalEngine.js       ← 5-strategy consensus scorer
-    │   ├── regimeEngine.js       ← SPY SMA-based market regime (BULLISH/CAUTIOUS/BEARISH)
-    │   ├── priceEngine.js        ← Simulated price generation (sim mode only)
-    │   ├── tradeExecutor.js      ← Simulated trade execution (sim mode only)
-    │   ├── alpacaClient.js       ← Frontend API client → Express proxy
-    │   ├── fmpClient.js          ← FMP earnings calendar client → Express proxy
-    │   ├── livePriceEngine.js    ← Alpaca real-time price fetching + SPY history
-    │   ├── liveTradeExecutor.js  ← Alpaca order execution with all filters applied
-    │   ├── stockScreener.js      ← Scans full market for tradeable stocks
-    │   └── index.js              ← Barrel export
-    │
-    ├── hooks/
-    │   ├── useAutoTrader.js      ← Simulated mode state + tick engine
-    │   └── useAlpacaTrader.js    ← Live mode state — regime, polling, trade cycles
-    │
-    ├── components/
-    │   ├── Header.js             ← Logo, regime badge, pause/speed controls
-    │   ├── StatsBar.js           ← Portfolio value, returns, cash, win-rate
-    │   ├── EquityChart.js        ← Equity curve
-    │   ├── AllocationChart.js    ← Capital allocation pie chart
-    │   ├── PositionsPanel.js     ← Open positions + SL/TP progress bars
-    │   ├── ActivityFeed.js       ← Real-time trade and system log
-    │   ├── MarketScanner.js      ← Signal table for all tracked stocks
-    │   ├── StrategyLegend.js     ← Per-strategy stats
-    │   └── index.js              ← Barrel export
-    │
-    ├── utils/
-    │   └── formatters.js         ← Currency/percent helpers
-    │
-    └── styles/
-        └── theme.js              ← Colors, fonts, global CSS
+# Check status
+pm2 list
+curl http://localhost:5001/health
 ```
 
 ---
 
-## 🏗 Architecture
+## Monitoring
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                      React Frontend                       │
-│                                                           │
-│  useAutoTrader          useAlpacaTrader                  │
-│  (simulation)           (live mode)                      │
-│       │                      │                            │
-│  tradeExecutor       liveTradeExecutor                   │
-│  priceEngine         livePriceEngine                     │
-│                       regimeEngine  ←── SPY SMA filter   │
-│                       fmpClient     ←── earnings calendar │
-│                       alpacaClient  ←── market data/orders│
-│                                                           │
-│  ────────────────────────────────────────────────────── │
-│                   Shared Components                       │
-│   Header · StatsBar · EquityChart · ActivityFeed · …     │
-└──────────────────────────────┬───────────────────────────┘
-                               │ HTTP (localhost:3001)
-┌──────────────────────────────┴───────────────────────────┐
-│                   Express Server (server/index.js)        │
-│                                                           │
-│   /api/account    /api/positions   /api/orders            │
-│   /api/bars       /api/snapshots   /api/clock             │
-│   /api/screener   /api/earnings    /api/health            │
-│                        │                    │             │
-│               Alpaca SDK            FMP fetch()           │
-└───────────────────┬────────────────────┬─────────────────┘
-                    │ HTTPS              │ HTTPS
-          ┌─────────┴──────┐   ┌────────┴────────┐
-          │ Alpaca Paper   │   │ Financial        │
-          │ Trading API    │   │ Modeling Prep    │
-          └────────────────┘   └─────────────────┘
-```
-
-**Why a separate server?**
-- API keys never reach the browser
-- All Alpaca and FMP calls go through one authenticated proxy
-- Easy to add logging, webhooks, or a database later
+- **Telegram alerts:** Trades, errors, connection loss, daily summary
+- **Kill switch:** `pm2 stop ibkr-engine` (instant stop)
+- **Health check:** `curl http://localhost:5001/health`
+- **Logs:** `pm2 logs signal-server --lines 20`
 
 ---
 
-## 🧠 How the Bot Decides
+## License
 
-### 1. Stock Screener
-
-At startup the bot runs a live screener against the full Alpaca asset list and selects the **top 75 most active stocks** that pass these filters:
-
-| Filter       | Threshold             |
-|--------------|-----------------------|
-| Price        | $10 – $1,500          |
-| Daily volume | ≥ 500,000 shares      |
-| Trade count  | ≥ 1,000 trades/day    |
-
-Falls back to the hardcoded 12-stock `UNIVERSE` in `constants.js` if the screener fails.
-
----
-
-### 2. Signal Engine (5-Strategy Consensus)
-
-Every stock in the universe is scored on each cycle by five independent strategies. Each strategy casts a full vote (+1 buy / −1 sell) on a strong signal, or a partial vote (+0.2–0.3) on a soft directional read.
-
-| Strategy       | Buy trigger                        | Sell trigger                       |
-|----------------|------------------------------------|------------------------------------|
-| SMA Crossover  | 10-SMA crosses **above** 30-SMA    | 10-SMA crosses **below** 30-SMA    |
-| RSI Mean-Rev   | RSI < 28 (oversold)                | RSI > 72 (overbought)              |
-| MACD Trend     | MACD line crosses above signal     | MACD line crosses below signal     |
-| Bollinger Bands| Price touches lower band           | Price touches upper band           |
-| Momentum       | 12-bar return > +3.5%              | 12-bar return < −2.5%              |
-
-**Consensus score** = buy votes − sell votes:
-
-| Score   | Consensus    | Action in BULLISH regime         |
-|---------|--------------|----------------------------------|
-| ≥ 2     | STRONG BUY   | Buy (all regimes except BEARISH) |
-| ≥ 1     | BUY          | Buy (BULLISH regime only)        |
-| ≤ −1    | SELL         | Close position                   |
-| ≤ −2    | STRONG SELL  | Close position                   |
-| other   | HOLD         | No action                        |
-
----
-
-### 3. SPY Market Regime Filter
-
-Before placing any buy order, the bot classifies the current market environment using SPY's daily closes against its own moving averages. SPY is always fetched with 220 bars so SMA200 is always available.
-
-| Regime       | Condition                              | Bot behavior                                      |
-|--------------|----------------------------------------|---------------------------------------------------|
-| 🟢 BULLISH   | SPY > SMA50 **and** SPY > SMA200       | Normal — full position sizes, BUY + STRONG BUY   |
-| 🟡 CAUTIOUS  | SPY < SMA50, SPY > SMA200              | STRONG BUY signals only, position sizes **halved** |
-| 🔴 BEARISH   | SPY < SMA50 **and** SPY < SMA200       | **No new buys** — only sells, stop-losses, take-profits |
-
-**Recovery rule:** After a BEARISH period, the regime does not flip to CAUTIOUS or BULLISH until SPY has closed above its 50-SMA for **3 consecutive days**. This prevents false recoveries from brief bounces.
-
-Every regime change is logged to the Activity Feed with SPY's current price, SMA50, and SMA200. The current regime is displayed as a colored badge in the dashboard header.
-
----
-
-### 4. Earnings Calendar Filter
-
-Before each trade cycle the bot fetches upcoming earnings dates from the Financial Modeling Prep API (results are cached for 4 hours to stay within the free tier's 250 req/day limit).
-
-| Situation                              | Action                                              |
-|----------------------------------------|-----------------------------------------------------|
-| Stock has earnings within **3 days**   | Skip the buy entirely, log the reason               |
-| Held position has earnings **tomorrow**| Sell the position before the announcement           |
-
-If `FMP_API_KEY` is not set, or if the FMP API is unavailable, the filter is skipped gracefully and normal trading continues.
-
----
-
-### 5. ATR-Based Position Sizing
-
-Rather than allocating a flat percentage of the portfolio to every stock, position sizes are scaled inversely with each stock's **Average True Range** (14-period, close-to-close). Volatile stocks get smaller allocations; stable stocks get larger ones.
-
-```
-volatilityScale  = ATR_TARGET_PCT / stockAtrPct
-dynPositionPct   = clamp(MAX_POSITION_PCT × volatilityScale, MIN_POSITION_PCT, MAX_POSITION_PCT)
-```
-
-The `regimeMult` (0.5 in CAUTIOUS, 1.0 otherwise) is applied on top before clamping.
-
-| Stock | Typical daily ATR% | Approx. allocation (at $100k) |
-|-------|--------------------|-------------------------------|
-| TSLA  | ~3.5%              | ~4% ($4k)                     |
-| NVDA  | ~2.5%              | ~6% ($6k)                     |
-| AAPL  | ~1.2%              | ~12% ($12k)                   |
-| JPM   | ~0.6%              | capped at 15% ($15k)          |
-
----
-
-### 6. Trailing Stop-Loss
-
-Positions use a **trailing stop** rather than a fixed stop from entry price. The peak price is recorded at entry and updated whenever the price makes a new high. The stop triggers when the price falls more than `TRAILING_STOP_PCT` below that peak.
-
-```
-trail drop = (currentPrice − peakPrice) / peakPrice
-exit if   trail drop ≤ −TRAILING_STOP_PCT  (default −5%)
-```
-
-Switch back to a fixed stop-loss by setting `USE_TRAILING_STOP: false` in `constants.js`.
-
----
-
-### 7. Market Hours Filter (live mode only)
-
-Even when the market is officially open, the bot enforces two quiet windows to avoid elevated volatility:
-
-| Window              | Duration   | Behavior                                          |
-|---------------------|------------|---------------------------------------------------|
-| Opening buffer      | First 15 min | Entire trade cycle skipped                      |
-| Closing buffer      | Last 30 min  | Stop-loss/take-profit checks run; no new buys   |
-
----
-
-### 8. Risk Parameters
-
-All configurable in `src/config/constants.js`:
-
-```js
-RISK = {
-  MAX_POSITION_PCT:    0.15,   // max 15% of portfolio per stock (before ATR scaling)
-  MIN_POSITION_PCT:    0.03,   // floor: never allocate less than 3%
-  STOP_LOSS_PCT:      -0.05,   // fixed stop (used when USE_TRAILING_STOP: false)
-  TAKE_PROFIT_PCT:     0.10,   // +10% take-profit
-  MAX_OPEN_POSITIONS:  6,      // max concurrent positions
-  MAX_CASH_DEPLOY_PCT: 0.90,   // max 90% of available cash per buy
-  TRAILING_STOP_PCT:   0.05,   // 5% trail from peak
-  USE_TRAILING_STOP:   true,   // toggle trailing vs. fixed stop
-  ATR_TARGET_PCT:      0.01,   // reference ATR% for sizing (1%)
-}
-
-MARKET_HOURS = {
-  OPEN_BUFFER_MINS:  15,       // skip first 15 min after open
-  CLOSE_BUFFER_MINS: 30,       // no new buys in last 30 min
-}
-```
-
----
-
-## 🔌 Server API Endpoints
-
-| Method | Endpoint                  | Description                            |
-|--------|---------------------------|----------------------------------------|
-| GET    | `/api/health`             | Connection check                       |
-| GET    | `/api/account`            | Account balance & buying power         |
-| GET    | `/api/positions`          | Open positions with unrealized P&L     |
-| POST   | `/api/orders`             | Place a market or limit order          |
-| GET    | `/api/orders`             | List recent orders                     |
-| DELETE | `/api/orders`             | Cancel all open orders                 |
-| DELETE | `/api/positions/:symbol`  | Close a specific position              |
-| DELETE | `/api/positions`          | Close all positions                    |
-| GET    | `/api/clock`              | Market open/close status and times     |
-| GET    | `/api/quote/:symbol`      | Latest quote for one symbol            |
-| GET    | `/api/snapshots?symbols=` | Batch real-time snapshots              |
-| GET    | `/api/bars/:symbol`       | Historical daily bars                  |
-| GET    | `/api/screener`           | Top 75 most active tradeable stocks    |
-| GET    | `/api/earnings?symbols=`  | Upcoming earnings dates (FMP)          |
-
----
-
-## ⚙️ Customization
-
-| What to change | Where |
-|----------------|-------|
-| Stock universe | `UNIVERSE` array in `src/config/constants.js` |
-| Risk parameters | `RISK` object in `src/config/constants.js` |
-| Market hours buffers | `MARKET_HOURS` in `src/config/constants.js` |
-| Trailing vs. fixed stop | `USE_TRAILING_STOP` in `src/config/constants.js` |
-| Regime recovery days | `REGIME_RECOVERY_DAYS` in `src/engine/regimeEngine.js` |
-| Trade/price poll frequency | `PRICE_POLL_MS` / `TRADE_CYCLE_MS` in `src/hooks/useAlpacaTrader.js` |
-| Add a new strategy | Add a vote section in `src/engine/signalEngine.js` |
-| Extend indicators | Add a function to `src/engine/indicators.js` |
-
----
-
-## ⚠️ Important Notes
-
-- **Paper trading only** — no real money is used at any point
-- The Alpaca paper API simulates real market conditions but fills may differ from live trading
-- Market data on Alpaca paper accounts uses IEX exchange data
-- Past simulated performance does not predict future results
-- PDT (Pattern Day Trader) rules apply: accounts below $25,000 are limited to 3 round-trips per 5 trading days
-- The bot only places orders during regular market hours (9:30 AM – 4:00 PM ET), with the additional open/close buffers applied on top
-- FMP's free tier allows 250 API calls/day; the earnings cache (4-hour TTL) ensures the bot never exceeds this under normal operation
-
----
-
-## 📄 License
-
-MIT — use it however you want. Not financial advice.
+MIT. Not financial advice. Past performance does not guarantee future results.
