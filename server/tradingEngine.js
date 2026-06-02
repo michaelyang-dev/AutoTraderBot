@@ -3118,7 +3118,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           } else {
             liveCounts.ml++;
             mlEntryDates[opp.sym] = cycleNumber;
-            lastRebalanceCycle = cycleNumber;  // mark rebalance happened
+            // Don't set lastRebalanceCycle here — wait for REBALANCE COMPLETE after ALL buys
           }
           liveCounts.total++;
 
@@ -3157,11 +3157,28 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // Mark rebalance complete ONLY if we actually traded
-      // (prevents marking done during bar-loading cycles when no trades execute)
-      if (isRebalDay && (dailyStats.buys > 0 || dailyStats.sells > 0)) {
-        lastRebalanceCycle = cycleNumber;
-        addLog(`REBALANCE COMPLETE — next rebalance in ${REBAL_INTERVAL_CYCLES / 390} trading days`, "system");
+      // Mark rebalance complete when portfolio matches signals
+      // Don't just check if trades happened — verify ALL target positions are held
+      if (isRebalDay && mlSignals && mlSignals.length > 0) {
+        const mlBuySymbols = mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol);
+        const heldNow = new Set((activePositions || currentPositions).map(p => p.symbol));
+        const allTargetsHeld = mlBuySymbols.every(s => heldNow.has(s));
+
+        if (allTargetsHeld || dailyStats.buys > 0) {
+          // Either all targets are held, or we bought something this cycle
+          // Check if there are still missing positions
+          const missing = mlBuySymbols.filter(s => !heldNow.has(s));
+          if (missing.length === 0) {
+            lastRebalanceCycle = cycleNumber;
+            addLog(`REBALANCE COMPLETE — all ${mlBuySymbols.length} targets held. Next in ${REBAL_INTERVAL_CYCLES / 390} trading days`, "system");
+          } else if (dailyStats.buys > 0 && dailyStats.sells === 0) {
+            // We're buying but still missing some — keep isRebalDay active for next cycle
+            addLog(`REBALANCE IN PROGRESS — ${missing.length} positions still needed: ${missing.join(", ")}`, "system");
+          } else if (dailyStats.sells > 0 && dailyStats.buys === 0) {
+            // Sold but haven't bought yet — keep rebalance open for buys
+            addLog(`REBALANCE SELLS DONE — buys pending next cycle (${missing.length} positions needed)`, "system");
+          }
+        }
       }
 
       // ── STEP 4: Trend trailing stop (10%) ──
