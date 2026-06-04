@@ -589,15 +589,17 @@ def main():
     if ok1 or ok2 or ok3 or ok4:
         restart_ml_server()
 
-    status = "OK" if (ok1 and ok2 and ok3 and ok6) else "PARTIAL"
+    # FMP fundamentals failure is OK — WRDS Compustat is primary, FMP is just fallback
+    critical_ok = ok1 and ok2 and ok6 and ok_ff
+    status = "OK" if critical_ok else "PARTIAL"
     log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, fama_french={ok_ff}, snapshots={ok6}, prices={ok7}, journal={ok8}, cache_flush={ok10})")
 
-    # Alert on failure via Telegram
-    if status != "OK":
+    # Alert on failure via Telegram — only for critical data, not FMP fundamentals
+    if not critical_ok:
         failures = []
         if not ok1: failures.append("enhanced_data")
         if not ok2: failures.append("VIX")
-        if not ok3: failures.append("fundamentals")
+        if not ok_ff: failures.append("fama_french")
         if not ok6: failures.append("snapshots")
         _send_telegram_alert(
             f"⚠️ DATA REFRESH {status}\n"
