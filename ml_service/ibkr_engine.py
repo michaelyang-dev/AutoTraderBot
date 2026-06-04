@@ -716,6 +716,21 @@ class IBKREngine:
             try:
                 cycle += 1
 
+                # Check IB connection health every cycle — reconnect if dropped
+                if not self.ib.isConnected():
+                    log.warning("IB connection lost in main loop — reconnecting...")
+                    send_telegram(f"⚠️ IBKR connection lost, reconnecting...")
+                    try:
+                        await self.connect()
+                        self.ib.reqGlobalCancel()
+                        await asyncio.sleep(2)
+                        log.info("Reconnected successfully — cancelled pending orders")
+                        send_telegram(f"🟢 IBKR reconnected")
+                    except Exception as ce:
+                        log.error(f"Reconnect failed: {ce}")
+                        await asyncio.sleep(60)
+                        continue
+
                 if not self.is_market_open():
                     if cycle % 60 == 1:  # log once per ~10 min
                         log.info("Market closed — waiting...")
