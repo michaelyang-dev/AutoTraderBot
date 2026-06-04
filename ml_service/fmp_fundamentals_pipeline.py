@@ -134,29 +134,38 @@ def _fetch_cached(symbol: str, endpoint: str, params: str = "") -> list:
 
 
 def fetch_symbol_data(symbol: str) -> dict:
-    """Fetch all fundamental data for one symbol."""
+    """Fetch all fundamental data for one symbol.
+    FMP Premium: 750 calls/min. 8 calls per stock → throttle between calls."""
     result = {}
+    _delay = 0.09  # ~11 calls/sec = 660/min (safe under 750 limit)
 
     # Income statements (60 quarters = 15 years)
     result["income"] = _fetch_cached(symbol, "income-statement", "period=quarter&limit=60")
+    time.sleep(_delay)
 
     # Balance sheets
     result["balance"] = _fetch_cached(symbol, "balance-sheet-statement", "period=quarter&limit=60")
+    time.sleep(_delay)
 
     # Cash flow
     result["cashflow"] = _fetch_cached(symbol, "cash-flow-statement", "period=quarter&limit=60")
+    time.sleep(_delay)
 
     # Key metrics
     result["metrics"] = _fetch_cached(symbol, "key-metrics", "period=quarter&limit=60")
+    time.sleep(_delay)
 
     # Financial ratios
     result["ratios"] = _fetch_cached(symbol, "ratios", "period=quarter&limit=60")
+    time.sleep(_delay)
 
     # Analyst estimates
     result["estimates"] = _fetch_cached(symbol, "analyst-estimates", "period=annual&limit=4")
+    time.sleep(_delay)
 
     # Earnings calendar
     result["earnings"] = _fetch_cached(symbol, "earnings", "")
+    time.sleep(_delay)
 
     # Insider trading
     result["insiders"] = _fetch_cached(symbol, "insider-trading/search", "page=0&limit=100")
@@ -348,7 +357,9 @@ def main():
             cached_count += 1
         else:
             api_count += 1
-            time.sleep(0.05)  # FMP Premium: 750 calls/min
+            # FMP Premium: 750 calls/min. Each stock = 8 API calls.
+            # Need: 8 calls / (750/60) calls/sec = 0.64s per stock minimum
+            time.sleep(0.7)  # ~0.7s per stock = ~685 calls/min (under 750 limit)
 
         # Progress every 50 symbols
         if i % 50 == 0 or i == len(STOCK_SYMBOLS):

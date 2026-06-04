@@ -574,7 +574,7 @@ def main():
 
     ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 300, retries=1)
     ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60, retries=1)
-    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 600, retries=1)
+    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 2400, retries=1)  # 40min for 1500 stocks × 8 FMP calls with rate limiting
     ok4 = _run_with_timeout(refresh_options, "options", 300, retries=1)
     # v12: Ortex REMOVED (subscription canceled, SI hurts returns)
     ok5 = True  # skip Ortex
