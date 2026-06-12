@@ -68,7 +68,7 @@ POSITION_CAP = 0.15     # v12: 15% max per position
 TRAILING_STOP = 0.40    # v12: 40% trailing stop
 LEVERAGE = 1.80         # 1.8x target to offset integer-share rounding drag (~1.44x effective)
 REBALANCE_INTERVAL = 600  # check every 10 minutes
-MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
+MIN_TRADE_PCT = 0.01    # don't trade if delta < 1% of portfolio (existing holdings only)
 
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
