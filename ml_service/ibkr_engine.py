@@ -161,8 +161,9 @@ class IBKREngine:
         log.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT}...")
         self.ib = IB()
         await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, readonly=False, timeout=20)
-        # Request delayed market data (type 3) — no subscription needed for paper
-        self.ib.reqMarketDataType(3)
+        # Request real-time market data (type 1) — live account has streaming subscription.
+        # get_market_price() falls back to close if a symbol returns no real-time tick.
+        self.ib.reqMarketDataType(1)
         accounts = self.ib.managedAccounts()
         self.account_id = accounts[0] if accounts else None
         log.info(f"Connected. Account: {self.account_id}")
