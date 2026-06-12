@@ -66,7 +66,7 @@ SIGNAL_HEALTH_URL = f"http://localhost:{SIGNAL_PORT}/health"
 MAX_POSITIONS = 30      # hold all combined sleeve picks (~22-25)
 POSITION_CAP = 0.15     # v12: 15% max per position
 TRAILING_STOP = 0.40    # v12: 40% trailing stop
-LEVERAGE = 1.50         # 1.5x leverage via IBKR margin
+LEVERAGE = 1.70         # 1.7x target to offset integer-share rounding drag (~1.5x effective)
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
@@ -451,9 +451,9 @@ class IBKREngine:
             target_qty = int(target_value_per_position / price)
             delta_qty = target_qty - current_qty
 
-            # Skip if delta is too small
+            # Skip if delta is too small — ONLY for existing holdings (avoid churn).
             delta_value = abs(delta_qty * price)
-            if delta_value < portfolio_value * MIN_TRADE_PCT:
+            if current_qty > 0 and delta_value < portfolio_value * MIN_TRADE_PCT:
                 continue
 
             if delta_qty > 0:
