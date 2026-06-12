@@ -66,7 +66,7 @@ SIGNAL_HEALTH_URL = f"http://localhost:{SIGNAL_PORT}/health"
 MAX_POSITIONS = 30      # hold all combined sleeve picks (~22-25)
 POSITION_CAP = 0.15     # v12: 15% max per position
 TRAILING_STOP = 0.40    # v12: 40% trailing stop
-LEVERAGE = 1.70         # 1.7x target to offset integer-share rounding drag (~1.5x effective)
+LEVERAGE = 1.80         # 1.8x target to offset integer-share rounding drag (~1.44x effective)
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.02    # don't trade if delta < 2% of portfolio
 
