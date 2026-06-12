@@ -23,7 +23,7 @@ const RISK = {
   STOP_LOSS_PCT: -0.40,               // v12: -40% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
   MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
-  MAX_CASH_DEPLOY_PCT: 1.50,          // v12: ~1.46x effective. INTENTIONALLY 1.5 (not 1.8 like IBKR): this $1.3M account has negligible integer-share rounding, so 1.5 deploys ~1.46x — matching IBKR's 1.8-setting/1.43x-effective on its $30K account. Do NOT raise to 1.8 (would over-leverage to ~1.76x).
+  MAX_CASH_DEPLOY_PCT: 1.60,          // ~1.49x effective — tuned to match IBKR. This $1.3M account has negligible integer-share rounding, so 1.6 deploys ~1.47-1.49x, matching IBKR's 1.8-setting/1.49x on its $30K account. Different config number, same effective leverage (account-size difference). Do NOT raise to 1.8 (would over-leverage to ~1.76x).
   REBALANCE_INTERVAL: 5,
   TRAILING_STOP_PCT: 0.40,            // v12: -40% trailing stop (wider = fewer whipsaws, better CAGR)
   USE_TRAILING_STOP: true,            // v12: trailing stop enabled
