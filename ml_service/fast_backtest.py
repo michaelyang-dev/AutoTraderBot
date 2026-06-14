@@ -352,7 +352,7 @@ class FastBacktester:
             total_f = sum(1 for fd in fdate.values() if "dist_sma50" in fd)
             breadth = above / max(total_f, 1)
             blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
-            bear = {"mom": 0.10, "val": 0.20, "s5": 0.60, "s3": 0.10}
+            bear = config.get("bear_weights", {"mom": 0.10, "val": 0.20, "s5": 0.60, "s3": 0.10})
             blended = {n: ew[n] * blend + bear.get(n, 0) * (1 - blend) for n in ew}
 
             combined = {}
