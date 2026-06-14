@@ -210,11 +210,14 @@ const PRICE_POLL_MS = 15000;
 const TRADE_CYCLE_MS = 60000;
 
 // ── Volatility Targeting ──
-// Vol targeting DISABLED — not in backtest, hurts CAGR by 6-8%
-// Backtest uses fixed weights without vol scaling
-const VOL_TARGET = 999;     // effectively disabled (scale always = 1.0)
-const MAX_LEVERAGE = 1.5;
-const MIN_LEVERAGE = 1.0;   // never scale below 1.0
+// Vol-scaling overlay (Phase 1) — mirrors the IBKR engine. Scales effective
+// leverage DOWN when realized account-NAV vol exceeds the target (de-risk only).
+// Target is the LEVERAGED account vol = 1.46x (effective) * 0.15 (1x target) = ~0.22.
+// currentVolScale is applied to MAX_CASH_DEPLOY_PCT in the buy sizing below.
+// dailyReturns rebuilds over VOL_LOOKBACK days after a restart (ramp-up = scale 1.0).
+const VOL_TARGET = 0.22;    // annualized account-NAV vol target (= ~1.46 * 15% 1x)
+const MAX_LEVERAGE = 1.0;   // cap: vol-scaling can only DE-RISK, never lever up
+const MIN_LEVERAGE = 0.30;  // floor: never cut below 30% of base leverage
 const VOL_LOOKBACK = 40;
 
 const SECTOR_MAP = {
@@ -2010,7 +2013,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         } else {
           currentVolScale = 1.0;
         }
-        addLog(`[vol-targeting] Vol: ${(annualVol * 100).toFixed(2)}%, Scale: ${currentVolScale.toFixed(3)}`, "system");
+        addLog(`[vol-scale] realized NAV vol ${(annualVol * 100).toFixed(1)}% target ${(VOL_TARGET * 100).toFixed(0)}% -> scale ${currentVolScale.toFixed(2)} -> effective leverage ${(RISK.MAX_CASH_DEPLOY_PCT * currentVolScale).toFixed(2)}x (base ${RISK.MAX_CASH_DEPLOY_PCT})`, "system");
       } else {
         currentVolScale = 1.0;
       }
@@ -2506,7 +2509,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             const sig = mlBuys.find(s => s.symbol === sym);
             if (!sig) continue; // already handled by sell section
 
-            let targetPct = (sig.probability / tProb) * RISK.MAX_CASH_DEPLOY_PCT;
+            let targetPct = (sig.probability / tProb) * RISK.MAX_CASH_DEPLOY_PCT * currentVolScale;
             targetPct = Math.min(targetPct, RISK.MAX_POSITION_PCT);
             const targetVal = cyclePortfolioValue * targetPct;
             const currentVal = Math.abs(parseFloat(pos.market_value || 0));
@@ -3024,11 +3027,11 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           const mlBuys = mlSignals ? mlSignals.filter(s => s.signal === "BUY") : [];
           const totalProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
           if (totalProb > 0 && opp.mlConf > 0) {
-            dynPositionPct = (opp.mlConf / totalProb) * RISK.MAX_CASH_DEPLOY_PCT;
-            // Cap at MAX_POSITION_PCT (15%) to match backtest cap
+            dynPositionPct = (opp.mlConf / totalProb) * RISK.MAX_CASH_DEPLOY_PCT * currentVolScale;
+            // Cap at MAX_POSITION_PCT (15%) to match backtest cap (after vol-scale)
             dynPositionPct = Math.min(dynPositionPct, RISK.MAX_POSITION_PCT);
           } else {
-            dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT / RISK.MAX_OPEN_POSITIONS;
+            dynPositionPct = RISK.MAX_CASH_DEPLOY_PCT * currentVolScale / RISK.MAX_OPEN_POSITIONS;
           }
         }
 
@@ -3042,8 +3045,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           : 0;
         const neededValue = targetPositionValue - existingValue;
 
-        // Check total deployment limit
-        const totalDeployable = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT;
+        // Check total deployment limit (scaled by vol-scaling overlay)
+        const totalDeployable = cyclePortfolioValue * RISK.MAX_CASH_DEPLOY_PCT * currentVolScale;
         const currentPositionsValue = cyclePortfolioValue - cycleCash;
         const availableBuyingPower = Math.max(0, totalDeployable - currentPositionsValue);
 
