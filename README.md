@@ -2,15 +2,17 @@
 
 Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P 1500 universe through Interactive Brokers and Alpaca with 1.5x margin leverage. Fully automated data pipeline, signal generation, order execution, risk management, and monitoring.
 
-**Honest backtest (2018-2025, no look-ahead, 7-day start-day averaged, 10bps costs):**
+**Honest backtest (2018-2025, deployed config, no look-ahead, start-day averaged, 10bps costs):**
 
-| Metric | At 1x | At 1.5x leverage |
-|--------|-------|-----------------|
-| **CAGR** | 25.4% +/- 1.8% | ~33-35% (estimated, not simulated) |
-| **Sharpe** | 1.00 | ~1.00 |
-| **Max Drawdown** | -26.4% | ~-40% (estimated) |
+| Metric | At 1x | At ~1.49x leverage (live) |
+|--------|-------|---------------------------|
+| **CAGR** | 22.0% +/- 2.5% | ~30-32% (estimated, not simulated) |
+| **Sharpe** | 0.90 | ~0.90 |
+| **Max Drawdown** | -28.3% | ~-42% (estimated) |
 
-> **Note on leverage:** The 1.5x numbers are estimates — the backtest runs at 1x only. At 1.5x, returns scale by 1.5x minus margin interest (~5-6% on the borrowed 50% = ~2.75pp drag), giving ~33-35% CAGR. Drawdowns also amplify by ~1.5x. Margin call risk exists if portfolio drops below maintenance margin (~25%).
+> **These numbers reflect the ACTUAL deployed config** (enhanced data OFF, short interest OFF), verified June 2026 by re-running the backtest with the exact data the live system uses. An earlier claim of 25.4% CAGR / 1.00 Sharpe was **inflated** — it came from a run with enhanced data + short interest *enabled* using static (look-ahead-biased) snapshots, neither of which is used in production. See [Backtest Results](#backtest-results).
+
+> **Note on leverage:** The leverage numbers are estimates — the backtest runs at 1x only. Live runs at ~1.49x effective (IBKR `LEVERAGE=1.8`, Alpaca `MAX_CASH_DEPLOY_PCT=1.6` — different config numbers, same effective leverage because of account-size/rounding differences). At 1.49x, returns scale by ~1.49x minus margin interest (~5-6% on the borrowed portion), and drawdowns amplify by ~1.49x. Margin-call risk exists if the portfolio drops below maintenance margin (~25%).
 
 ---
 
@@ -245,12 +247,17 @@ All parameters are synchronized between backtest (`fast_backtest.py`), signal bu
 | Rebalance period | 20 trading days | `tradingEngine.js` REBAL_INTERVAL_CYCLES / `ibkr_engine.py` REBAL_DAYS |
 | Trailing stop | 40% from peak | `tradingEngine.js` TRAILING_STOP_PCT / `ibkr_engine.py` TRAILING_STOP |
 | Position cap | 15% per stock | `signal_builder.py` / `tradingEngine.js` MAX_POSITION_PCT / `ibkr_engine.py` POSITION_CAP |
-| Leverage | 1.5x | `tradingEngine.js` MAX_CASH_DEPLOY_PCT / `ibkr_engine.py` LEVERAGE |
+| Leverage (effective) | ~1.49x both accounts | IBKR `LEVERAGE=1.8` (small $30K acct, heavy share rounding); Alpaca `MAX_CASH_DEPLOY_PCT=1.6` ($1.3M acct, light rounding). Different numbers, same ~1.49x effective. |
+| Min trade (top-up skip) | 1% of portfolio, existing holdings only | `ibkr_engine.py` MIN_TRADE_PCT (new positions never skipped) |
+| Bull sleeve weights | 50 / 35 / 15 (mom/val/lowvol) | `signal_builder.py` STRATEGY_CONFIG_BULL / backtest config |
+| Bear sleeve weights | 10 / 30 / 50 / 10 (mom/val/lowvol/sector) | `signal_builder.py` STRATEGY_CONFIG_BEAR (backtest parameterized to match) |
+| UMD-crash weights | 15 / 45 / 30 / 10 | identical in both `signal_builder.py` and `fast_backtest.py` |
 | Universe | SP1500 (~1,500) | `scrape_sp1500.py` → `sp1500_members.json` |
-| Short interest | Disabled | `signal_builder.py` (loading commented out) |
-| Enhanced data | Disabled | `signal_server.py` (passes None to build_signals_v9) |
+| Short interest | Disabled (hurts ~3pp) | `signal_builder.py` (`_si_change_rank = {}`) |
+| Enhanced data | Disabled (PIT version hurts; static is look-ahead) | `signal_server.py` (passes None to build_signals_v9) |
+| Market data | Real-time (IBKR streaming bundle, June 2026) | `ibkr_engine.py` `reqMarketDataType(1)` |
 | Transaction costs | 10bps round-trip | `fast_backtest.py` COST_BPS + SLIPPAGE_BPS |
-| Fundamentals source | WRDS Compustat (seqq, not ceqq) | `signal_builder.py` _fill_fundamentals() |
+| Fundamentals source | WRDS Compustat (seqq, not ceqq) + IBES | `signal_builder.py` _fill_fundamentals() |
 
 ### Environment Variables
 
@@ -290,17 +297,30 @@ SIGNAL_SERVER_PORT=5001
 - **Leverage:** 1x only (no leverage in backtest)
 - **Fundamentals:** WRDS Compustat with `rdq` (report date) for point-in-time, using `seqq` for equity (matching live exactly)
 
-### Results (2018-2025, at 1x)
+### Results (2018-2025, at 1x) — DEPLOYED CONFIG
 
 | Metric | Value |
 |--------|-------|
-| **CAGR** | 25.4% +/- 1.8% |
-| **Sharpe Ratio** | 1.00 +/- 0.10 |
-| **Max Drawdown** | -26.4% |
-| **Worst start-day** | 22.6% CAGR |
-| **Best start-day** | 27.6% CAGR |
+| **CAGR** | 22.0% +/- 2.5% |
+| **Sharpe Ratio** | 0.90 |
+| **Max Drawdown** | -28.3% |
+
+### Data-condition verification (June 2026)
+
+The backtest was re-run with the v12 config under 4 data conditions to confirm what's deployed and trace an earlier inflated claim. All start-day averaged, same params:
+
+| Condition | CAGR | Sharpe | MaxDD | |
+|-----------|------|--------|-------|--|
+| **A. DEPLOYED (enhanced OFF, SI OFF)** | **22.0%** | **0.90** | **-28.3%** | ← what live actually runs |
+| B. enhanced ON, SI OFF | 23.6% | 0.98 | -33.9% | static enhanced = look-ahead bias |
+| C. enhanced OFF, SI ON | 19.2% | 0.82 | -31.7% | confirms SI hurts (-2.8pp) |
+| D. EVERYTHING ON | 23.9% | 1.00 | -32.7% | source of the old "25.4%/1.00" claim |
+
+**Takeaway:** The honest deployed number is condition A (22.0% / 0.90). The previously reported 25.4% / 1.00 matches condition D — enhanced data + short interest both enabled with static (look-ahead) snapshots. That's inflated and not what trades. Disabling short interest is confirmed correct (it hurts even without look-ahead: 19.2% vs 22.0%). Enhanced data only "helps" via look-ahead; the point-in-time version hurts (hence disabled).
 
 ### Year-by-Year (at 1x)
+
+> Note: the year-by-year figures below are from the earlier (pre-correction) run and are directionally indicative but slightly optimistic. The corrected full-period number is 22.0% CAGR (see verification table above).
 
 | Year | Strategy | S&P 500 | vs SPY |
 |------|----------|---------|--------|
@@ -320,6 +340,8 @@ SIGNAL_SERVER_PORT=5001
 | CAGR | 16.9% +/- 1.3% |
 | Sharpe | 0.79 |
 | Max Drawdown | -37.1% |
+
+> Caveat: this 25-year figure predates the June 2026 data-condition correction and may also be slightly optimistic (it likely included the same enhanced/SI data). Re-run with the deployed config (`research/v12_ground_truth.py` extended to 2001) to confirm. The 2018-2025 correction (25.4% → 22.0%) suggests the true 25-year number is modestly lower than 16.9%.
 
 ---
 
@@ -573,8 +595,8 @@ tail -3 logs/refresh_data.log
 | **Bear exposure** | Scales equity to 40% (60% cash) | Rotates sleeve weights (stays fully invested) | Live gets ~3pp higher CAGR, ~5pp worse MaxDD |
 | **Execution** | Trades at close price | Market orders during the day | ~0.1% slippage difference |
 | **Trailing stops** | Checked daily at close | Checked every 10 minutes | Live catches crashes faster |
-| **Leverage** | 1x only | 1.5x margin | Not simulated in backtest |
-| **Position rounding** | Exact dollar amounts | Whole shares only | ~$50 rounding per position |
+| **Leverage** | 1x only | ~1.49x margin | Not simulated in backtest |
+| **Position rounding** | Exact (fractional) dollar amounts | Whole shares only (IBKR blocks fractional via API) | On the $30K IBKR acct this is large — a $1,900 share is 6% of equity. This is why IBKR runs `LEVERAGE=1.8` to deploy ~1.49x effective. |
 | **Costs** | 10bps round-trip | ~2-5bps (Alpaca free, IBKR ~1-2bps + spread) | Live costs lower than backtest |
 
 ### Strategic Limitations
@@ -587,6 +609,8 @@ tail -3 logs/refresh_data.log
 - **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
 - **Single-country exposure:** SP1500 only (US equities). No international diversification.
 - **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
+- **Backtest/live code duplication (drift risk):** The momentum and low-vol sleeves are *shared* code (`strategies/multi_strategy_engine.py`, imported by both `fast_backtest.py` and `signal_builder.py`). But the **value sleeve** (`_strategy_value`) and the **regime/bear-blend** logic are written *twice* — once in each file. This is how a bear-weight drift crept in (backtest had 10/20/60, live had 10/30/50; both tested ~equal, backtest now parameterized to match live's 10/30/50). Any future change to the value sleeve or regime weights must be made in BOTH files. Consolidating these into the shared module is recommended.
+- **Reproducibility:** Running `python fast_backtest.py` directly executes its hardcoded `configs` list (currently old v10 experiments), NOT the deployed v12. To reproduce the deployed numbers, use `research/v12_ground_truth.py`, which runs the exact v12 config with enhanced/SI cleared.
 
 ### Future Research Directions
 
