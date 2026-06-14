@@ -19,7 +19,7 @@ import pandas as pd
 import time
 import logging
 from functools import partial
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 from scoring_variants import strategy1_skip_month
 from strategies.multi_strategy_engine import strategy1_momentum_reversal
 
@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.WARNING)
 def monkey_patch_run(bt, mom_func, start, end, config):
     """Run with swapped momentum function."""
     import strategies.multi_strategy_engine as mse
-    import fast_backtest as fb
+    import main_production_backtest as fb
     orig_mse = mse.strategy1_momentum_reversal
     orig_fb = fb.strategy1_momentum_reversal
     mse.strategy1_momentum_reversal = mom_func

@@ -22,7 +22,7 @@ from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, INITIAL_CASH, COST_BPS,
 )
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("ml_enhance")

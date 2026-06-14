@@ -10,7 +10,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.environ["OMP_NUM_THREADS"] = "1"
 
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy5_lowvol_quality,
     INITIAL_CASH, COST_BPS,

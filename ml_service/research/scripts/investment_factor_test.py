@@ -21,7 +21,7 @@ import pickle
 from pathlib import Path
 from functools import partial
 
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, COST_BPS, INITIAL_CASH
 )

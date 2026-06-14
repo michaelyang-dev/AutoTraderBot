@@ -37,7 +37,7 @@ SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLRE", "
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Production sleeve weights — SINGLE SOURCE OF TRUTH (v12)
-#  Imported by signal_builder.py (live) AND fast_backtest.py (default config).
+#  Imported by signal_builder.py (live) AND main_production_backtest.py (default config).
 #  Keys: s1_momentum / s7_value / s5_lowvol / s3_sector / s4_inclusion.
 #  Changing weights here changes BOTH live and backtest — no more drift.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +53,7 @@ def log(msg):
 def strategy_value(uni, date, members, top_n=10):
     """Value sleeve — quality + long-term reversal. SINGLE SOURCE OF TRUTH.
 
-    Used identically by live (signal_builder) and backtest (fast_backtest).
+    Used identically by live (signal_builder) and backtest (main_production_backtest).
     Filters: ROE > 5%, gross margin > 15%, dist_sma200 > -15%, debt/equity < 3.
     Score: -ret_252d*0.30 + gross_margin*0.25 + min(ROE, 0.5)*0.25.
     Returns {symbol: weight} for the top-N, score-proportional (capped 2/N).

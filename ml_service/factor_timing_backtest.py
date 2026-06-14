@@ -21,7 +21,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 from wrds_data_provider import WRDSDataProvider
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 
 # ─── Factor Signal Computation ───────────────────────────────────────────────
 

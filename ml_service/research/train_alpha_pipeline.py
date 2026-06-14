@@ -194,8 +194,8 @@ def main():
 
     print(f"\nBest config: {best_config}")
     print(f"\nNOTE: These numbers use the alpha_engine backtest (different from")
-    print(f"fast_backtest.py). Compare RELATIVE performance between configs,")
-    print(f"not absolute CAGR vs the fast_backtest baseline.")
+    print(f"main_production_backtest.py). Compare RELATIVE performance between configs,")
+    print(f"not absolute CAGR vs the main_production_backtest baseline.")
 
 
 if __name__ == "__main__":

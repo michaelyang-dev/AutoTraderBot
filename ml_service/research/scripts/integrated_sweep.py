@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from functools import partial
 
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, INITIAL_CASH, COST_BPS,
@@ -33,8 +33,8 @@ def monkey_patch_run(bt, mom_func, start, end, config):
     original = mse.strategy1_momentum_reversal
     mse.strategy1_momentum_reversal = mom_func
 
-    # Also need to update the reference in fast_backtest module
-    import fast_backtest as fb
+    # Also need to update the reference in main_production_backtest module
+    import main_production_backtest as fb
     fb_original = fb.strategy1_momentum_reversal
     fb.strategy1_momentum_reversal = mom_func
 

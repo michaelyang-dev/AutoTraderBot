@@ -504,7 +504,7 @@ def run_all():
 
     # Run v10.1 momentum using FastBacktester
     try:
-        from fast_backtest import FastBacktester
+        from main_production_backtest import FastBacktester
         bt = FastBacktester()
         v10_result = bt.run("2017-01-03", "2025-12-31", {
             "universe": "sp1500", "mom_w": 0.85, "val_w": 0.15,

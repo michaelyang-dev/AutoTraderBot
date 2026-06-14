@@ -7,7 +7,7 @@ Speed comes from fixing the O(N²) ROE lookup bug, not from approximation.
 ~16s per backtest on SP1500 (was 175s before the fix).
 
 Usage:
-    from fast_backtest import FastBacktester
+    from main_production_backtest import FastBacktester
     bt = FastBacktester()
     result = bt.run("2018-01-01", "2025-12-31", config)
 """
@@ -32,7 +32,7 @@ _WKEY = {"s1_momentum": "mom", "s7_value": "val", "s5_lowvol": "s5", "s3_sector"
 def _short_weights(w):
     return {_WKEY[k]: v for k, v in w.items() if k in _WKEY}
 
-log = logging.getLogger("fast_backtest")
+log = logging.getLogger("main_production_backtest")
 
 SLIPPAGE_BPS = 5
 

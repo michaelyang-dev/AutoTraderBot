@@ -13,7 +13,7 @@ import pandas as pd
 import pickle
 import time
 
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 
 def main():
     print("="*60)
@@ -177,7 +177,7 @@ def main():
         # uni._fin_growth etc. as dicts. We need to update them per-rebal.
 
         # The cleanest approach: run the backtest manually, updating PIT data
-        # at each rebal point. But fast_backtest.run() is monolithic.
+        # at each rebal point. But main_production_backtest.run() is monolithic.
         # Instead, use the _pit_earnings_snapshots mechanism that already exists.
 
         # Actually the simplest honest test: set fin_growth etc. to the
@@ -212,7 +212,7 @@ def main():
     print(f"  CAGR: {np.mean(cagrs_b)*100:.1f}% ± {np.std(cagrs_b)*100:.1f}%  Sharpe: {np.mean(sharpes_b):.2f}  MaxDD: {np.mean(dds_b)*100:.1f}%")
 
     # C: Now test with PIT fin_growth injected via _pit_earnings_snapshots
-    # The backtest already supports this mechanism (lines 309-323 of fast_backtest.py)
+    # The backtest already supports this mechanism (lines 309-323 of main_production_backtest.py)
     print("\n  --- C: BASELINE + PIT FIN_GROWTH + PIT EARNINGS ---")
     bt3 = FastBacktester("data/wrds/complete_sp1500_universe.pkl")
     bt3.uni._fin_growth = {}; bt3.uni._ev = {}; bt3.uni._estimates = {}

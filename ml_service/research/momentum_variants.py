@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import time
 import copy
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from strategies.multi_strategy_engine import (
     strategy3_sector_rotation, strategy5_lowvol_quality,
     INITIAL_CASH, COST_BPS,

@@ -271,7 +271,7 @@ def main():
             uni_data = pickle.load(f)
         prices = uni_data["prices_df"]
     except Exception:
-        from fast_backtest import FastBacktester
+        from main_production_backtest import FastBacktester
         bt = FastBacktester("data/wrds/complete_sp1500_universe.pkl")
         prices = bt.prices
 

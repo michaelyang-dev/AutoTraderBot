@@ -13,7 +13,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import pandas as pd
 import time
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 
 def run_avg(bt, start, end, config, n_offsets=5):
     """Run start-day averaged backtest for honest numbers.

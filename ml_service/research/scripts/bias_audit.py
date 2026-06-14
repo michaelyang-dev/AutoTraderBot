@@ -22,7 +22,7 @@ import logging
 import pickle
 from pathlib import Path
 from functools import partial
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from scoring_variants import strategy1_skip_month
 from strategies.multi_strategy_engine import COST_BPS, INITIAL_CASH
 
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.WARNING)
 
 def monkey_patch_run(bt, mom_func, start, end, config):
     import strategies.multi_strategy_engine as mse
-    import fast_backtest as fb
+    import main_production_backtest as fb
     orig_mse = mse.strategy1_momentum_reversal
     orig_fb = fb.strategy1_momentum_reversal
     mse.strategy1_momentum_reversal = mom_func
@@ -266,7 +266,7 @@ if __name__ == "__main__":
 
     # Run the strategy and check what sectors it picks
     import strategies.multi_strategy_engine as mse
-    import fast_backtest as fb
+    import main_production_backtest as fb
     orig_mse = mse.strategy1_momentum_reversal
     orig_fb = fb.strategy1_momentum_reversal
     mse.strategy1_momentum_reversal = func

@@ -236,7 +236,7 @@ Every **20 trading days**, the engine performs a full portfolio reconstruction (
 
 ## Configuration
 
-All parameters are synchronized between backtest (`fast_backtest.py`), signal builder (`signal_builder.py`), Alpaca engine (`tradingEngine.js`), and IBKR engine (`ibkr_engine.py`):
+All parameters are synchronized between backtest (`main_production_backtest.py`), signal builder (`signal_builder.py`), Alpaca engine (`tradingEngine.js`), and IBKR engine (`ibkr_engine.py`):
 
 | Parameter | Value | Where set |
 |-----------|-------|-----------|
@@ -251,12 +251,12 @@ All parameters are synchronized between backtest (`fast_backtest.py`), signal bu
 | Min trade (top-up skip) | 1% of portfolio, existing holdings only | `ibkr_engine.py` MIN_TRADE_PCT (new positions never skipped) |
 | Bull sleeve weights | 50 / 35 / 15 (mom/val/lowvol) | `signal_builder.py` STRATEGY_CONFIG_BULL / backtest config |
 | Bear sleeve weights | 10 / 30 / 50 / 10 (mom/val/lowvol/sector) | `signal_builder.py` STRATEGY_CONFIG_BEAR (backtest parameterized to match) |
-| UMD-crash weights | 15 / 45 / 30 / 10 | identical in both `signal_builder.py` and `fast_backtest.py` |
+| UMD-crash weights | 15 / 45 / 30 / 10 | identical in both `signal_builder.py` and `main_production_backtest.py` |
 | Universe | SP1500 (~1,500) | `scrape_sp1500.py` → `sp1500_members.json` |
 | Short interest | Disabled (hurts ~3pp) | `signal_builder.py` (`_si_change_rank = {}`) |
 | Enhanced data | Disabled (PIT version hurts; static is look-ahead) | `signal_server.py` (passes None to build_signals_v9) |
 | Market data | Real-time (IBKR streaming bundle, June 2026) | `ibkr_engine.py` `reqMarketDataType(1)` |
-| Transaction costs | 10bps round-trip | `fast_backtest.py` COST_BPS + SLIPPAGE_BPS |
+| Transaction costs | 10bps round-trip | `main_production_backtest.py` COST_BPS + SLIPPAGE_BPS |
 | Fundamentals source | WRDS Compustat (seqq, not ceqq) + IBES | `signal_builder.py` _fill_fundamentals() |
 
 ### Environment Variables
@@ -430,7 +430,7 @@ The codebase has four kinds of files. The thing that ties it together: the **str
                   │
         ┌─────────┴─────────┐
         ↓                   ↓
-  signal_builder.py    fast_backtest.py
+  signal_builder.py    main_production_backtest.py
    (LIVE signals)       (BACKTEST)
 ```
 
@@ -450,7 +450,7 @@ The codebase has four kinds of files. The thing that ties it together: the **str
 
 | File | What it does |
 |------|--------------|
-| `fast_backtest.py` | **THE canonical backtester.** Imports the same strategy brain as live. Produces the official 22.0% number. |
+| `main_production_backtest.py` | **THE canonical backtester.** Imports the same strategy brain as live. Produces the official 22.0% number. |
 | `research/v12_ground_truth.py` | Reproduces the deployed number cleanly (enhanced/SI cleared). Run this to verify the headline figure. |
 | `research/locate_v12_number.py`, `research/compare_v12_bear_configs.py` | Audit scripts (traced the old inflated 25.4%, compared bear weights). |
 
@@ -478,7 +478,7 @@ AutoTraderBot/
 │   ├── signal_builder.py             ← LIVE: signal harness (v12 config, uses shared brain)
 │   ├── signal_server.py              ← LIVE: FastAPI server (/signals, /health)
 │   ├── ibkr_engine.py                ← LIVE: IBKR trading engine (async, ib_insync)
-│   ├── fast_backtest.py              ← BACKTEST: the one canonical backtester
+│   ├── main_production_backtest.py              ← BACKTEST: the one canonical backtester
 │   ├── wrds_universe.py              ← Universe builder from WRDS data
 │   ├── wrds_data_provider.py         ← WRDS data loading (FF, FRED)
 │   ├── massive_data_provider.py      ← Polygon/Massive price data
@@ -649,8 +649,8 @@ tail -3 logs/refresh_data.log
 - **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
 - **Single-country exposure:** SP1500 only (US equities). No international diversification.
 - **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
-- **Backtest/live code is now unified (June 2026):** Previously the value sleeve and regime weights were written *twice* (in `signal_builder.py` and `fast_backtest.py`), which caused a bear-weight drift (backtest 10/20/60 vs live 10/30/50 — both tested ~equal, live kept). These have been **consolidated** into `strategies/multi_strategy_engine.py` as `strategy_value()` and `PROD_WEIGHTS_BULL/BEAR/CRASH` — a single source of truth imported by both. Change a weight once, it changes everywhere. Verified: backtest unchanged (22.0%) and live signals byte-identical after the refactor.
-- **Reproducibility:** Running `python fast_backtest.py` directly executes its hardcoded `configs` list (currently old v10 experiments), NOT the deployed v12. To reproduce the deployed numbers, use `research/v12_ground_truth.py`, which runs the exact v12 config with enhanced/SI cleared.
+- **Backtest/live code is now unified (June 2026):** Previously the value sleeve and regime weights were written *twice* (in `signal_builder.py` and `main_production_backtest.py`), which caused a bear-weight drift (backtest 10/20/60 vs live 10/30/50 — both tested ~equal, live kept). These have been **consolidated** into `strategies/multi_strategy_engine.py` as `strategy_value()` and `PROD_WEIGHTS_BULL/BEAR/CRASH` — a single source of truth imported by both. Change a weight once, it changes everywhere. Verified: backtest unchanged (22.0%) and live signals byte-identical after the refactor.
+- **Reproducibility:** Running `python main_production_backtest.py` directly executes its hardcoded `configs` list (currently old v10 experiments), NOT the deployed v12. To reproduce the deployed numbers, use `research/v12_ground_truth.py`, which runs the exact v12 config with enhanced/SI cleared.
 
 ### Future Research Directions
 

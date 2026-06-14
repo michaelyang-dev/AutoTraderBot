@@ -11,7 +11,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import numpy as np
 import pandas as pd
 import time
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 
 def main():
     print("Loading universe...")

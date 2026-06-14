@@ -10,7 +10,7 @@ Same v12 params, start-day averaged.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.environ["OMP_NUM_THREADS"] = "1"
-from fast_backtest import FastBacktester
+from main_production_backtest import FastBacktester
 import numpy as np
 
 V12 = {"universe": "sp1500", "mom_w": 0.50, "val_w": 0.35, "lv_w": 0.15,

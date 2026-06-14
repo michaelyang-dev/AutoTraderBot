@@ -20,7 +20,7 @@ import time
 import logging
 import sys
 from pathlib import Path
-from fast_backtest import FastBacktester, SLIPPAGE_BPS
+from main_production_backtest import FastBacktester, SLIPPAGE_BPS
 from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, INITIAL_CASH, COST_BPS,
