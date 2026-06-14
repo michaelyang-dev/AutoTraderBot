@@ -75,7 +75,10 @@ MIN_TRADE_PCT = 0.01    # don't trade if delta < 1% of portfolio (existing holdi
 # Backtest (2018-2025): cuts 1.49x MaxDD ~-43%->-32% for ~2pp CAGR; helped in
 # all 4 major selloffs; lowers turnover. Ramps in once 20+ NAV days accumulate.
 VOL_SCALING = True
-VOL_TARGET = 0.15       # annualized; below the strategy's ~25% natural vol
+VOL_TARGET_1X = 0.15    # backtest semantic: target for the UNLEVERED (1x) portfolio vol
+EFFECTIVE_LEVERAGE = 1.49  # account runs ~1.49x, so its NAV vol ~= 1.49 x the 1x vol.
+# We measure the LEVERAGED NAV vol, so compare it against the leveraged target:
+VOL_TARGET = VOL_TARGET_1X * EFFECTIVE_LEVERAGE  # ~0.22 account-NAV-vol target
 VOL_LOOKBACK = 40       # trading days of NAV history for the vol estimate
 VOL_SCALE_FLOOR = 0.30  # never cut effective leverage below 30% of base
 
