@@ -70,6 +70,15 @@ LEVERAGE = 1.80         # 1.8x target to offset integer-share rounding drag (~1.
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.01    # don't trade if delta < 1% of portfolio (existing holdings only)
 
+# Vol-scaling overlay (Phase 1): scale effective leverage DOWN when realized
+# portfolio vol exceeds the target. Can only de-risk (never levers above base).
+# Backtest (2018-2025): cuts 1.49x MaxDD ~-43%->-32% for ~2pp CAGR; helped in
+# all 4 major selloffs; lowers turnover. Ramps in once 20+ NAV days accumulate.
+VOL_SCALING = True
+VOL_TARGET = 0.15       # annualized; below the strategy's ~25% natural vol
+VOL_LOOKBACK = 40       # trading days of NAV history for the vol estimate
+VOL_SCALE_FLOOR = 0.30  # never cut effective leverage below 30% of base
+
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -101,6 +110,7 @@ def send_telegram(msg):
 
 
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
+NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
 
 class IBKREngine:
     def __init__(self):
@@ -144,6 +154,55 @@ class IBKREngine:
                 json.dump(peaks, f)
         except Exception:
             pass
+
+    # ── Vol-scaling overlay ──────────────────────────────────────────────
+    def _load_nav_history(self):
+        """Load [[date, nav], ...] history from disk."""
+        try:
+            if NAV_HISTORY_FILE.exists():
+                import json
+                with open(NAV_HISTORY_FILE) as f:
+                    return json.load(f)
+        except Exception as e:
+            log.warning(f"Could not load NAV history: {e}")
+        return []
+
+    def record_nav(self, nav):
+        """Append today's NAV once per calendar day; keep last 70 days."""
+        try:
+            import json
+            today = datetime.now().date().isoformat()
+            hist = self._load_nav_history()
+            if hist and hist[-1][0] == today:
+                hist[-1] = [today, nav]      # update today's value
+            else:
+                hist.append([today, nav])
+            hist = hist[-70:]
+            with open(NAV_HISTORY_FILE, "w") as f:
+                json.dump(hist, f)
+        except Exception:
+            pass
+
+    def compute_vol_scale(self):
+        """Scale effective leverage down when realized portfolio vol > VOL_TARGET.
+        Returns a multiplier in [VOL_SCALE_FLOOR, 1.0]. 1.0 = no scaling (also
+        the default until 20+ NAV days accumulate). Mirrors the backtest:
+        vol_scale = clamp(VOL_TARGET / realized_vol, floor, 1.0)."""
+        if not VOL_SCALING:
+            return 1.0, None
+        navs = [h[1] for h in self._load_nav_history()][-(VOL_LOOKBACK + 1):]
+        if len(navs) < 20:
+            return 1.0, None  # insufficient history — ramp-up, no scaling yet
+        rets = [navs[i] / navs[i - 1] - 1 for i in range(1, len(navs)) if navs[i - 1] > 0]
+        if len(rets) < 19:
+            return 1.0, None
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / len(rets)
+        realized_vol = (var ** 0.5) * (252 ** 0.5)
+        if realized_vol < 0.01:
+            return 1.0, realized_vol
+        vol_scale = min(1.0, max(VOL_SCALE_FLOOR, VOL_TARGET / realized_vol))
+        return vol_scale, realized_vol
 
     def get_drawdown_scale(self, current_value):
         """Reduce position sizes as drawdown deepens from peak."""
@@ -423,6 +482,17 @@ class IBKREngine:
             await self.update_positions()
             portfolio_value = await self.get_portfolio_value()
 
+        # Vol-scaling overlay: scale effective leverage by realized portfolio vol.
+        # Logs the realized-leverage path for the live-vs-backtest watch-item.
+        vol_scale, realized_vol = self.compute_vol_scale()
+        eff_leverage = LEVERAGE * vol_scale
+        if realized_vol is not None:
+            log.info(f"VOL-SCALE: realized_vol={realized_vol:.1%} target={VOL_TARGET:.0%} "
+                     f"-> scale={vol_scale:.2f} -> effective leverage {eff_leverage:.2f}x (base {LEVERAGE})")
+            send_telegram(f"📊 Vol-scale: vol {realized_vol:.0%} → lev {eff_leverage:.2f}x ({vol_scale:.2f}× base)")
+        else:
+            log.info(f"VOL-SCALE: ramp-up (insufficient NAV history) — no scaling, leverage {LEVERAGE}x")
+
         # 2. Compute target weights — signal-proportional (matches backtest)
         # Higher conviction picks get more capital
         total_prob = sum(s.get("probability", 0) for s in signals)
@@ -430,10 +500,10 @@ class IBKREngine:
         for sig in signals:
             prob = sig.get("probability", 0)
             if total_prob > 0 and prob > 0:
-                w = (prob / total_prob) * LEVERAGE
-                w = min(w, POSITION_CAP)  # v12: cap at 15%
+                w = (prob / total_prob) * eff_leverage
+                w = min(w, POSITION_CAP)  # v12: cap at 15% (after vol-scale, matches backtest)
             else:
-                w = LEVERAGE / MAX_POSITIONS  # fallback equal weight
+                w = eff_leverage / MAX_POSITIONS  # fallback equal weight
             signal_targets[sig["symbol"]] = portfolio_value * w
 
         # 3. BUY new positions / adjust existing
@@ -709,6 +779,12 @@ class IBKREngine:
         summary = await self.get_account_summary()
         log.info(f"NAV: ${summary.get('NetLiquidation', 0):,.0f}")
         log.info(f"Cash: ${summary.get('TotalCashValue', 0):,.0f}")
+        self.record_nav(summary.get("NetLiquidation", 0))  # seed NAV history for vol-scaling
+        if VOL_SCALING:
+            vs, rv = self.compute_vol_scale()
+            log.info(f"Vol-scaling: {'ON' if VOL_SCALING else 'off'} target={VOL_TARGET:.0%} "
+                     f"lookback={VOL_LOOKBACK}d | current scale={vs:.2f}"
+                     + (f" (realized vol {rv:.0%})" if rv else " (ramp-up: <20 NAV days)"))
 
         self.running = True
         cycle = 0
@@ -746,6 +822,7 @@ class IBKREngine:
                         try:
                             summary = await self.get_account_summary()
                             nav = summary.get("NetLiquidation", 0)
+                            self.record_nav(nav)  # build NAV history for vol-scaling
                             n_pos = len(self.positions)
                             signals = self.fetch_signals()
                             n_signals = len(signals) if signals else 0
