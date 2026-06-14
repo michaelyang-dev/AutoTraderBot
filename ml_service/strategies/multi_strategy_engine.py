@@ -35,9 +35,61 @@ INITIAL_CASH = 100_000.0
 COST_BPS = 5
 SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLRE", "XLU", "XLC"]
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Production sleeve weights — SINGLE SOURCE OF TRUTH (v12)
+#  Imported by signal_builder.py (live) AND fast_backtest.py (default config).
+#  Keys: s1_momentum / s7_value / s5_lowvol / s3_sector / s4_inclusion.
+#  Changing weights here changes BOTH live and backtest — no more drift.
+# ══════════════════════════════════════════════════════════════════════════════
+PROD_WEIGHTS_BULL  = {"s1_momentum": 0.50, "s7_value": 0.35, "s5_lowvol": 0.15, "s3_sector": 0.00, "s4_inclusion": 0.00}
+PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.10, "s7_value": 0.30, "s5_lowvol": 0.50, "s3_sector": 0.10, "s4_inclusion": 0.00}
+PROD_WEIGHTS_CRASH = {"s1_momentum": 0.15, "s7_value": 0.45, "s5_lowvol": 0.30, "s3_sector": 0.10, "s4_inclusion": 0.00}
+
 
 def log(msg):
     print(msg, flush=True)
+
+
+def strategy_value(uni, date, members, top_n=10):
+    """Value sleeve — quality + long-term reversal. SINGLE SOURCE OF TRUTH.
+
+    Used identically by live (signal_builder) and backtest (fast_backtest).
+    Filters: ROE > 5%, gross margin > 15%, dist_sma200 > -15%, debt/equity < 3.
+    Score: -ret_252d*0.30 + gross_margin*0.25 + min(ROE, 0.5)*0.25.
+    Returns {symbol: weight} for the top-N, score-proportional (capped 2/N).
+    """
+    roe = uni.get_feature_map(date, "roe", members)
+    gm = uni.get_feature_map(date, "gross_margin", members)
+    r252 = uni.get_feature_map(date, "ret_252d", members)
+    d200 = uni.get_feature_map(date, "dist_sma200", members)
+    de = uni.get_feature_map(date, "debt_to_equity", members)
+    scores = {}
+    for sym in members:
+        r = roe.get(sym); g = gm.get(sym); rv = r252.get(sym)
+        dv = d200.get(sym); debt = de.get(sym)
+        if r is None or g is None or rv is None:
+            continue
+        if np.isnan(r) or np.isnan(g) or np.isnan(rv):
+            continue
+        if r < 0.05 or g < 0.15:
+            continue
+        if dv is None or np.isnan(dv) or dv < -0.15:
+            continue
+        if debt is not None and not np.isnan(debt) and debt > 3.0:
+            continue
+        scores[sym] = -rv * 0.30 + g * 0.25 + min(r, 0.5) * 0.25
+    if not scores:
+        return {}
+    ss = sorted(scores, key=scores.get, reverse=True)[:top_n]
+    sc_vals = [max(scores[s], 0.001) for s in ss]
+    total = sum(sc_vals)
+    if total > 0:
+        weights = {s: min(v / total, 2.0 / len(ss)) for s, v in zip(ss, sc_vals)}
+        wt = sum(weights.values())
+        if wt > 0:
+            weights = {s: w / wt for s, w in weights.items()}
+        return weights
+    return {s: 1.0 / len(ss) for s in ss}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

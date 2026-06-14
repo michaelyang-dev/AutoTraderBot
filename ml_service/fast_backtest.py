@@ -24,7 +24,13 @@ from wrds_data_provider import SP500Membership, WRDSDataProvider
 from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, INITIAL_CASH, COST_BPS,
+    strategy_value, PROD_WEIGHTS_BEAR, PROD_WEIGHTS_CRASH,
 )
+
+# Map shared production weights (live keys) to the short keys this backtest uses.
+_WKEY = {"s1_momentum": "mom", "s7_value": "val", "s5_lowvol": "s5", "s3_sector": "s3"}
+def _short_weights(w):
+    return {_WKEY[k]: v for k, v in w.items() if k in _WKEY}
 
 log = logging.getLogger("fast_backtest")
 
@@ -145,41 +151,8 @@ class FastBacktester:
             self._sp1500_cache[date] = members
         return self._sp1500_cache[date]
 
-    def _strategy_value(self, date, members, top_n=10):
-        uni = self.uni
-        roe = uni.get_feature_map(date, "roe", members)
-        gm = uni.get_feature_map(date, "gross_margin", members)
-        r252 = uni.get_feature_map(date, "ret_252d", members)
-        d200 = uni.get_feature_map(date, "dist_sma200", members)
-        de = uni.get_feature_map(date, "debt_to_equity", members)
-        scores = {}
-        for sym in members:
-            r = roe.get(sym); g = gm.get(sym); rv = r252.get(sym)
-            dv = d200.get(sym); debt = de.get(sym)
-            if r is None or g is None or rv is None:
-                continue
-            if np.isnan(r) or np.isnan(g) or np.isnan(rv):
-                continue
-            if r < 0.05 or g < 0.15:
-                continue
-            if dv is None or np.isnan(dv) or dv < -0.15:
-                continue
-            if debt is not None and not np.isnan(debt) and debt > 3.0:
-                continue
-            scores[sym] = -rv * 0.30 + g * 0.25 + min(r, 0.5) * 0.25
-        if not scores:
-            return {}
-        ss = sorted(scores, key=scores.get, reverse=True)[:top_n]
-        # Score-proportional weights for proper differentiation
-        sc_vals = [max(scores[s], 0.001) for s in ss]
-        total = sum(sc_vals)
-        if total > 0:
-            weights = {s: min(v / total, 2.0 / len(ss)) for s, v in zip(ss, sc_vals)}
-            wt = sum(weights.values())
-            if wt > 0:
-                weights = {s: w / wt for s, w in weights.items()}
-            return weights
-        return {s: 1.0 / len(ss) for s in ss}
+    # NOTE: the value sleeve now lives in multi_strategy_engine.strategy_value()
+    # (shared with live signal_builder — single source of truth). Imported at top.
 
     def _apply_rp(self, picks, date, power=1.0):
         if not picks:
@@ -329,7 +302,7 @@ class FastBacktester:
                 t1 = last_targets.get("mom", {})
 
             members = self.uni.get_sp500(date)
-            t_val = self._strategy_value(date, members, top_n=10)
+            t_val = strategy_value(self.uni, date, members, top_n=10)
             t3 = strategy3_sector_rotation(date, self.uni, day_idx)
             t5 = strategy5_lowvol_quality(date, self.uni, day_idx)
             if t3 is None:
@@ -342,7 +315,7 @@ class FastBacktester:
             nu = self.umd_20d.loc[:date]
             in_crash = len(nu) > 0 and pd.notna(nu.iloc[-1]) and nu.iloc[-1] < -0.05
             if in_crash:
-                ew = {"mom": 0.15, "val": 0.45, "s5": 0.30, "s3": 0.10}
+                ew = _short_weights(PROD_WEIGHTS_CRASH)  # shared with live
             else:
                 ew = {"mom": mom_w, "val": val_w, "s5": lv_w, "s3": sec_w}
 
@@ -352,7 +325,7 @@ class FastBacktester:
             total_f = sum(1 for fd in fdate.values() if "dist_sma50" in fd)
             breadth = above / max(total_f, 1)
             blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
-            bear = config.get("bear_weights", {"mom": 0.10, "val": 0.20, "s5": 0.60, "s3": 0.10})
+            bear = config.get("bear_weights", _short_weights(PROD_WEIGHTS_BEAR))  # shared default (10/30/50/10)
             blended = {n: ew[n] * blend + bear.get(n, 0) * (1 - blend) for n in ew}
 
             combined = {}

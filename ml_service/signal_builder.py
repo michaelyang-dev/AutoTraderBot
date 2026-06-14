@@ -19,31 +19,19 @@ from sp1500_membership import get_sp1500_on_date
 from strategies.multi_strategy_engine import (
     FastUniverse, strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, strategy4_index_inclusion,
-    SECTOR_ETFS,
+    strategy_value, SECTOR_ETFS,
+    PROD_WEIGHTS_BULL, PROD_WEIGHTS_BEAR, PROD_WEIGHTS_CRASH,
 )
 
 # v12 strategy config: 50% momentum, 35% value, 15% low-vol quality
-# Honest backtest (no look-ahead, no SI, start-day averaged, 2018-2025):
-#   25.4% CAGR, 1.00 Sharpe, -26.4% MaxDD at 1x
-#   25-year (2001-2025): 16.9% CAGR, 0.79 Sharpe, -37.1% MaxDD
+# Honest backtest (deployed config, no look-ahead, no SI/enhanced, start-day
+# averaged, 2018-2025): 22.0% CAGR, 0.90 Sharpe, -28.3% MaxDD at 1x.
 # Changes from v11: weights 35/25/40→50/35/15, top_n 8→5, rebal 15→20d,
-#   stop 35%→40%, cap 25%→15%, bear 50%→40%, SI DISABLED (hurts -3pp)
-# With 1.5x leverage target
-STRATEGY_CONFIG_BULL = [
-    ("s1_momentum", 0.50),
-    ("s7_value",    0.35),
-    ("s3_sector",   0.00),
-    ("s4_inclusion", 0.00),
-    ("s5_lowvol",   0.15),
-]
-
-STRATEGY_CONFIG_BEAR = [
-    ("s1_momentum", 0.10),
-    ("s7_value",    0.30),
-    ("s3_sector",   0.10),
-    ("s4_inclusion", 0.00),
-    ("s5_lowvol",   0.50),
-]
+#   stop 35%→40%, cap 25%→15%, SI DISABLED (hurts -3pp).
+# Sleeve weights are now the SINGLE SOURCE in multi_strategy_engine.py
+# (PROD_WEIGHTS_*) — shared with the backtest so they can't drift apart.
+STRATEGY_CONFIG_BULL = list(PROD_WEIGHTS_BULL.items())
+STRATEGY_CONFIG_BEAR = list(PROD_WEIGHTS_BEAR.items())
 
 log = logging.getLogger("signal_server")
 
@@ -437,52 +425,8 @@ def _fill_sector_relative(features, data_dir):
     return features
 
 
-def _strategy_value(uni, date, members, top_n=10):
-    """Value strategy: high-quality stocks with strong fundamentals.
-
-    Matches fast_backtest._strategy_value exactly:
-    - Filters: ROE > 5%, gross margin > 15%, dist_sma200 > -15%, D/E < 3
-    - Scores: -ret_252d * 0.30 + gross_margin * 0.25 + min(ROE, 0.5) * 0.25
-    - Equal-weight top N picks
-    """
-    roe = uni.get_feature_map(date, "roe", members)
-    gm = uni.get_feature_map(date, "gross_margin", members)
-    r252 = uni.get_feature_map(date, "ret_252d", members)
-    d200 = uni.get_feature_map(date, "dist_sma200", members)
-    de = uni.get_feature_map(date, "debt_to_equity", members)
-
-    scores = {}
-    for sym in members:
-        r = roe.get(sym)
-        g = gm.get(sym)
-        rv = r252.get(sym)
-        dv = d200.get(sym)
-        debt = de.get(sym)
-        if r is None or g is None or rv is None:
-            continue
-        if np.isnan(r) or np.isnan(g) or np.isnan(rv):
-            continue
-        if r < 0.05 or g < 0.15:
-            continue
-        if dv is None or np.isnan(dv) or dv < -0.15:
-            continue
-        if debt is not None and not np.isnan(debt) and debt > 3.0:
-            continue
-        scores[sym] = -rv * 0.30 + g * 0.25 + min(r, 0.5) * 0.25
-
-    if not scores:
-        return {}
-    ss = sorted(scores, key=scores.get, reverse=True)[:top_n]
-    # Score-proportional weights for proper differentiation in combined ranking
-    sc_vals = [max(scores[s], 0.001) for s in ss]
-    total = sum(sc_vals)
-    if total > 0:
-        weights = {s: min(v / total, 2.0 / len(ss)) for s, v in zip(ss, sc_vals)}
-        wt = sum(weights.values())
-        if wt > 0:
-            weights = {s: w / wt for s, w in weights.items()}
-        return weights
-    return {s: 1.0 / len(ss) for s in ss}
+# NOTE: the value sleeve now lives in multi_strategy_engine.strategy_value()
+# (shared with the backtest — single source of truth). Imported at top.
 
 
 def build_signals_v9(raw, enhanced_data=None, top_n=5):
@@ -522,7 +466,7 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5):
 
     # Value strategy: uses SP1500 membership for the value stock universe
     members = get_sp1500_on_date(today)
-    t7 = _strategy_value(uni, today, members, top_n=10)
+    t7 = strategy_value(uni, today, members, top_n=10)
 
     targets = {
         "s1_momentum": t1 or {},
@@ -559,12 +503,9 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5):
     except Exception as e:
         log.warning(f"UMD check failed: {e}")
 
-    # Override bull weights during momentum crash (matches backtest exactly)
+    # Override bull weights during momentum crash (shared constant — matches backtest)
     if umd_crash:
-        crash_weights = {
-            "s1_momentum": 0.15, "s7_value": 0.45,
-            "s5_lowvol": 0.30, "s3_sector": 0.10, "s4_inclusion": 0.00,
-        }
+        crash_weights = PROD_WEIGHTS_CRASH
     else:
         crash_weights = None
 
