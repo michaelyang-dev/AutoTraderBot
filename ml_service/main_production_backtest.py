@@ -208,6 +208,7 @@ class FastBacktester:
         s4_active = {}
         gld_shares = 0
         vixm_shares = 0
+        self._stop_events = []  # research: populated when config["log_stops"] is set
 
         if vixm_pct > 0 and trading_dates[0] in self.etf_df.index and "VIXM" in self.etf_df.columns:
             vp = self.etf_df.loc[trading_dates[0], "VIXM"]
@@ -237,6 +238,12 @@ class FastBacktester:
                             holdings[sym]["peak_px"] = px
                         dd = (px - holdings[sym]["peak_px"]) / holdings[sym]["peak_px"]
                         if dd < -abs(trailing_stop):
+                            if config.get("log_stops"):
+                                self._stop_events.append({
+                                    "date": date, "sym": sym, "stop_px": px,
+                                    "peak_px": holdings[sym]["peak_px"],
+                                    "entry_px": holdings[sym]["entry_px"],
+                                })
                             cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                             del holdings[sym]
 
