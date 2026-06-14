@@ -199,6 +199,7 @@ class FastBacktester:
         trailing_stop = config.get("trailing_stop", None)  # e.g., -0.20
         vol_scaling = config.get("vol_scaling", False)
         vol_target = config.get("vol_target", 0.20)
+        vol_lookback = config.get("vol_lookback", 40)
         recent_rets = []
 
         cash = INITIAL_CASH
@@ -209,6 +210,7 @@ class FastBacktester:
         gld_shares = 0
         vixm_shares = 0
         self._stop_events = []  # research: populated when config["log_stops"] is set
+        self._gross_traded = 0.0  # research: cumulative $ traded (turnover measurement)
 
         if vixm_pct > 0 and trading_dates[0] in self.etf_df.index and "VIXM" in self.etf_df.columns:
             vp = self.etf_df.loc[trading_dates[0], "VIXM"]
@@ -266,7 +268,7 @@ class FastBacktester:
                 prev = port_values[-1][1]
                 if prev > 0:
                     recent_rets.append(total_val / prev - 1)
-                    if len(recent_rets) > 40:
+                    if len(recent_rets) > vol_lookback:
                         recent_rets.pop(0)
 
             if day_idx % rebal_days != 0:
@@ -381,6 +383,7 @@ class FastBacktester:
             for sym in list(holdings):
                 if sym not in target_d:
                     px = today.get(sym, holdings[sym]["entry_px"])
+                    self._gross_traded += holdings[sym]["shares"] * px
                     cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                     del holdings[sym]
 
@@ -392,6 +395,7 @@ class FastBacktester:
                 delta = tgt - cur
                 if abs(delta) < total_val * 0.003:
                     continue
+                self._gross_traded += abs(delta)
                 cost = abs(delta) * cost_frac
                 if delta > 0 and cash >= delta:
                     shares = (delta - cost) / px
