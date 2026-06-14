@@ -421,6 +421,45 @@ The strategy is at its efficient frontier with available data. Every signal-leve
 
 ## Project Structure
 
+### File roles at a glance
+
+The codebase has four kinds of files. The thing that ties it together: the **strategy logic lives once** in `strategies/multi_strategy_engine.py` (the momentum/value/low-vol sleeves + regime weights), and is imported by *both* the live signal builder and the backtester — so they can't drift apart.
+
+```
+        strategies/multi_strategy_engine.py   ← THE strategy (single source of truth)
+                  │
+        ┌─────────┴─────────┐
+        ↓                   ↓
+  signal_builder.py    fast_backtest.py
+   (LIVE signals)       (BACKTEST)
+```
+
+**1. LIVE — trades real money (runs 24/7 on AWS under PM2):**
+
+| File | What it does |
+|------|--------------|
+| `strategies/multi_strategy_engine.py` | **The strategy brain.** Momentum/value/low-vol sleeve functions + `PROD_WEIGHTS_*` regime weights. Shared with the backtest. |
+| `signal_builder.py` | Live harness — runs the brain on live data, applies regime blend + 15% cap, outputs ~22 ranked BUY signals. |
+| `signal_server.py` | FastAPI server (port 5001). Refreshes signals every 15 min; serves `/signals` and `/health`. |
+| `ibkr_engine.py` | IBKR **live** engine (Python/asyncio) — trades the $30K account. |
+| `server/tradingEngine.js` | Alpaca **paper** engine (Node.js) — the $1.3M shadow account. |
+| `massive_data_provider.py`, `wrds_data_provider.py`, `scrape_sp1500.py`, `sp1500_membership.py`, `sp500_history.py` | Data + universe (Polygon prices, WRDS Fama-French/FRED, S&P 1500 membership). |
+| `scripts/refresh_data.py` | Daily 5:30 PM cron — refreshes prices, fundamentals, VIX, Fama-French. |
+
+**2. BACKTEST — validates the strategy:**
+
+| File | What it does |
+|------|--------------|
+| `fast_backtest.py` | **THE canonical backtester.** Imports the same strategy brain as live. Produces the official 22.0% number. |
+| `research/v12_ground_truth.py` | Reproduces the deployed number cleanly (enhanced/SI cleared). Run this to verify the headline figure. |
+| `research/locate_v12_number.py`, `research/compare_v12_bear_configs.py` | Audit scripts (traced the old inflated 25.4%, compared bear weights). |
+
+**3. RESEARCH — archive of (mostly rejected) experiments:** ~107 scripts in `research/` plus standalone files like `crypto_momentum_backtest.py`, `factor_timing_backtest.py`, `ml_enhance_test.py`. Historical record only — not run in normal operation. See [Research Findings](#research-findings).
+
+**4. DORMANT — built but disabled:** `edgar_realtime.py`, `event_short_manager.py`, `event_detector.py`, `xbrl_detector.py` (the short sleeve — all short strategies lose money; kept for data collection only).
+
+### Full tree
+
 ```
 AutoTraderBot/
 ├── .env                              ← API keys (not in git)
@@ -436,10 +475,10 @@ AutoTraderBot/
 │   └── grafanaMetrics.js             ← Metrics endpoint
 │
 ├── ml_service/
-│   ├── signal_builder.py             ← Core: signal generation (v12 config)
-│   ├── signal_server.py              ← FastAPI server (/signals, /health)
-│   ├── ibkr_engine.py                ← IBKR trading engine (async, ib_insync)
-│   ├── fast_backtest.py              ← Production backtester
+│   ├── signal_builder.py             ← LIVE: signal harness (v12 config, uses shared brain)
+│   ├── signal_server.py              ← LIVE: FastAPI server (/signals, /health)
+│   ├── ibkr_engine.py                ← LIVE: IBKR trading engine (async, ib_insync)
+│   ├── fast_backtest.py              ← BACKTEST: the one canonical backtester
 │   ├── wrds_universe.py              ← Universe builder from WRDS data
 │   ├── wrds_data_provider.py         ← WRDS data loading (FF, FRED)
 │   ├── massive_data_provider.py      ← Polygon/Massive price data
@@ -450,7 +489,8 @@ AutoTraderBot/
 │   ├── event_short_manager.py        ← Short sleeve manager (disabled)
 │   │
 │   ├── strategies/
-│   │   ├── multi_strategy_engine.py  ← Strategy functions (momentum, value, lowvol, sector)
+│   │   ├── multi_strategy_engine.py  ← THE STRATEGY BRAIN (shared by live + backtest):
+│   │   │                                sleeves + strategy_value() + PROD_WEIGHTS_*
 │   │   ├── alpha_engine.py           ← ML alpha pipeline (research)
 │   │   └── xgboost_ranker.py         ← XGBoost ranking model (research)
 │   │
@@ -609,7 +649,7 @@ tail -3 logs/refresh_data.log
 - **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
 - **Single-country exposure:** SP1500 only (US equities). No international diversification.
 - **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
-- **Backtest/live code duplication (drift risk):** The momentum and low-vol sleeves are *shared* code (`strategies/multi_strategy_engine.py`, imported by both `fast_backtest.py` and `signal_builder.py`). But the **value sleeve** (`_strategy_value`) and the **regime/bear-blend** logic are written *twice* — once in each file. This is how a bear-weight drift crept in (backtest had 10/20/60, live had 10/30/50; both tested ~equal, backtest now parameterized to match live's 10/30/50). Any future change to the value sleeve or regime weights must be made in BOTH files. Consolidating these into the shared module is recommended.
+- **Backtest/live code is now unified (June 2026):** Previously the value sleeve and regime weights were written *twice* (in `signal_builder.py` and `fast_backtest.py`), which caused a bear-weight drift (backtest 10/20/60 vs live 10/30/50 — both tested ~equal, live kept). These have been **consolidated** into `strategies/multi_strategy_engine.py` as `strategy_value()` and `PROD_WEIGHTS_BULL/BEAR/CRASH` — a single source of truth imported by both. Change a weight once, it changes everywhere. Verified: backtest unchanged (22.0%) and live signals byte-identical after the refactor.
 - **Reproducibility:** Running `python fast_backtest.py` directly executes its hardcoded `configs` list (currently old v10 experiments), NOT the deployed v12. To reproduce the deployed numbers, use `research/v12_ground_truth.py`, which runs the exact v12 config with enhanced/SI cleared.
 
 ### Future Research Directions
