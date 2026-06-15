@@ -351,6 +351,13 @@ class IBKREngine:
 
         await self.update_positions()
 
+        # Prune orphan peaks for stocks no longer held — prevents a stale high peak
+        # from a prior stint causing an immediate/loose stop if the name is re-bought.
+        # Guard on non-empty positions so a transient empty fetch can't nuke live peaks.
+        if self.positions:
+            for orphan in [s for s in list(self.trailing_peaks) if s not in self.positions]:
+                del self.trailing_peaks[orphan]
+
         for sym, pos in list(self.positions.items()):
             contract = pos.get("contract")
             if not contract:
