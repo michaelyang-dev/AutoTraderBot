@@ -12,6 +12,9 @@ const notify = require("./notifications");
 const journal = require("../db/journal");
 const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
 
+// Throttle the per-cycle [regime] diagnostic: log only on change or hourly
+let _regimeLog = { last: null, ts: 0 };
+
 // ══════════════════════════════════════════
 //  CONSTANTS (inlined from frontend config)
 // ══════════════════════════════════════════
@@ -1774,10 +1777,14 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         } catch (_) {}
       }
 
-      // Regime diagnostic: log SPY price vs SMAs every cycle for debugging
+      // Regime diagnostic: log only when the regime changes or hourly (was every cycle = log spam)
       if (regimeResult.sma50 !== null && regimeResult.sma200 !== null) {
-        const spyNow = priceHist.SPY?.[priceHist.SPY.length - 1];
-        addLog(`[regime] SPY $${spyNow?.toFixed(2)} | SMA50 $${regimeResult.sma50.toFixed(2)} | SMA200 $${regimeResult.sma200.toFixed(2)} | bars: ${priceHist.SPY?.length || 0} | result: ${regimeResult.regime} | applied: ${regime}`, "system");
+        const now = Date.now();
+        if (regime !== _regimeLog.last || now - _regimeLog.ts > 3600000) {
+          const spyNow = priceHist.SPY?.[priceHist.SPY.length - 1];
+          addLog(`[regime] SPY $${spyNow?.toFixed(2)} | SMA50 $${regimeResult.sma50.toFixed(2)} | SMA200 $${regimeResult.sma200.toFixed(2)} | bars: ${priceHist.SPY?.length || 0} | result: ${regimeResult.regime} | applied: ${regime}`, "system");
+          _regimeLog = { last: regime, ts: now };
+        }
       }
 
       // Market open transition notification
