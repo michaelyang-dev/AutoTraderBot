@@ -241,15 +241,6 @@ class MassiveDataProvider:
         data = self._api_get(f"/v3/reference/tickers/{symbol}")
         return data.get("results", {})
 
-    # ── Financials ───────────────────────────────────────────────────────────
-
-    def fetch_financials(self, symbol: str, limit: int = 10) -> list:
-        """Fetch quarterly/annual financials from Polygon."""
-        data = self._api_get(f"/vX/reference/financials",
-                             params={"ticker": symbol, "limit": limit,
-                                     "include_sources": "false"})
-        return data.get("results", [])
-
     # ── Sector Mapping (replaces yfinance Ticker.info) ─────────────────────
 
     def build_sector_map(self, symbols: list) -> dict:
