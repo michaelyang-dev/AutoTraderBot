@@ -168,6 +168,23 @@ class FastBacktester:
         t = sum(inv.values())
         return {s: v / t for s, v in inv.items()} if t > 0 else picks
 
+    def _record_sale(self, h, n_shares, px, date):
+        """Research-only: consume FIFO lots for n_shares sold at px; log realized
+        gain + holding days. Never touches NAV math (shares/entry_px untouched)."""
+        if not self._track_tax:
+            return
+        remaining = n_shares
+        lots = h.get("lots", [])
+        while remaining > 1e-9 and lots:
+            lot = lots[0]
+            take = min(lot[0], remaining)
+            self._tax_events.append({"gain": take * (px - lot[1]),
+                                     "days": (date - lot[2]).days})
+            lot[0] -= take
+            remaining -= take
+            if lot[0] <= 1e-9:
+                lots.pop(0)
+
     def run(self, start="2018-01-01", end="2025-12-31", config=None):
         if config is None:
             config = {}
@@ -211,6 +228,8 @@ class FastBacktester:
         vixm_shares = 0
         self._stop_events = []  # research: populated when config["log_stops"] is set
         self._gross_traded = 0.0  # research: cumulative $ traded (turnover measurement)
+        self._track_tax = bool(config.get("track_tax"))  # research: FIFO lot tax tracking
+        self._tax_events = []  # research: realized {gain, days} per FIFO lot sold
 
         if vixm_pct > 0 and trading_dates[0] in self.etf_df.index and "VIXM" in self.etf_df.columns:
             vp = self.etf_df.loc[trading_dates[0], "VIXM"]
@@ -246,6 +265,7 @@ class FastBacktester:
                                     "peak_px": holdings[sym]["peak_px"],
                                     "entry_px": holdings[sym]["entry_px"],
                                 })
+                            self._record_sale(holdings[sym], holdings[sym]["shares"], px, date)
                             cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                             del holdings[sym]
 
@@ -383,6 +403,7 @@ class FastBacktester:
             for sym in list(holdings):
                 if sym not in target_d:
                     px = today.get(sym, holdings[sym]["entry_px"])
+                    self._record_sale(holdings[sym], holdings[sym]["shares"], px, date)
                     self._gross_traded += holdings[sym]["shares"] * px
                     cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                     del holdings[sym]
@@ -401,11 +422,16 @@ class FastBacktester:
                     shares = (delta - cost) / px
                     if sym in holdings:
                         holdings[sym]["shares"] += shares
+                        if self._track_tax:
+                            holdings[sym].setdefault("lots", []).append([shares, px, date])
                     else:
                         holdings[sym] = {"shares": shares, "entry_px": px, "peak_px": px}
+                        if self._track_tax:
+                            holdings[sym]["lots"] = [[shares, px, date]]
                     cash -= delta
                 elif delta < 0 and sym in holdings:
                     sell = min(abs(delta) / px, holdings[sym]["shares"])
+                    self._record_sale(holdings[sym], sell, px, date)
                     cash += sell * px - cost
                     holdings[sym]["shares"] -= sell
                     if holdings[sym]["shares"] < 0.01:
