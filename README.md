@@ -2,13 +2,15 @@
 
 Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P 1500 universe through Interactive Brokers and Alpaca with 1.5x margin leverage. Fully automated data pipeline, signal generation, order execution, risk management, and monitoring.
 
-**Honest backtest (2018-2025, deployed config, no look-ahead, start-day averaged, 10bps costs):**
+**Honest backtest (deployed config, no look-ahead, start-day averaged, 10bps costs). Two horizons — read both:**
 
-| Metric | At 1x | At ~1.49x leverage (live) |
-|--------|-------|---------------------------|
-| **CAGR** | 22.0% +/- 2.5% | ~30-32% (estimated, not simulated) |
-| **Sharpe** | 0.90 | ~0.90 |
-| **Max Drawdown** | -28.3% | ~-42% (estimated) |
+| Metric (at 1x) | Recent regime (2018-2025) | Through-cycle (2000-2025) |
+|--------|---------------------------|---------------------------|
+| **CAGR** | 22.0% +/- 2.5% | ~11-13.5% |
+| **Sharpe** | 0.90 | ~0.63 |
+| **Max Drawdown** | -28.3% | **-59%** (GFC); ~-47% with the live vol-scaling overlay |
+
+> **Why two numbers, and which to believe.** The 22% is real but it's a *favorable-regime* number — 2018-2025 was a momentum-friendly, mega-cap-tech-led market with no sustained bear. Extend the same strategy back across **26 years** (including the 2000-02 dot-com bust and the 2008 GFC) and the honest through-cycle CAGR is **low-teens at 1x, with a ~-59% drawdown** in the GFC (the 15% low-vol sleeve barely dents a real deleveraging bear; the live vol-scaling overlay cuts it to ~-47% for ~2pp of CAGR). The pre-2010 market is **structurally different** (different liquidity, sector mix, and no AI/mega-cap momentum regime), so treat the 26-year figure as a *through-cycle stress lens*, not a prediction — and the 22% as the *good-times* case. The truth forward is regime-dependent and lands between them. **Plan with the conservative number; the −59% is why leverage stays modest** (a −59% 1x drawdown is ruin at 1.49x).
 
 > **These numbers reflect the ACTUAL deployed config** (enhanced data OFF, short interest OFF), verified June 2026 by re-running the backtest with the exact data the live system uses. An earlier claim of 25.4% CAGR / 1.00 Sharpe was **inflated** — it came from a run with enhanced data + short interest *enabled* using static (look-ahead-biased) snapshots, neither of which is used in production. See [Backtest Results](#backtest-results).
 
@@ -290,7 +292,7 @@ SIGNAL_SERVER_PORT=5001
 ### Methodology
 
 - **Universe:** S&P 1500 (point-in-time membership from WRDS)
-- **Period:** 2018-2025 (also tested 2001-2025 on 25-year universe)
+- **Period:** 2018-2025 primary (curated universe); 2000-2025 through-cycle stress test on the long-history universe (see [26-Year Through-Cycle Results](#26-year-through-cycle-results-2000-2025-at-1x-deployed-config))
 - **Look-ahead prevention:** All snapshot data (fin_growth, ev_data, estimates, price_targets, revenue_surprise, beat_streak, earnings_signals, short interest) is cleared before backtesting
 - **Transaction costs:** 10bps round-trip (5bps commission + 5bps slippage)
 - **Robustness:** 7-day start-day averaging to control for start-date sensitivity
@@ -333,15 +335,29 @@ The backtest was re-run with the v12 config under 4 data conditions to confirm w
 | 2024 | +49.5% | +25.6% | +23.9pp |
 | 2025 | +17.2% | +18.0% | -0.8pp |
 
-### 25-Year Results (2001-2025, at 1x)
+### 26-Year Through-Cycle Results (2000-2025, at 1x, deployed config)
 
-| Metric | Value |
-|--------|-------|
-| CAGR | 16.9% +/- 1.3% |
-| Sharpe | 0.79 |
-| Max Drawdown | -37.1% |
+Run on the long-history universe (`sp1500_universe_2000.pkl`, 1,743 names back to 2000), 3-start-day averaged. This window contains the two sustained bears the 2018-2025 sample lacks — the dot-com bust and the GFC — and is the real stress test.
 
-> Caveat: this 25-year figure predates the June 2026 data-condition correction and may also be slightly optimistic (it likely included the same enhanced/SI data). Re-run with the deployed config (`research/v12_ground_truth.py` extended to 2001) to confirm. The 2018-2025 correction (25.4% → 22.0%) suggests the true 25-year number is modestly lower than 16.9%.
+| Metric | Baseline | + vol-scaling overlay (live) |
+|--------|----------|------------------------------|
+| **CAGR** | ~13.5% (11.0% canonical start) | ~9-11% |
+| **Sharpe** | 0.63 | 0.54 |
+| **Max Drawdown** | **-59%** | **-47%** |
+
+**Crash-window drawdowns (1x):**
+
+| Window | Drawdown | Vol-scaling helped? |
+|--------|----------|---------------------|
+| Dot-com (2000-02) | -29% | No (slow grind, low realized vol never triggered de-risk) |
+| **GFC (2008-09)** | **-59% → -47%** | Yes (fast high-vol crash) |
+| COVID (2020) | -46% → -31% | Yes |
+| 2022 bear | -29% | — |
+
+**Two findings from the long horizon:**
+
+1. **The recent 22% is regime, not edge.** True through-cycle CAGR is low-teens with brutal (-47% to -59%) crash drawdowns. Momentum gets crushed in a real deleveraging bear regardless of the low-vol sleeve. The vol-scaling overlay is validated against a real GFC (cuts the worst drawdown ~12pp) — but only for fast, high-vol crashes, not slow grinds.
+2. **Sleeve-weight tweaks don't add edge.** Over 26 years, deployed 50/35/15, 60/40 mom/val, and pure-momentum are **statistically identical** (~13.5% CAGR, Sharpe 0.61-0.63, -59% MaxDD). A 60/40 tilt looks better *only* in-sample (2018-2025: 20.9% vs 18.6%) but is **worse out-of-sample** (2000-2017, which the config was never tuned on: 7.3% vs 7.7%, Sharpe 0.42 vs 0.44). Textbook recent-regime overfit — the deployed config is retained. See `research/phase6_6040_longhorizon.py`.
 
 ---
 
@@ -645,7 +661,7 @@ tail -3 logs/refresh_data.log
 - **Concentration risk:** 50% in the momentum sleeve with only 5 picks. Max single position drifts to ~44% between rebalances. Bootstrap analysis shows n=5 vs n=10 Sharpe is statistically indistinguishable — concentration is a risk choice, not a return advantage.
 - **Statistical significance:** Paired bootstrap shows the strategy's Sharpe advantage over SPY buy-and-hold is NOT statistically significant on 8 years of data (Sharpe diff CI: [-0.45, +0.75]). The point estimate favors the strategy (+0.19 Sharpe) but the confidence interval includes zero. 25-year data narrows the interval but still doesn't achieve significance.
 - **Cost sensitivity:** Annual turnover ~1,100%. At realistic 20bps round-trip costs (vs 10bps in backtest), cost drag is ~2.2% annually. This is the highest-leverage variable — every additional 10bps costs ~1.1% of return.
-- **Regime dependence:** The n=5 concentration advantage exists mainly in the 2019-2024 AI/megacap momentum era. On pre-2018 data, broader portfolios perform similarly. The strategy may underperform in a different regime.
+- **Regime dependence (the big one):** The headline 22% CAGR is a *favorable-regime* number. Over the full 2000-2025 cycle the same strategy earns only **low-teens at 1x with -47% to -59% crash drawdowns** — the 2018-2025 era was momentum-friendly with no sustained bear. The pre-2010 market is structurally different (liquidity, sector mix, no mega-cap momentum regime), so the recent edge may not persist. Plan with the through-cycle number, not the recent one. The n=5 concentration advantage likewise exists mainly in the 2019-2024 era; on pre-2018 data broader portfolios perform similarly.
 - **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
 - **Single-country exposure:** SP1500 only (US equities). No international diversification.
 - **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
