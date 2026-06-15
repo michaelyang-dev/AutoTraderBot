@@ -114,6 +114,7 @@ def send_telegram(msg):
 
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
 NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
+DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
 
 class IBKREngine:
     def __init__(self):
@@ -185,6 +186,30 @@ class IBKREngine:
                 json.dump(hist, f)
         except Exception:
             pass
+
+    # ── Disconnect alerting (suppress brief blips, escalate real outages) ──
+    def _on_disconnect_detected(self):
+        """Track outage start. Stay SILENT for brief blips; send ONE loud,
+        actionable alert only once the Gateway has been down past the escalate
+        threshold (the signature of an IBKR forced-2FA login that needs you)."""
+        now = datetime.now()
+        if self._disconnect_since is None:
+            self._disconnect_since = now
+        down_secs = (now - self._disconnect_since).total_seconds()
+        if down_secs >= DISCONNECT_ESCALATE_SECS and not self._escalated:
+            self._escalated = True
+            send_telegram(
+                f"🔴 IBKR Gateway still DOWN after {int(down_secs/60)} min — likely needs your 2FA.\n"
+                f"Open the IBKR mobile app (IB Key) and approve the login, or the bot can't trade."
+            )
+
+    def _on_reconnect(self):
+        """Reset outage state. Only confirm recovery if we'd escalated (i.e., it
+        was a real outage you were alerted about) — brief blips stay silent."""
+        if self._escalated:
+            send_telegram("🟢 IBKR reconnected — Gateway back online, trading resumed.")
+        self._disconnect_since = None
+        self._escalated = False
 
     def compute_vol_scale(self):
         """Scale effective leverage down when realized portfolio vol > VOL_TARGET.
@@ -791,6 +816,8 @@ class IBKREngine:
 
         self.running = True
         cycle = 0
+        self._disconnect_since = None   # outage tracking for escalating alerts
+        self._escalated = False
 
         while self.running:
             try:
@@ -799,13 +826,13 @@ class IBKREngine:
                 # Check IB connection health every cycle — reconnect if dropped
                 if not self.ib.isConnected():
                     log.warning("IB connection lost in main loop — reconnecting...")
-                    send_telegram(f"⚠️ IBKR connection lost, reconnecting...")
+                    self._on_disconnect_detected()  # silent for brief blips; escalates if >15 min
                     try:
                         await self.connect()
                         self.ib.reqGlobalCancel()
                         await asyncio.sleep(2)
                         log.info("Reconnected successfully — cancelled pending orders")
-                        send_telegram(f"🟢 IBKR reconnected")
+                        self._on_reconnect()
                     except Exception as ce:
                         log.error(f"Reconnect failed: {ce}")
                         await asyncio.sleep(60)
@@ -877,7 +904,7 @@ class IBKREngine:
                 # Auto-reconnect if connection dropped
                 if not self.ib.isConnected():
                     log.warning("IB connection lost — reconnecting in 30s...")
-                    send_telegram(f"⚠️ IBKR connection lost, reconnecting...")
+                    self._on_disconnect_detected()  # silent for brief blips; escalates if >15 min
                     await asyncio.sleep(30)
                     try:
                         await self.connect()
@@ -885,7 +912,7 @@ class IBKREngine:
                         self.ib.reqGlobalCancel()
                         await asyncio.sleep(2)
                         log.info("Reconnected successfully — cancelled pending orders")
-                        send_telegram(f"🟢 IBKR reconnected, pending orders cancelled")
+                        self._on_reconnect()
                     except Exception as ce:
                         log.error(f"Reconnect failed: {ce}")
                 else:
