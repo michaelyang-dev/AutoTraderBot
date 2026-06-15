@@ -950,18 +950,33 @@ class IBKREngine:
         out = ["💰 P&L\n"]
         try:
             s = await self._ibkr_snapshot()
-            since = s["nav"] - IBKR_INITIAL_CAPITAL
-            out.append(f"🟢 IBKR LIVE\nNAV ${s['nav']:,.0f}\nUnrealized ${s['upl']:+,.0f}\n"
-                       f"Since ${IBKR_INITIAL_CAPITAL/1000:.0f}K funding: ${since:+,.0f} "
-                       f"({since/IBKR_INITIAL_CAPITAL*100:+.1f}%)")
+            nav = s["nav"]
+            line = f"🟢 IBKR LIVE\nNAV ${nav:,.0f}\n"
+            # daily change from persisted NAV history (most recent prior trading day)
+            hist = self._load_nav_history()
+            today = datetime.now().date().isoformat()
+            prev = [p for p in hist if p[0] != today]
+            if prev and prev[-1][1]:
+                d = nav - prev[-1][1]
+                line += f"Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)\n"
+            else:
+                line += "Today: n/a (building NAV history)\n"
+            line += f"Unrealized ${s['upl']:+,.0f}\n"
+            since = nav - IBKR_INITIAL_CAPITAL
+            line += f"Since ${IBKR_INITIAL_CAPITAL/1000:.0f}K funding: ${since:+,.0f} ({since/IBKR_INITIAL_CAPITAL*100:+.1f}%)"
+            out.append(line)
         except Exception as e:
             out.append(f"🟢 IBKR — error: {e}")
-        acct = self._alpaca_get("/v2/account")
+        acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
         if acct:
             eq = float(acct.get("equity", 0)); le = float(acct.get("last_equity", 0))
-            day = eq - le
-            out.append(f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f}\n"
-                       + (f"Today ${day:+,.0f} ({day/le*100:+.2f}%)" if le else ""))
+            line = f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f}\n"
+            if le:
+                d = eq - le
+                line += f"Today ${d:+,.0f} ({d/le*100:+.2f}%)\n"
+            if poss:
+                line += f"Unrealized ${sum(float(p['unrealized_pl']) for p in poss):+,.0f}"
+            out.append(line.rstrip())
         return "\n".join(out)
 
     async def _cmd_status(self):
