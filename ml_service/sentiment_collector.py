@@ -51,13 +51,14 @@ except Exception:
 
 def load_env():
     env = dict(os.environ)
-    f = BASE / ".env"
-    if f.exists():
-        for line in f.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                env.setdefault(k.strip(), v.strip())
+    # check ml_service/.env and the repo-root .env (keys live at repo root here)
+    for f in (BASE / ".env", BASE.parent / ".env"):
+        if f.exists():
+            for line in f.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    env.setdefault(k.strip(), v.strip())
     return env
 
 
