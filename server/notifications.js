@@ -154,7 +154,7 @@ async function flush() {
   }
 
   const header = escapeHtml(deriveSubject(messages));
-  const body = `<b>AutoTrader: ${header}</b>\n\n${messages.map(m => escapeHtml(m)).join("\n\n")}`;
+  const body = `<b>🔵 AutoTrader [ALPACA PAPER]: ${header}</b>\n\n${messages.map(m => escapeHtml(m)).join("\n\n")}`;
 
   await sendTelegram(body);
   sendTimestamps.push(Date.now());

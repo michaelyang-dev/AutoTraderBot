@@ -1184,6 +1184,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let pricePollInterval = null;
   let tradeCycleInterval = null;
   let prevMlStatus = "down";
+  let mlDownStreak = 0;               // consecutive non-ok signal polls (debounce false alarms)
+  const ML_ALERT_AFTER = 3;          // only alert after this many consecutive failures
   let prevMarketOpen = false;
   let dailyStats = {
     date: null, buys: 0, sells: 0, wins: 0, losses: 0,
@@ -1738,11 +1740,22 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         mlStatus = "down";
       }
 
-      // ML status transition notifications
-      if (prevMlStatus === "ok" && mlStatus !== "ok") {
-        notify.send("🚨 SIGNAL SERVER DOWN — falling back to consensus engine. Check pm2 logs.", { deduplicate: true, immediate: true });
-      } else if (prevMlStatus !== "ok" && mlStatus === "ok") {
-        notify.send("✅ SIGNAL SERVER RECOVERED — v10 signals active again.", { immediate: true });
+      // Signal-server status alerts — debounced (no false alarm on a single blip) and accurate:
+      // distinguish STALE (server up, data old) from UNREACHABLE, and say what actually happens
+      // (the engine HOLDS current positions and opens no new ones — it does NOT trade a fallback).
+      if (mlStatus === "ok") {
+        if (mlDownStreak >= ML_ALERT_AFTER && marketOpen) {
+          notify.send("✅ Signal server OK again — v12 signals live.", { immediate: true });
+        }
+        mlDownStreak = 0;
+      } else {
+        mlDownStreak++;
+        if (mlDownStreak === ML_ALERT_AFTER && marketOpen) {
+          const why = mlStatus === "stale"
+            ? "signals are STALE (server is up but data isn't refreshing)"
+            : "signal server is UNREACHABLE";
+          notify.send(`⚠️ ${why} — holding current positions, no new buys until it recovers. (Check: pm2 logs signal-server)`, { deduplicate: true, immediate: true });
+        }
       }
       prevMlStatus = mlStatus;
 
@@ -1790,7 +1803,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Market open transition notification
       if (marketOpen && !prevMarketOpen) {
         const buyCount = mlSignals ? mlSignals.filter(s => s.signal === "BUY").length : 0;
-        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v10 signals: ${buyCount} BUY.`);
+        notify.send(`🔔 MARKET OPEN — Bot is trading. Regime: ${regime}. v12 signals: ${buyCount} BUY.`);
       }
 
       // Market CLOSE transition — record daily snapshot

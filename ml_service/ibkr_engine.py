@@ -107,7 +107,9 @@ def send_telegram(msg):
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": msg}, timeout=10)
+        # Tag every message with the engine so IBKR vs Alpaca is unambiguous
+        tag = "🟢 [IBKR LIVE] " if IB_PORT == 4001 else "🟡 [IBKR PAPER] "
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": tag + str(msg)}, timeout=10)
     except Exception:
         pass  # never crash trading loop for telegram
 
@@ -446,8 +448,12 @@ class IBKREngine:
         filled = trade.orderStatus.filled
         price = trade.orderStatus.avgFillPrice
 
-        log.info(f"SELL {sell_qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
-        send_telegram(f"📉 SELL {sell_qty} {symbol} @ ${price:.2f} | {reason}")
+        if price and price > 0:
+            log.info(f"SELL {sell_qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
+            send_telegram(f"📉 SELL {sell_qty} {symbol} @ ${price:.2f} | {reason}")
+        else:
+            log.info(f"SELL {sell_qty} {symbol}: {status} filled={filled} — market order, fill pending ({reason})")
+            send_telegram(f"📉 SELL {sell_qty} {symbol} — market order submitted, fill pending | {reason}")
 
         # Clean up tracking
         if symbol in self.trailing_peaks:
@@ -475,8 +481,13 @@ class IBKREngine:
         filled = trade.orderStatus.filled
         price = trade.orderStatus.avgFillPrice
 
-        log.info(f"BUY {qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
-        send_telegram(f"📈 BUY {qty} {symbol} @ ${price:.2f} | {reason}")
+        if price and price > 0:
+            log.info(f"BUY {qty} {symbol}: {status} filled={filled} @ ${price:.2f} ({reason})")
+            send_telegram(f"📈 BUY {qty} {symbol} @ ${price:.2f} | {reason}")
+        else:
+            # Market order not filled within the wait (e.g., queued pre-open) — avgFillPrice is 0.
+            log.info(f"BUY {qty} {symbol}: {status} filled={filled} — market order, fill pending ({reason})")
+            send_telegram(f"📈 BUY {qty} {symbol} — market order submitted, fill pending | {reason}")
 
         return trade
 
