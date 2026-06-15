@@ -69,11 +69,16 @@ def load_universe():
         if p.exists():
             try:
                 d = json.loads(p.read_text())
-                if isinstance(d, dict):
-                    members = d.get("members") or d.get("tickers") or list(d.keys())
-                    return set(members)
                 if isinstance(d, list):
                     return set(d)
+                if isinstance(d, dict):
+                    # union every list-of-tickers value (handles {sp500:[...],sp400:[...],sp600:[...]})
+                    tickers = set()
+                    for v in d.values():
+                        if isinstance(v, list):
+                            tickers.update(x for x in v if isinstance(x, str))
+                    if tickers:
+                        return tickers
             except Exception:
                 pass
     return None
