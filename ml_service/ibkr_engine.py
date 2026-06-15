@@ -840,13 +840,26 @@ class IBKREngine:
     # ═══════════════════════════════════════════════════════════════
     # TELEGRAM COMMAND BOT  (read-only — cannot place trades)
     # ═══════════════════════════════════════════════════════════════
-    def _tg_send_raw(self, text):
-        """Send a plain reply to the Telegram chat (no engine prefix)."""
+    def _tg_send_raw(self, text, chat_id=None):
+        """Send a plain reply to a Telegram chat (defaults to the primary chat)."""
         try:
             requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                          json={"chat_id": TELEGRAM_CHAT, "text": text}, timeout=10)
+                          json={"chat_id": chat_id or TELEGRAM_CHAT, "text": text}, timeout=10)
         except Exception:
             pass
+
+    def _tg_allowed_chats(self):
+        """Chat IDs allowed to use the command bot. Live-editable via
+        data/telegram_allowed.json (a JSON list of IDs) — no restart needed.
+        Defaults to just the primary chat if the file is absent."""
+        import json
+        f = Path(__file__).resolve().parent / "data" / "telegram_allowed.json"
+        try:
+            if f.exists():
+                return set(str(c) for c in json.load(open(f)))
+        except Exception:
+            pass
+        return {str(TELEGRAM_CHAT)} if TELEGRAM_CHAT else set()
 
     def _alpaca_get(self, path):
         """GET the Alpaca paper API; returns parsed JSON or None."""
@@ -998,26 +1011,42 @@ class IBKREngine:
                 offset = ups[-1]["update_id"] + 1
         except Exception:
             pass
-        log.info("Telegram command bot started (read-only)")
+        # seed the allowlist file with the primary chat so it exists + is easy to extend
+        af = Path(__file__).resolve().parent / "data" / "telegram_allowed.json"
+        if not af.exists() and TELEGRAM_CHAT:
+            try:
+                import json
+                json.dump([str(TELEGRAM_CHAT)], open(af, "w"))
+            except Exception:
+                pass
+        log.info("Telegram command bot started (read-only, multi-user allowlist)")
         while self.running:
             try:
                 params = {"timeout": 25}
                 if offset is not None:
                     params["offset"] = offset
                 r = await asyncio.to_thread(requests.get, f"{base}/getUpdates", params=params, timeout=35)
+                allowed = self._tg_allowed_chats()
                 for up in r.json().get("result", []):
                     offset = up["update_id"] + 1
                     msg = up.get("message") or up.get("edited_message") or {}
-                    if str((msg.get("chat") or {}).get("id", "")) != str(TELEGRAM_CHAT):
-                        continue  # security: only the configured chat
+                    chat_id = str((msg.get("chat") or {}).get("id", ""))
                     text = (msg.get("text") or "").strip()
                     if not text.startswith("/"):
+                        continue
+                    if chat_id not in allowed:
+                        # tell them their ID so an admin can authorize them, and log it
+                        log.info(f"Telegram: unauthorized chat {chat_id} sent '{text}'")
+                        await asyncio.to_thread(
+                            self._tg_send_raw,
+                            f"🔒 Not authorized to use this bot.\nYour chat ID is: {chat_id}\nAsk the owner to add it.",
+                            chat_id)
                         continue
                     try:
                         reply = await self._handle_command(text)
                     except Exception as e:
                         reply = f"⚠️ command error: {e}"
-                    await asyncio.to_thread(self._tg_send_raw, reply)
+                    await asyncio.to_thread(self._tg_send_raw, reply, chat_id)
             except Exception as e:
                 log.warning(f"Telegram poll error: {e}")
                 await asyncio.sleep(5)
