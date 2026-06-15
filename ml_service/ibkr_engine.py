@@ -115,6 +115,8 @@ def send_telegram(msg):
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
 NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
 DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
+REBAL_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_rebal_state.json"
+REBAL_DAYS = 20  # rebalance cadence in trading days (must match backtest rebal_days)
 
 class IBKREngine:
     def __init__(self):
@@ -133,6 +135,42 @@ class IBKREngine:
         self.short_halted = False
         # Drawdown-based position scaling
         self.portfolio_peak = 0.0
+        # Rebalance clock — persisted to disk so the 20-day cadence survives restarts.
+        # Defaults below = fresh-deploy behavior (allow an immediate first rebalance to converge);
+        # _load_rebal_state() overrides them from disk if a prior state exists.
+        self._trading_days_since_rebal = REBAL_DAYS
+        self._last_rebal_date = None
+        self._last_counted_day = None
+        self._load_rebal_state()
+
+    def _load_rebal_state(self):
+        """Resume the rebalance clock from disk so a restart doesn't reset the
+        20-day cadence (which would cause an extra rebalance at the next open)."""
+        try:
+            if REBAL_STATE_FILE.exists():
+                import json
+                from datetime import date
+                d = json.load(open(REBAL_STATE_FILE))
+                self._trading_days_since_rebal = d.get("trading_days_since_rebal", REBAL_DAYS)
+                lrd = d.get("last_rebal_date");   self._last_rebal_date = date.fromisoformat(lrd) if lrd else None
+                lcd = d.get("last_counted_day");  self._last_counted_day = date.fromisoformat(lcd) if lcd else None
+                lr = d.get("last_rebalance");     self.last_rebalance = datetime.fromisoformat(lr) if lr else None
+                log.info(f"Loaded rebal state: {self._trading_days_since_rebal}/{REBAL_DAYS} days since rebal, last_rebal={self._last_rebal_date}")
+        except Exception as e:
+            log.warning(f"Could not load rebal state: {e}")
+
+    def _save_rebal_state(self):
+        """Persist the rebalance clock so restarts resume the 20-day cadence."""
+        try:
+            import json
+            d = {"trading_days_since_rebal": self._trading_days_since_rebal,
+                 "last_rebal_date": self._last_rebal_date.isoformat() if self._last_rebal_date else None,
+                 "last_counted_day": self._last_counted_day.isoformat() if self._last_counted_day else None,
+                 "last_rebalance": self.last_rebalance.isoformat() if self.last_rebalance else None}
+            with open(REBAL_STATE_FILE, "w") as f:
+                json.dump(d, f)
+        except Exception as e:
+            log.warning(f"Could not save rebal state: {e}")
 
     def _load_trailing_peaks(self):
         """Load trailing peaks from disk (survives restarts)."""
@@ -450,15 +488,9 @@ class IBKREngine:
         - On rebal day: sell ALL not-in-target, buy ALL in-target, resize ALL
         - Between rebal days: only trailing stops fire, NO buying/selling
         """
-        REBAL_DAYS = 20  # must match backtest rebal_days
-
-        # Check if it's a rebalance day
-        if not hasattr(self, '_last_rebal_date'):
-            self._last_rebal_date = None
-            self._trading_days_since_rebal = REBAL_DAYS  # allow immediate first rebal
-            self._last_counted_day = None
-
-        # Only count trading days when market is open
+        # Rebal clock (_trading_days_since_rebal / _last_rebal_date / _last_counted_day) is
+        # initialized AND loaded-from-disk in __init__, so it survives restarts.
+        # Only count trading days when market is open.
         if not self.is_market_open():
             return
 
@@ -468,6 +500,7 @@ class IBKREngine:
             self._last_counted_day = today
             self._trading_days_since_rebal += 1
             log.info(f"Trading day count: {self._trading_days_since_rebal}/{REBAL_DAYS}")
+            self._save_rebal_state()  # persist daily so the cadence survives restarts
 
         if self._trading_days_since_rebal < REBAL_DAYS:
             return  # only trailing stops fire between rebal days
@@ -480,6 +513,7 @@ class IBKREngine:
         log.info(f"═══ REBALANCE DAY ({self._trading_days_since_rebal}d since last) ═══")
         self._trading_days_since_rebal = 0
         self._last_rebal_date = today
+        self._save_rebal_state()
 
         # SAFETY: Close any accidental short positions first
         await self.update_positions()
@@ -574,6 +608,7 @@ class IBKREngine:
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
 
         self.last_rebalance = datetime.now()
+        self._save_rebal_state()
         await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
 
