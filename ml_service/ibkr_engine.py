@@ -57,6 +57,7 @@ log = logging.getLogger("ibkr_engine")
 # ═══════════════════════════════════════════════════════════════
 IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4002"))       # 4001=live, 4002=paper
+IBKR_INITIAL_CAPITAL = float(os.getenv("IBKR_INITIAL_CAPITAL", "30000"))  # funded amount, for since-inception P&L
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
 SIGNAL_PORT = os.getenv("SIGNAL_SERVER_PORT", "5001")
 SIGNAL_URL = f"http://localhost:{SIGNAL_PORT}/signals"
@@ -836,6 +837,191 @@ class IBKREngine:
             await self.short_sell(ticker, shares, f"event: {event_types}")
             self.short_recent[ticker] = datetime.now()
 
+    # ═══════════════════════════════════════════════════════════════
+    # TELEGRAM COMMAND BOT  (read-only — cannot place trades)
+    # ═══════════════════════════════════════════════════════════════
+    def _tg_send_raw(self, text):
+        """Send a plain reply to the Telegram chat (no engine prefix)."""
+        try:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                          json={"chat_id": TELEGRAM_CHAT, "text": text}, timeout=10)
+        except Exception:
+            pass
+
+    def _alpaca_get(self, path):
+        """GET the Alpaca paper API; returns parsed JSON or None."""
+        ak = (os.getenv("ALPACA_API_KEY") or "").strip()
+        sk = (os.getenv("ALPACA_SECRET_KEY") or "").strip()
+        if not ak or not sk:
+            return None
+        try:
+            r = requests.get("https://paper-api.alpaca.markets" + path,
+                             headers={"APCA-API-KEY-ID": ak, "APCA-API-SECRET-KEY": sk}, timeout=10)
+            return r.json() if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    async def _ibkr_snapshot(self):
+        """Live IBKR NAV + per-position P&L from the engine's own connection."""
+        summary = await self.get_account_summary()
+        nav = summary.get("NetLiquidation", 0.0)
+        cash = summary.get("TotalCashValue", 0.0)
+        items = [it for it in self.ib.portfolio()
+                 if it.position != 0 and it.contract.secType == "STK"]
+        gross = sum(abs(it.marketValue) for it in items)
+        upl = sum(it.unrealizedPNL for it in items)
+        return {"nav": nav, "cash": cash, "gross": gross, "upl": upl,
+                "lev": (gross / nav if nav else 0), "items": items}
+
+    async def _handle_command(self, text):
+        cmd = text.split()[0].lower().lstrip("/").split("@")[0]
+        if cmd in ("start", "help"):
+            return ("🤖 AutoTrader bot — read-only commands:\n"
+                    "/portfolio — NAV, cash, leverage (both accounts)\n"
+                    "/positions — IBKR holdings + P&L\n"
+                    "/alpaca — Alpaca paper holdings + P&L\n"
+                    "/pnl — gains (unrealized + since funding)\n"
+                    "/status — system health\n"
+                    "/signals — current top picks\n"
+                    "/rebal — rebalance schedule")
+        handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
+                    "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "status": self._cmd_status,
+                    "signals": self._cmd_signals, "rebal": self._cmd_rebal}
+        h = handlers.get(cmd)
+        if not h:
+            return f"Unknown command: /{cmd}. Try /help"
+        out = h()
+        return await out if asyncio.iscoroutine(out) else out
+
+    async def _cmd_portfolio(self):
+        out = ["📊 PORTFOLIO\n"]
+        try:
+            s = await self._ibkr_snapshot()
+            out.append(f"🟢 IBKR LIVE\nNAV ${s['nav']:,.0f} | Cash ${s['cash']:,.0f}\n"
+                       f"{len(s['items'])} positions | {s['lev']:.2f}x leverage")
+        except Exception as e:
+            out.append(f"🟢 IBKR LIVE — error: {e}")
+        acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
+        if acct:
+            eq = float(acct.get("equity", 0)); cash = float(acct.get("cash", 0))
+            gross = sum(abs(float(p["market_value"])) for p in poss) if poss else 0
+            out.append(f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f} | Cash ${cash:,.0f}\n"
+                       f"{len(poss) if poss else 0} positions | {(gross/eq if eq else 0):.2f}x leverage")
+        else:
+            out.append("\n🔵 ALPACA PAPER — unavailable")
+        return "\n".join(out)
+
+    async def _cmd_positions(self):
+        s = await self._ibkr_snapshot()
+        items = sorted(s["items"], key=lambda it: -it.marketValue)
+        lines = [f"📈 IBKR POSITIONS ({len(items)}) — unrealized ${s['upl']:+,.0f}\n"]
+        for it in items:
+            cost = it.marketValue - it.unrealizedPNL
+            pct = (it.unrealizedPNL / cost * 100) if cost else 0
+            lines.append(f"{it.contract.symbol:5} ${it.marketValue:,.0f}  {it.unrealizedPNL:+,.0f} ({pct:+.0f}%)")
+        return "\n".join(lines)
+
+    def _cmd_alpaca(self):
+        poss = self._alpaca_get("/v2/positions")
+        if poss is None:
+            return "🔵 ALPACA — unavailable"
+        poss = sorted(poss, key=lambda p: -float(p["market_value"]))
+        upl = sum(float(p["unrealized_pl"]) for p in poss)
+        lines = [f"🔵 ALPACA POSITIONS ({len(poss)}) — unrealized ${upl:+,.0f}\n"]
+        for p in poss[:30]:
+            lines.append(f"{p['symbol']:5} ${float(p['market_value']):,.0f}  "
+                         f"{float(p['unrealized_pl']):+,.0f} ({float(p['unrealized_plpc'])*100:+.0f}%)")
+        return "\n".join(lines)
+
+    async def _cmd_pnl(self):
+        out = ["💰 P&L\n"]
+        try:
+            s = await self._ibkr_snapshot()
+            since = s["nav"] - IBKR_INITIAL_CAPITAL
+            out.append(f"🟢 IBKR LIVE\nNAV ${s['nav']:,.0f}\nUnrealized ${s['upl']:+,.0f}\n"
+                       f"Since ${IBKR_INITIAL_CAPITAL/1000:.0f}K funding: ${since:+,.0f} "
+                       f"({since/IBKR_INITIAL_CAPITAL*100:+.1f}%)")
+        except Exception as e:
+            out.append(f"🟢 IBKR — error: {e}")
+        acct = self._alpaca_get("/v2/account")
+        if acct:
+            eq = float(acct.get("equity", 0)); le = float(acct.get("last_equity", 0))
+            day = eq - le
+            out.append(f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f}\n"
+                       + (f"Today ${day:+,.0f} ({day/le*100:+.2f}%)" if le else ""))
+        return "\n".join(out)
+
+    async def _cmd_status(self):
+        ib_ok = self.ib.isConnected()
+        try:
+            h = requests.get(SIGNAL_HEALTH_URL, timeout=5).json()
+            sig = "✅ fresh" if not h.get("is_stale") else "⚠️ STALE"
+        except Exception:
+            sig = "❌ unreachable"
+        vs, rv = (self.compute_vol_scale() if VOL_SCALING else (1.0, None))
+        return (f"🩺 STATUS\n"
+                f"IBKR: {'✅ connected' if ib_ok else '❌ disconnected'} ({self.account_id})\n"
+                f"Signal server: {sig}\n"
+                f"Rebalance: {self._trading_days_since_rebal}/{REBAL_DAYS} days since (last {self._last_rebal_date})\n"
+                f"Vol-scale: {vs:.2f}" + (f" (realized vol {rv:.0%})" if rv else " (ramp-up)"))
+
+    def _cmd_signals(self):
+        try:
+            data = requests.get(SIGNAL_URL, timeout=10).json()
+            sigs = data.get("signals", []) if isinstance(data, dict) else data
+            buys = sorted([s for s in sigs if s.get("signal") == "BUY"],
+                          key=lambda s: -s.get("probability", 0))
+            lines = [f"🎯 TOP SIGNALS ({len(buys)} BUY)\n"]
+            for i, s in enumerate(buys[:15], 1):
+                lines.append(f"{i:2}. {s['symbol']:5} ({s.get('probability', 0):.2f})")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"signals error: {e}"
+
+    def _cmd_rebal(self):
+        left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+        return (f"🔄 REBALANCE\nLast: {self._last_rebal_date}\n"
+                f"Days since: {self._trading_days_since_rebal}/{REBAL_DAYS}\n"
+                f"Next: in {left} trading days")
+
+    async def _telegram_poll_loop(self):
+        """Long-poll Telegram for /commands and reply. Read-only; never crashes the engine.
+        Uses asyncio.to_thread so blocking HTTP never stalls the trading loop."""
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+            return
+        base = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+        offset = None
+        try:  # skip backlog so a restart doesn't replay old commands
+            r = await asyncio.to_thread(requests.get, f"{base}/getUpdates", params={"timeout": 0}, timeout=10)
+            ups = r.json().get("result", [])
+            if ups:
+                offset = ups[-1]["update_id"] + 1
+        except Exception:
+            pass
+        log.info("Telegram command bot started (read-only)")
+        while self.running:
+            try:
+                params = {"timeout": 25}
+                if offset is not None:
+                    params["offset"] = offset
+                r = await asyncio.to_thread(requests.get, f"{base}/getUpdates", params=params, timeout=35)
+                for up in r.json().get("result", []):
+                    offset = up["update_id"] + 1
+                    msg = up.get("message") or up.get("edited_message") or {}
+                    if str((msg.get("chat") or {}).get("id", "")) != str(TELEGRAM_CHAT):
+                        continue  # security: only the configured chat
+                    text = (msg.get("text") or "").strip()
+                    if not text.startswith("/"):
+                        continue
+                    try:
+                        reply = await self._handle_command(text)
+                    except Exception as e:
+                        reply = f"⚠️ command error: {e}"
+                    await asyncio.to_thread(self._tg_send_raw, reply)
+            except Exception as e:
+                log.warning(f"Telegram poll error: {e}")
+                await asyncio.sleep(5)
+
     async def run(self):
         """Main loop."""
         await self.connect()
@@ -871,6 +1057,25 @@ class IBKREngine:
         cycle = 0
         self._disconnect_since = None   # outage tracking for escalating alerts
         self._escalated = False
+
+        # Start the read-only Telegram command bot (concurrent task)
+        asyncio.create_task(self._telegram_poll_loop())
+
+        # One-time self-test: if the sentinel file exists, run every command once
+        # (logs + sends results), then delete the sentinel so it never repeats.
+        selftest = Path(__file__).resolve().parent / "data" / ".tg_selftest"
+        if selftest.exists():
+            try:
+                selftest.unlink()
+            except Exception:
+                pass
+            for c in ["/status", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal"]:
+                try:
+                    out = await self._handle_command(c)
+                    log.info(f"SELFTEST {c} ->\n{out}")
+                    await asyncio.to_thread(self._tg_send_raw, out)
+                except Exception as e:
+                    log.error(f"SELFTEST {c} FAILED: {e}")
 
         while self.running:
             try:
