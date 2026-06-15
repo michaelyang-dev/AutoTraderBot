@@ -574,7 +574,6 @@ class IBKREngine:
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
 
         self.last_rebalance = datetime.now()
-        self._trading_days_since_rebal = 0  # restart the 20-trading-day clock (was missing -> full rebalance every cycle)
         await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
 
