@@ -574,6 +574,7 @@ class IBKREngine:
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
 
         self.last_rebalance = datetime.now()
+        self._trading_days_since_rebal = 0  # restart the 20-trading-day clock (was missing -> full rebalance every cycle)
         await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
 
@@ -887,7 +888,11 @@ class IBKREngine:
                 )
 
                 if should_rebalance:
-                    log.info(f"--- Cycle {cycle}: Rebalancing ---")
+                    # Stamp now so we re-evaluate at most every REBALANCE_INTERVAL — rebalance()
+                    # only updates last_rebalance on a REAL rebalance, so without this the check
+                    # fires every cycle. The 20-trading-day gate inside still controls actual trades.
+                    self.last_rebalance = datetime.now()
+                    log.info(f"--- Cycle {cycle}: Rebalance check ---")
                     await self.rebalance()
 
                     # Process short events
