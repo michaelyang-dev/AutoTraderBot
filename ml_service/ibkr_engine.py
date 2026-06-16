@@ -1068,11 +1068,13 @@ class IBKREngine:
         socket_ok = self.ib.isConnected()
         data_ok = False
         if socket_ok:
-            try:
-                await asyncio.wait_for(self.ib.reqCurrentTimeAsync(), timeout=6)
-                data_ok = True
-            except Exception:
-                data_ok = False
+            for attempt in range(2):  # retry once — a single transient timeout shouldn't read as "down"
+                try:
+                    await asyncio.wait_for(self.ib.reqCurrentTimeAsync(), timeout=6)
+                    data_ok = True
+                    break
+                except Exception:
+                    await asyncio.sleep(0.5)
         return socket_ok, data_ok
 
     async def _cmd_connection(self):
