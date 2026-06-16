@@ -97,19 +97,21 @@ def check_all():
     except Exception:
         checks.append(("Signals", "STALE", "server unreachable")); crit = True
 
-    # 3. Fama-French factors (last DATE in parquet; ~3-5d publication lag is normal)
-    ffd = _parquet_last_date(WRDS / "fama_french_5factors_momentum_daily.parquet", "date")
-    if ffd is None:
-        checks.append(("Fama-French", "STALE", "unreadable")); crit = True
+    # 3. Fama-French factors — check DOWNLOAD health via file mtime. The data itself
+    #    lags ~6 weeks (Ken French's publication schedule), which is normal, not a fault.
+    ff = WRDS / "fama_french_5factors_momentum_daily.parquet"
+    age = _age_days(ff)
+    ffd = _parquet_last_date(ff, "date")
+    note = f", data to {ffd}" if ffd else ""
+    if age is None:
+        checks.append(("Fama-French", "STALE", "missing")); crit = True
+    elif age > 4:
+        checks.append(("Fama-French", "STALE", f"download {_fmt(age)} old{note}")); crit = True
     else:
-        old = (date.today() - ffd).days
-        if old > 7:
-            checks.append(("Fama-French", "STALE", f"last {ffd} ({old}d)")); crit = True
-        else:
-            checks.append(("Fama-French", "OK", f"last {ffd}"))
+        checks.append(("Fama-French", "OK", f"{_fmt(age)}{note}"))
 
     # 4. WRDS Compustat (manual quarterly — suppressed until ~Sept upload)
-    cqd = _parquet_last_date(WRDS / "compustat_quarterly.parquet", "datadate")
+    cqd = _parquet_last_date(WRDS / "compustat_fundamentals_quarterly.parquet", "datadate")
     if cqd is None:
         checks.append(("WRDS Compustat", "STALE", "missing")); crit = True
     else:
