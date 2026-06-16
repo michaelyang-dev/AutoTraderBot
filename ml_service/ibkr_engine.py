@@ -896,10 +896,11 @@ class IBKREngine:
                     "/pnl — gains (unrealized + since funding)\n"
                     "/status — system health\n"
                     "/signals — current top picks\n"
-                    "/rebal — rebalance schedule")
+                    "/rebal — rebalance schedule\n"
+                    "/data — data freshness check")
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
                     "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "status": self._cmd_status,
-                    "signals": self._cmd_signals, "rebal": self._cmd_rebal}
+                    "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data}
         h = handlers.get(cmd)
         if not h:
             return f"Unknown command: /{cmd}. Try /help"
@@ -1012,6 +1013,14 @@ class IBKREngine:
                 f"Days since: {self._trading_days_since_rebal}/{REBAL_DAYS}\n"
                 f"Next: in {left} trading days")
 
+    async def _cmd_data(self):
+        try:
+            from data_freshness_check import check_all, format_report
+            checks, _ = await asyncio.to_thread(check_all)
+            return format_report(checks)
+        except Exception as e:
+            return f"data check error: {e}"
+
     async def _telegram_poll_loop(self):
         """Long-poll Telegram for /commands and reply. Read-only; never crashes the engine.
         Uses asyncio.to_thread so blocking HTTP never stalls the trading loop."""
@@ -1113,7 +1122,7 @@ class IBKREngine:
                 selftest.unlink()
             except Exception:
                 pass
-            for c in ["/status", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal"]:
+            for c in ["/status", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal", "/data"]:
                 try:
                     out = await self._handle_command(c)
                     log.info(f"SELFTEST {c} ->\n{out}")
