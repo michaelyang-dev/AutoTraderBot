@@ -929,12 +929,15 @@ class IBKREngine:
                     "/alpaca — Alpaca paper holdings + P&L\n"
                     "/pnl — gains (unrealized + since funding)\n"
                     "/status — system health\n"
+                    "/connection — real connection test (is the data feed live?)\n"
+                    "/reconnect — force a clean engine reconnect\n"
                     "/signals — current top picks\n"
                     "/rebal — rebalance schedule\n"
                     "/data — data freshness check")
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
                     "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "status": self._cmd_status,
-                    "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data}
+                    "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data,
+                    "connection": self._cmd_connection, "reconnect": self._cmd_reconnect}
         h = handlers.get(cmd)
         if not h:
             return f"Unknown command: /{cmd}. Try /help"
@@ -1015,7 +1018,10 @@ class IBKREngine:
         return "\n".join(out)
 
     async def _cmd_status(self):
-        ib_ok = self.ib.isConnected()
+        socket_ok, data_ok = await self._real_connectivity()
+        ib_state = ("✅ connected" if (socket_ok and data_ok)
+                    else "🔴 socket up but DATA FEED DOWN — try /reconnect" if socket_ok
+                    else "❌ disconnected")
         try:
             h = requests.get(SIGNAL_HEALTH_URL, timeout=5).json()
             sig = "✅ fresh" if not h.get("is_stale") else "⚠️ STALE"
@@ -1023,7 +1029,7 @@ class IBKREngine:
             sig = "❌ unreachable"
         vs, rv = (self.compute_vol_scale() if VOL_SCALING else (1.0, None))
         return (f"🩺 STATUS\n"
-                f"IBKR: {'✅ connected' if ib_ok else '❌ disconnected'} ({self.account_id})\n"
+                f"IBKR: {ib_state} ({self.account_id})\n"
                 f"Signal server: {sig}\n"
                 f"Rebalance: {self._trading_days_since_rebal}/{REBAL_DAYS} days since (last {self._last_rebal_date})\n"
                 f"Vol-scale: {vs:.2f}" + (f" (realized vol {rv:.0%})" if rv else " (ramp-up)"))
@@ -1054,6 +1060,40 @@ class IBKREngine:
             return format_report(checks)
         except Exception as e:
             return f"data check error: {e}"
+
+    async def _real_connectivity(self):
+        """True data-path test: isConnected() can return True on an Error-1100
+        zombie (socket up, IBKR uplink dead). reqCurrentTime actually round-trips
+        to IBKR's servers, so a timeout means the data feed is really down."""
+        socket_ok = self.ib.isConnected()
+        data_ok = False
+        if socket_ok:
+            try:
+                await asyncio.wait_for(self.ib.reqCurrentTimeAsync(), timeout=6)
+                data_ok = True
+            except Exception:
+                data_ok = False
+        return socket_ok, data_ok
+
+    async def _cmd_connection(self):
+        socket_ok, data_ok = await self._real_connectivity()
+        hb = time.time() - getattr(self, "_last_progress", time.time())
+        if socket_ok and data_ok:
+            return (f"🟢 CONNECTION HEALTHY\nSocket: connected\nData feed: LIVE (round-trip OK)\n"
+                    f"Loop heartbeat: {hb:.0f}s ago\nAccount: {self.account_id}")
+        if socket_ok and not data_ok:
+            return ("🔴 DATA FEED DOWN (Error-1100 state)\nSocket: 'connected' but NOT responding —\n"
+                    "the Gateway lost its uplink to IBKR (usually: you're logged in elsewhere).\n"
+                    "→ Log out of IBKR on phone/web, then send /reconnect. If it persists, the\n"
+                    "Gateway itself needs a restart (which needs your 2FA).")
+        return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
+
+    async def _cmd_reconnect(self):
+        # send the reply, then exit ~2s later so PM2 restarts us with a clean reconnect
+        threading.Timer(2.0, lambda: os._exit(1)).start()
+        return ("🔄 Restarting the engine for a clean reconnect — give it ~45s, then send\n"
+                "/connection to confirm. (Note: if the GATEWAY's uplink is broken, a restart\n"
+                "won't fix it — you'll need to log out elsewhere + the Gateway restarted.)")
 
     async def _telegram_poll_loop(self):
         """Long-poll Telegram for /commands and reply. Read-only; never crashes the engine.
@@ -1157,7 +1197,7 @@ class IBKREngine:
                 selftest.unlink()
             except Exception:
                 pass
-            for c in ["/status", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal", "/data"]:
+            for c in ["/status", "/connection", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal", "/data"]:
                 try:
                     out = await self._handle_command(c)
                     log.info(f"SELFTEST {c} ->\n{out}")
