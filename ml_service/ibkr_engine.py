@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -118,12 +119,15 @@ def send_telegram(msg):
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
 NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
 DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
+HANG_TIMEOUT_SECS = 360  # watchdog: if the main loop makes no progress this long (e.g. Error-1100 hang), force-restart
 REBAL_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_rebal_state.json"
 REBAL_DAYS = 20  # rebalance cadence in trading days (must match backtest rebal_days)
 
 class IBKREngine:
     def __init__(self):
         self.ib = IB()
+        self.ib.errorEvent += self._on_ib_error   # catch Error 1100 connectivity loss
+        self._last_progress = time.time()         # watchdog heartbeat
         self.positions = {}       # symbol -> {qty, avg_cost, market_value, peak_price}
         self.trailing_peaks = self._load_trailing_peaks()
         self.last_signals = []
@@ -251,6 +255,36 @@ class IBKREngine:
             send_telegram("🟢 IBKR reconnected — Gateway back online, trading resumed.")
         self._disconnect_since = None
         self._escalated = False
+
+    def _on_ib_error(self, reqId, errorCode, errorString, contract=None):
+        """Log IBKR system messages. Error 1100 = connectivity to IBKR lost while the
+        SOCKET stays open (isConnected() keeps returning True), which is exactly the
+        silent-hang case the watchdog exists to catch. 1102 = restored."""
+        if errorCode == 1100:
+            log.error("IBKR Error 1100: connectivity to IBKR lost (socket still open) — watchdog armed")
+        elif errorCode in (1101, 1102):
+            log.info(f"IBKR Error {errorCode}: connectivity restored")
+
+    def _start_watchdog(self):
+        """Thread (not asyncio — survives a blocked loop): if the main loop makes no
+        progress for HANG_TIMEOUT_SECS, alert and force-exit so PM2 restarts us with a
+        clean reconnect. Catches Error-1100 hangs and any other stall that isConnected()
+        can't see. Reconnect loops keep the heartbeat fresh, so this won't false-fire."""
+        self._last_progress = time.time()
+
+        def _watch():
+            while True:
+                time.sleep(30)
+                stale = time.time() - getattr(self, "_last_progress", time.time())
+                if stale > HANG_TIMEOUT_SECS:
+                    log.error(f"WATCHDOG: no loop progress for {stale:.0f}s — force-restarting")
+                    send_telegram(f"🔴 IBKR engine STUCK — no progress for {stale/60:.0f} min "
+                                  f"(likely connectivity loss, e.g. you logged in elsewhere). "
+                                  f"Auto-restarting; reply /status in ~1 min to confirm it recovered.")
+                    os._exit(1)   # PM2 restarts -> fresh connect
+
+        threading.Thread(target=_watch, daemon=True).start()
+        log.info(f"Watchdog started (force-restart if no progress > {HANG_TIMEOUT_SECS}s)")
 
     def compute_vol_scale(self):
         """Scale effective leverage down when realized portfolio vol > VOL_TARGET.
@@ -1110,6 +1144,7 @@ class IBKREngine:
         cycle = 0
         self._disconnect_since = None   # outage tracking for escalating alerts
         self._escalated = False
+        self._start_watchdog()          # force-restart if the loop ever hangs (Error 1100 etc.)
 
         # Start the read-only Telegram command bot (concurrent task)
         asyncio.create_task(self._telegram_poll_loop())
@@ -1133,6 +1168,7 @@ class IBKREngine:
         while self.running:
             try:
                 cycle += 1
+                self._last_progress = time.time()   # watchdog heartbeat — proves the loop is alive
 
                 # Check IB connection health every cycle — reconnect if dropped
                 if not self.ib.isConnected():
