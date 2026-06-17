@@ -927,20 +927,37 @@ class IBKREngine:
         return {"nav": nav, "cash": cash, "gross": gross, "upl": upl,
                 "lev": (gross / nav if nav else 0), "items": items}
 
-    async def _handle_command(self, text):
+    # Commands open to every allowlisted user — pure reads, no state change.
+    # DEFAULT-DENY: anything NOT in this set is owner-only, so any action command
+    # (now /reconnect, and any added later) is automatically restricted to the owner.
+    READONLY_COMMANDS = frozenset({
+        "start", "help", "portfolio", "positions", "alpaca", "pnl",
+        "status", "signals", "rebal", "data", "connection"})
+
+    async def _handle_command(self, text, chat_id=None):
         cmd = text.split()[0].lower().lstrip("/").split("@")[0]
+        # Owner = the configured TELEGRAM_CHAT_ID (8746062845). Only the owner may run
+        # commands that act on the live engine; everyone else allowlisted gets reads only.
+        is_owner = bool(TELEGRAM_CHAT) and str(chat_id) == str(TELEGRAM_CHAT)
+        if cmd not in self.READONLY_COMMANDS and not is_owner:
+            log.info(f"Telegram: non-owner chat {chat_id} blocked from action '/{cmd}'")
+            return ("🔒 Read-only access.\nThat command performs an action on the live "
+                    "engine and is restricted to the account owner.\nYou can use every "
+                    "read-only command — send /help to see them.")
         if cmd in ("start", "help"):
-            return ("🤖 AutoTrader bot — read-only commands:\n"
+            base = ("🤖 AutoTrader bot — read-only commands:\n"
                     "/portfolio — NAV, cash, leverage (both accounts)\n"
                     "/positions — IBKR holdings + P&L\n"
                     "/alpaca — Alpaca paper holdings + P&L\n"
                     "/pnl — gains (unrealized + since funding)\n"
                     "/status — system health\n"
                     "/connection — real connection test (is the data feed live?)\n"
-                    "/reconnect — force a clean engine reconnect\n"
                     "/signals — current top picks\n"
                     "/rebal — rebalance schedule\n"
                     "/data — data freshness check")
+            if is_owner:
+                base += "\n\n🔑 owner-only:\n/reconnect — force a clean engine reconnect"
+            return base
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
                     "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "status": self._cmd_status,
                     "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data,
@@ -1150,7 +1167,7 @@ class IBKREngine:
                             chat_id)
                         continue
                     try:
-                        reply = await self._handle_command(text)
+                        reply = await self._handle_command(text, chat_id)
                     except Exception as e:
                         reply = f"⚠️ command error: {e}"
                     await asyncio.to_thread(self._tg_send_raw, reply, chat_id)
