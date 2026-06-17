@@ -78,14 +78,26 @@ module.exports = {
     },
 
     // ── Daily data refresh (Mon-Fri 5:00 PM ET, after market close) ──
-    // Refreshes FMP data, VIX, fundamentals, and options snapshots.
-    // Restarts ml-server afterward so it loads fresh data.
     {
       name: "data-refresh",
       script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
       args: "/home/ubuntu/AutoTraderBot/ml_service/scripts/refresh_data.py",
       cwd: "/home/ubuntu/AutoTraderBot/ml_service",
       cron_restart: "0 17 * * 1-5",
+      autorestart: false,
+      watch: false,
+      env: {
+        PYTHONUNBUFFERED: "1",
+      },
+    },
+
+    // ── Sunday night data refresh (9 PM ET, before Monday open) ─────
+    {
+      name: "sunday-data-refresh",
+      script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
+      args: "/home/ubuntu/AutoTraderBot/ml_service/scripts/refresh_data.py",
+      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
+      cron_restart: "0 21 * * 0",
       autorestart: false,
       watch: false,
       env: {

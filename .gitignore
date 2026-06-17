@@ -69,3 +69,9 @@ deploy/fix_*
 ml_service/data/enhanced_features_cache/
 ml_service/__pycache__/
 ml_service/data/edgar_filings/
+
+# Operational backups & generated archives (machine-local — never track)
+.env.backup*
+ecosystem.config.js.*backup
+ml_service/data/*.bak*
+ml_service/data/sentiment_archive/

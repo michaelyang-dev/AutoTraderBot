@@ -1,0 +1,1636 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Walk-Forward Backtest Summary",
+      "type": "row",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "title": "Avg CAGR",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "green",
+                "value": 10
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "avg_cagr_pct",
+              "text": "Avg CAGR",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Avg Sharpe",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 1.0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "avg_sharpe",
+              "text": "Avg Sharpe",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Worst Drawdown",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": -25
+              },
+              {
+                "color": "yellow",
+                "value": -15
+              },
+              {
+                "color": "green",
+                "value": -5
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "worst_dd_pct",
+              "text": "Worst DD",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Avg Win Rate",
+      "type": "gauge",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 40
+              },
+              {
+                "color": "yellow",
+                "value": 48
+              },
+              {
+                "color": "green",
+                "value": 55
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "showThresholdMarkers": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "avg_win_rate_pct",
+              "text": "Win Rate",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Total Return",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "total_return_pct",
+              "text": "Total Return",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Avg Alpha",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "avg_alpha_pct",
+              "text": "Avg Alpha",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Profitable Years",
+      "type": "stat",
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 6
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "profitable_years",
+              "text": "Profitable",
+              "type": "number"
+            },
+            {
+              "selector": "years",
+              "text": "of Total",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Total Trades",
+      "type": "stat",
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 4,
+        "y": 5
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "total_trades",
+              "text": "Total Trades",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Best Year",
+      "type": "stat",
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 8,
+        "y": 5
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "best_year_cagr_pct",
+              "text": "Best Year",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Worst Year",
+      "type": "stat",
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "/.*/"
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/summary?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "worst_year_cagr_pct",
+              "text": "Worst Year",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Annual CAGR",
+      "type": "barchart",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        }
+      },
+      "options": {
+        "xTickLabelRotation": 0,
+        "barWidth": 0.7,
+        "legend": {
+          "displayMode": "hidden"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/cagr-by-year?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "year",
+              "text": "Year",
+              "type": "string"
+            },
+            {
+              "selector": "cagr_pct",
+              "text": "CAGR %",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Year": 0,
+              "CAGR %%": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Year-by-Year Performance",
+      "type": "row",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "title": "Yearly Backtest Results (Live Production)",
+      "type": "table",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Year": 0,
+              "CAGR %": 1,
+              "Sharpe": 2,
+              "Sortino": 3,
+              "Max DD %": 4,
+              "Win Rate %": 5,
+              "Profit Factor": 6,
+              "Avg Trade %": 7,
+              "Trades": 8,
+              "Alpha %": 9,
+              "Beta": 10,
+              "Final Value": 11
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CAGR %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Alpha %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max DD %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": -20
+                    },
+                    {
+                      "color": "green",
+                      "value": -10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Win Rate %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 45
+                    },
+                    {
+                      "color": "green",
+                      "value": 52
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sharpe"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.5
+                    },
+                    {
+                      "color": "green",
+                      "value": 1.0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Final Value"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Year"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Year",
+            "desc": false
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/yearly?config=${config}",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "year",
+              "text": "Year",
+              "type": "number"
+            },
+            {
+              "selector": "cagr_pct",
+              "text": "CAGR %",
+              "type": "number"
+            },
+            {
+              "selector": "sharpe",
+              "text": "Sharpe",
+              "type": "number"
+            },
+            {
+              "selector": "sortino",
+              "text": "Sortino",
+              "type": "number"
+            },
+            {
+              "selector": "max_dd_pct",
+              "text": "Max DD %",
+              "type": "number"
+            },
+            {
+              "selector": "win_rate_pct",
+              "text": "Win Rate %",
+              "type": "number"
+            },
+            {
+              "selector": "profit_factor",
+              "text": "Profit Factor",
+              "type": "number"
+            },
+            {
+              "selector": "avg_trade_ret_pct",
+              "text": "Avg Trade %",
+              "type": "number"
+            },
+            {
+              "selector": "trades",
+              "text": "Trades",
+              "type": "number"
+            },
+            {
+              "selector": "alpha_pct",
+              "text": "Alpha %",
+              "type": "number"
+            },
+            {
+              "selector": "beta",
+              "text": "Beta",
+              "type": "number"
+            },
+            {
+              "selector": "final_value",
+              "text": "Final Value",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Config Comparison",
+      "type": "row",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "title": "Config Comparison",
+      "type": "table",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "P2E0F8B2B3F5F786E"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "Config": 0,
+              "Years": 1,
+              "Avg CAGR %": 2,
+              "Avg Sharpe": 3,
+              "Total Ret %": 4,
+              "Worst DD %": 5,
+              "Win Rate %": 6,
+              "Trades": 7,
+              "Avg Alpha %": 8
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Config"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg CAGR %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total Ret %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Worst DD %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": -20
+                    },
+                    {
+                      "color": "green",
+                      "value": -10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Alpha %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Avg CAGR %",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "url": "http://localhost:3001/api/grafana/backtest/compare?configs=config_live_production,config_backtester_default,config_A,config_B,config_regime_sizing,isolated_baseline,isolated_all_three,isolated_+top8,isolated_-cautious,isolated_-parking",
+          "parser": "backend",
+          "source": "url",
+          "format": "table",
+          "root_selector": "",
+          "columns": [
+            {
+              "selector": "config",
+              "text": "Config",
+              "type": "string"
+            },
+            {
+              "selector": "years",
+              "text": "Years",
+              "type": "number"
+            },
+            {
+              "selector": "avg_cagr_pct",
+              "text": "Avg CAGR %",
+              "type": "number"
+            },
+            {
+              "selector": "avg_sharpe",
+              "text": "Avg Sharpe",
+              "type": "number"
+            },
+            {
+              "selector": "total_return_pct",
+              "text": "Total Ret %",
+              "type": "number"
+            },
+            {
+              "selector": "worst_dd_pct",
+              "text": "Worst DD %",
+              "type": "number"
+            },
+            {
+              "selector": "avg_win_rate_pct",
+              "text": "Win Rate %",
+              "type": "number"
+            },
+            {
+              "selector": "total_trades",
+              "text": "Trades",
+              "type": "number"
+            },
+            {
+              "selector": "avg_alpha_pct",
+              "text": "Avg Alpha %",
+              "type": "number"
+            }
+          ],
+          "url_options": {
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body_type": "",
+            "body_content_type": "",
+            "body_graphql_query": "",
+            "data": ""
+          }
+        }
+      ]
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": [
+    "autotrader",
+    "backtesting"
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "America/New_York",
+  "title": "AutoTrader - Backtesting",
+  "uid": "at-backtest",
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "config",
+        "label": "Backtest Config",
+        "type": "custom",
+        "current": {
+          "text": "Live Production",
+          "value": "config_live_production"
+        },
+        "options": [
+          {
+            "text": "Live Production",
+            "value": "config_live_production",
+            "selected": true
+          },
+          {
+            "text": "Backtester Default",
+            "value": "config_backtester_default"
+          },
+          {
+            "text": "Config A",
+            "value": "config_A"
+          },
+          {
+            "text": "Config B",
+            "value": "config_B"
+          },
+          {
+            "text": "Regime Sizing",
+            "value": "config_regime_sizing"
+          },
+          {
+            "text": "Baseline",
+            "value": "isolated_baseline"
+          },
+          {
+            "text": "All Three",
+            "value": "isolated_all_three"
+          },
+          {
+            "text": "Top 8",
+            "value": "isolated_+top8"
+          },
+          {
+            "text": "No Cautious",
+            "value": "isolated_-cautious"
+          },
+          {
+            "text": "No Parking",
+            "value": "isolated_-parking"
+          }
+        ],
+        "query": "config_live_production,config_backtester_default,config_A,config_B,config_regime_sizing,isolated_baseline,isolated_all_three,isolated_+top8,isolated_-cautious,isolated_-parking",
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  }
+}
