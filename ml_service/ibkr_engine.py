@@ -53,6 +53,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("ibkr_engine")
 
+# Quiet ib_insync's per-tick portfolio/account spam: its Wrapper logs an INFO line
+# for every position on every price change (updatePortfolio fires constantly), which
+# buries connection/NAV/rebalance/error lines. Raising only this logger to WARNING
+# keeps real ib_insync errors (they log at WARNING/ERROR) and our own errorEvent
+# handler + main-loop connection checks, which are on separate loggers.
+logging.getLogger("ib_insync.wrapper").setLevel(logging.WARNING)
+
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
