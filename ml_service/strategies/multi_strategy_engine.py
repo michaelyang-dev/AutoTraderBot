@@ -45,6 +45,59 @@ PROD_WEIGHTS_BULL  = {"s1_momentum": 0.50, "s7_value": 0.35, "s5_lowvol": 0.15, 
 PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.10, "s7_value": 0.30, "s5_lowvol": 0.50, "s3_sector": 0.10, "s4_inclusion": 0.00}
 PROD_WEIGHTS_CRASH = {"s1_momentum": 0.15, "s7_value": 0.45, "s5_lowvol": 0.30, "s3_sector": 0.10, "s4_inclusion": 0.00}
 
+# Momentum-crash threshold: trigger CRASH weights when the 20-day UMD sum drops below this.
+UMD_CRASH_THRESHOLD = -0.05
+
+
+def compute_price_umd_20d(prices, daily_returns, members_fn, start=None):
+    """Real-time, price-based UMD (12-1 momentum top-tercile minus bottom-tercile,
+    monthly-formed) as a 20-day rolling sum, indexed by date. Drop-in replacement for
+    the ~46-day-lagged Fama-French UMD used in momentum-crash detection — computed from
+    our OWN price matrix, so it is current to the latest bar instead of weeks stale.
+
+    Validated to track FF UMD at 0.93 corr / 96% crash-signal agreement, and to leave
+    the full strategy's CAGR/Sharpe/MaxDD unchanged vs FF (research/phase11*).
+
+    Args:
+        prices:        DataFrame [date x symbol] of close prices (e.g. uni.prices).
+        daily_returns: prices.pct_change() (passed in to avoid recompute).
+        members_fn:    callable(date) -> iterable of in-universe tickers on that date.
+        start:         optional Timestamp; only compute from this date forward (live
+                       universes only carry ~380 trading days, so this keeps it cheap).
+    Returns:
+        pd.Series of the 20-day UMD sum (NaN where insufficient history). Take
+        ``.loc[:today].iloc[-1]`` and compare to UMD_CRASH_THRESHOLD.
+    """
+    allidx = list(prices.index)
+    pos = {d: i for i, d in enumerate(allidx)}          # O(1) index lookup
+    dates = [d for d in allidx if start is None or d >= start]
+    umd_daily, longs, shorts, last_month = {}, set(), set(), None
+    for d in dates:
+        loc = pos[d]
+        if loc < 260:                                   # need 252d for 12-1 momentum
+            continue
+        if last_month != (d.year, d.month):             # reform terciles monthly
+            last_month = (d.year, d.month)
+            members = [m for m in members_fn(d) if m in prices.columns]
+            p0, p20, p252 = prices.loc[d], prices.loc[allidx[loc - 20]], prices.loc[allidx[loc - 252]]
+            mom = {}
+            for m in members:
+                a, a20, a252 = p0.get(m), p20.get(m), p252.get(m)
+                if a and a20 and a252 and not (np.isnan(a) or np.isnan(a20) or np.isnan(a252)):
+                    mom[m] = (a / a252 - 1) - (a / a20 - 1)   # 12-month minus 1-month
+            if len(mom) > 30:
+                srt = sorted(mom, key=mom.get); k = len(srt) // 3
+                shorts, longs = set(srt[:k]), set(srt[-k:])
+        if longs and shorts:
+            r = daily_returns.loc[d]
+            rl = np.nanmean([r.get(x) for x in longs])
+            rs = np.nanmean([r.get(x) for x in shorts])
+            if np.isfinite(rl) and np.isfinite(rs):
+                umd_daily[d] = rl - rs
+    if not umd_daily:
+        return pd.Series(dtype=float)
+    return pd.Series(umd_daily).sort_index().rolling(20).sum()
+
 
 def log(msg):
     print(msg, flush=True)

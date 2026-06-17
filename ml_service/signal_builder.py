@@ -21,6 +21,7 @@ from strategies.multi_strategy_engine import (
     strategy5_lowvol_quality, strategy4_index_inclusion,
     strategy_value, SECTOR_ETFS,
     PROD_WEIGHTS_BULL, PROD_WEIGHTS_BEAR, PROD_WEIGHTS_CRASH,
+    compute_price_umd_20d, UMD_CRASH_THRESHOLD,
 )
 
 # v12 strategy config: 50% momentum, 35% value, 15% low-vol quality
@@ -484,22 +485,26 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5):
     # Crypto tilt and VIX pause REMOVED — not in backtest, negligible impact
     paused = set()
 
-    # UMD crash regime (matches backtest: shift to value-heavy when momentum crashes)
+    # UMD crash regime (matches backtest: shift to value-heavy when momentum crashes).
+    # Price-based, real-time UMD from our own price matrix — replaces the ~46-day-lagged
+    # Fama-French file (which made this detector blind in live). Shared code path with the
+    # backtest via compute_price_umd_20d (validated behavior-neutral, research/phase11*).
     umd_crash = False
     try:
-        _data_dir = Path(__file__).resolve().parent / "data"
-        ff_file = _data_dir / "wrds" / "fama_french_5factors_momentum_daily.parquet"
-        if not ff_file.exists():
-            log.warning("Fama-French file MISSING — UMD crash detection disabled!")
-        elif ff_file.exists():
-            ff = pd.read_parquet(ff_file)
-            ff["date"] = pd.to_datetime(ff["date"])
-            ff = ff.set_index("date").sort_index()
-            umd_20d = ff["umd"].rolling(20).sum()
-            recent = umd_20d.loc[:today]
-            if len(recent) > 0 and pd.notna(recent.iloc[-1]) and recent.iloc[-1] < -0.05:
+        # Live universe carries only ~380 trading days, so compute over all of it (cheap,
+        # ~18 monthly reforms) for maximum momentum warmup before today's 20-day sum.
+        umd_20d = compute_price_umd_20d(
+            uni.prices, uni._daily_returns, get_sp1500_on_date)
+        recent = umd_20d.loc[:today] if len(umd_20d) else umd_20d
+        if len(recent) > 0 and pd.notna(recent.iloc[-1]):
+            val = float(recent.iloc[-1])
+            if val < UMD_CRASH_THRESHOLD:
                 umd_crash = True
-                log.info(f"UMD CRASH detected: 20d sum = {recent.iloc[-1]:.4f} — shifting to value-heavy weights")
+                log.info(f"UMD CRASH detected: 20d sum = {val:.4f} — shifting to value-heavy weights")
+            else:
+                log.info(f"UMD ok: 20d sum = {val:.4f} (crash threshold {UMD_CRASH_THRESHOLD})")
+        else:
+            log.warning("UMD: insufficient price history for crash detection — defaulting to no-crash")
     except Exception as e:
         log.warning(f"UMD check failed: {e}")
 

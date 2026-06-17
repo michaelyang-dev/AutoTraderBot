@@ -25,6 +25,7 @@ from strategies.multi_strategy_engine import (
     strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, INITIAL_CASH, COST_BPS,
     strategy_value, PROD_WEIGHTS_BEAR, PROD_WEIGHTS_CRASH,
+    compute_price_umd_20d, UMD_CRASH_THRESHOLD,
 )
 
 # Map shared production weights (live keys) to the short keys this backtest uses.
@@ -75,9 +76,11 @@ class FastBacktester:
         self._sp1500_cache = {}
         self._original_get_sp500 = self.uni.get_sp500
 
-        # Fama-French UMD
-        ff = WRDSDataProvider().fama_french
-        self.umd_20d = ff["umd"].rolling(20).sum()
+        # Momentum-crash UMD — price-based (real-time), computed from our OWN price
+        # matrix so live and backtest share one code path. Replaces the ~46-day-lagged
+        # Fama-French UMD (validated behavior-neutral, research/phase11*).
+        self.umd_20d = compute_price_umd_20d(
+            self.prices, self.prices.pct_change(), self._get_sp1500)
 
         # GLD/VIXM
         sec_info = pd.read_parquet("data/wrds/crsp_security_info.parquet",
@@ -342,7 +345,7 @@ class FastBacktester:
 
             # UMD regime
             nu = self.umd_20d.loc[:date]
-            in_crash = len(nu) > 0 and pd.notna(nu.iloc[-1]) and nu.iloc[-1] < -0.05
+            in_crash = len(nu) > 0 and pd.notna(nu.iloc[-1]) and nu.iloc[-1] < UMD_CRASH_THRESHOLD
             if in_crash:
                 ew = _short_weights(PROD_WEIGHTS_CRASH)  # shared with live
             else:
