@@ -77,32 +77,9 @@ module.exports = {
       watch: false,
     },
 
-    // ── Daily data refresh (Mon-Fri 5:00 PM ET, after market close) ──
-    {
-      name: "data-refresh",
-      script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
-      args: "/home/ubuntu/AutoTraderBot/ml_service/scripts/refresh_data.py",
-      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
-      cron_restart: "0 17 * * 1-5",
-      autorestart: false,
-      watch: false,
-      env: {
-        PYTHONUNBUFFERED: "1",
-      },
-    },
-
-    // ── Sunday night data refresh (9 PM ET, before Monday open) ─────
-    {
-      name: "sunday-data-refresh",
-      script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
-      args: "/home/ubuntu/AutoTraderBot/ml_service/scripts/refresh_data.py",
-      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
-      cron_restart: "0 21 * * 0",
-      autorestart: false,
-      watch: false,
-      env: {
-        PYTHONUNBUFFERED: "1",
-      },
-    },
+    // NOTE: data refreshes (weekday 5:30 PM + Sunday 9 PM ET) run via the SYSTEM
+    // crontab — reliable. The old PM2 cron_restart apps for refresh were flaky
+    // (cron_restart on a stopped process doesn't fire) and were removed 2026-06-19.
+    // See `crontab -l` on the server.
   ],
 };
