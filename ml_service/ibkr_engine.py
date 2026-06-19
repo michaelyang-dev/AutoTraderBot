@@ -125,6 +125,7 @@ def send_telegram(msg):
 
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
 NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
+CLOSE_SNAPSHOT_FILE = Path(__file__).resolve().parent / "data" / "ibkr_close_snapshot.json"
 DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
 HANG_TIMEOUT_SECS = 360  # watchdog: if the main loop makes no progress this long (e.g. Error-1100 hang), force-restart
 REBAL_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_rebal_state.json"
@@ -238,6 +239,43 @@ class IBKREngine:
                 json.dump(hist, f)
         except Exception:
             pass
+
+    def _load_close_snapshot(self):
+        """Load the most recent market-close portfolio snapshot (or None)."""
+        try:
+            if CLOSE_SNAPSHOT_FILE.exists():
+                import json
+                with open(CLOSE_SNAPSHOT_FILE) as f:
+                    return json.load(f)
+        except Exception as e:
+            log.warning(f"Could not load close snapshot: {e}")
+        return None
+
+    async def _record_close_snapshot(self):
+        """Snapshot the portfolio at the 4pm close so /portfolio and /pnl can show the
+        official close value next to the live (after-hours) value. NAV is taken from the
+        recorded EOD NAV history when available, so it matches the daily summary exactly."""
+        try:
+            import json
+            s = await self._ibkr_snapshot()
+            today = datetime.now().date().isoformat()           # server runs in ET
+            hist = self._load_nav_history()
+            close_nav = hist[-1][1] if (hist and hist[-1][0] == today and hist[-1][1]) else s["nav"]
+            snap = {
+                "date": today,
+                "captured": datetime.now().strftime("%H:%M ET"),
+                "nav": close_nav, "cash": s["cash"], "gross": s["gross"], "upl": s["upl"],
+                "lev": (s["gross"] / close_nav if close_nav else 0),
+                "positions": sorted(
+                    [{"symbol": it.contract.symbol, "qty": it.position,
+                      "value": it.marketValue, "upl": it.unrealizedPNL} for it in s["items"]],
+                    key=lambda p: -p["value"]),
+            }
+            with open(CLOSE_SNAPSHOT_FILE, "w") as f:
+                json.dump(snap, f)
+            log.info(f"Close snapshot recorded: NAV ${close_nav:,.0f}, {len(snap['positions'])} positions")
+        except Exception as e:
+            log.warning(f"Close snapshot failed: {e}")
 
     # ── Disconnect alerting (suppress brief blips, escalate real outages) ──
     def _on_disconnect_detected(self):
@@ -972,10 +1010,14 @@ class IBKREngine:
         out = ["📊 PORTFOLIO\n"]
         try:
             s = await self._ibkr_snapshot()
-            out.append(f"🟢 IBKR LIVE\nNAV ${s['nav']:,.0f} | Cash ${s['cash']:,.0f}\n"
+            out.append(f"🟢 IBKR LIVE (now)\nNAV ${s['nav']:,.0f} | Cash ${s['cash']:,.0f}\n"
                        f"{len(s['items'])} positions | {s['lev']:.2f}x leverage")
         except Exception as e:
             out.append(f"🟢 IBKR LIVE — error: {e}")
+        snap = self._load_close_snapshot()
+        if snap:
+            out.append(f"📸 at close ({snap['date']} {snap.get('captured', '')})\n"
+                       f"NAV ${snap['nav']:,.0f} | {len(snap.get('positions', []))} positions | {snap.get('lev', 0):.2f}x")
         acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
         if acct:
             eq = float(acct.get("equity", 0)); cash = float(acct.get("cash", 0))
@@ -1013,7 +1055,10 @@ class IBKREngine:
         try:
             s = await self._ibkr_snapshot()
             nav = s["nav"]
-            line = f"🟢 IBKR LIVE\nNAV ${nav:,.0f}\n"
+            line = f"🟢 IBKR LIVE\nNAV ${nav:,.0f} (now)\n"
+            snap = self._load_close_snapshot()
+            if snap:
+                line += f"At close ({snap['date']}): ${snap['nav']:,.0f}\n"
             # daily change from persisted NAV history (most recent prior trading day)
             hist = self._load_nav_history()
             today = datetime.now().date().isoformat()
@@ -1200,6 +1245,15 @@ class IBKREngine:
         log.info(f"NAV: ${summary.get('NetLiquidation', 0):,.0f}")
         log.info(f"Cash: ${summary.get('TotalCashValue', 0):,.0f}")
         self.record_nav(summary.get("NetLiquidation", 0))  # seed NAV history for vol-scaling
+        # If the market is already closed and today's close snapshot isn't captured yet,
+        # seed it now so /portfolio and /pnl show it immediately (refreshed exactly at 4pm).
+        try:
+            if not self.is_market_open():
+                snap = self._load_close_snapshot()
+                if not snap or snap.get("date") != datetime.now().date().isoformat():
+                    await self._record_close_snapshot()
+        except Exception:
+            pass
         if VOL_SCALING:
             vs, rv = self.compute_vol_scale()
             log.info(f"Vol-scaling: {'ON' if VOL_SCALING else 'off'} target={VOL_TARGET:.0%} "
@@ -1266,6 +1320,7 @@ class IBKREngine:
                             summary = await self.get_account_summary()
                             nav = summary.get("NetLiquidation", 0)
                             self.record_nav(nav)  # build NAV history for vol-scaling
+                            await self._record_close_snapshot()  # close mark for /portfolio + /pnl
                             n_pos = len(self.positions)
                             signals = self.fetch_signals()
                             n_signals = len(signals) if signals else 0
