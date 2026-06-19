@@ -21,6 +21,7 @@ import pandas as pd
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "crypto")
 FUND = pd.read_parquet(os.path.join(DATA, "hl_funding.parquet"))   # daily funding (coin x date)
+PREM = pd.read_parquet(os.path.join(DATA, "hl_premium.parquet"))   # perp premium vs spot oracle = basis
 
 FEE = 0.0015            # one-way per position change (perp + spot ~15bps); round-trip 30bps
 TRAIL = 7               # days of trailing funding for the signal
@@ -28,10 +29,10 @@ REBAL = 7               # rebalance every N days (limits turnover)
 RISK_FREE = 0.045
 
 
-def backtest(universe, top_k, min_ann=0.0, leverage=1.0, margin=0.08):
+def backtest(universe, top_k, min_ann=0.0, leverage=1.0, margin=0.08, realistic=True):
     f = FUND[universe].copy()
+    dprem = PREM[universe].reindex(columns=f.columns).diff()   # Δ basis → two-leg price P&L = -Δpremium
     sig = f.rolling(TRAIL).mean().shift(1) * 365     # trailing annualized funding, lagged (no look-ahead)
-    held = pd.DataFrame(0.0, index=f.index, columns=f.columns)
     cur = {}
     daily, turn = [], []
     for i, dt in enumerate(f.index):
@@ -44,9 +45,11 @@ def backtest(universe, top_k, min_ann=0.0, leverage=1.0, margin=0.08):
             cur = new
         else:
             turn.append(0.0)
-        # collect funding on held coins today (equal weight)
+        # two-leg delta-neutral return: funding collected MINUS the basis mark-to-market (-Δpremium)
         if cur:
             r = sum(w * f.loc[dt].get(c, 0.0) for c, w in cur.items() if pd.notna(f.loc[dt].get(c, np.nan)))
+            if realistic:
+                r += -sum(w * dprem.loc[dt].get(c, 0.0) for c, w in cur.items() if pd.notna(dprem.loc[dt].get(c, np.nan)))
         else:
             r = 0.0
         gross = leverage * r - (leverage - 1) * margin / 365     # margin on borrowed (levered)

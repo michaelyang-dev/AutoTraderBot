@@ -83,7 +83,7 @@ def fetch(top=30, start="2023-06-01"):
     end_ms = int(time.time() * 1000)
     coins = universe_by_oi(top)
     print("universe (top %d by OI): %s" % (top, ", ".join(coins)))
-    fund, price = {}, {}
+    fund, price, prem = {}, {}, {}
     for coin in coins:
         fh = funding_history(coin, start_ms, end_ms)
         if fh:
@@ -91,6 +91,9 @@ def fetch(top=30, start="2023-06-01"):
             f["date"] = pd.to_datetime(f["time"], unit="ms").dt.normalize()
             f["fundingRate"] = f["fundingRate"].astype(float)
             fund[coin] = f.groupby("date")["fundingRate"].sum()
+            if "premium" in f.columns:                       # perp deviation from spot oracle = the basis
+                f["premium"] = pd.to_numeric(f["premium"], errors="coerce")
+                prem[coin] = f.groupby("date")["premium"].last()
         cd = daily_prices(coin, start_ms, end_ms)
         if cd:
             c = pd.DataFrame(cd)
@@ -100,10 +103,12 @@ def fetch(top=30, start="2023-06-01"):
         time.sleep(0.04)
     fdf = pd.DataFrame(fund).sort_index()
     pdf = pd.DataFrame(price).sort_index()
+    prdf = pd.DataFrame(prem).sort_index()
     os.makedirs(DATA, exist_ok=True)
     fdf.to_parquet(os.path.join(DATA, "hl_funding.parquet"))
     pdf.to_parquet(os.path.join(DATA, "hl_price.parquet"))
-    print("saved funding %s, price %s → %s" % (fdf.shape, pdf.shape, DATA))
+    prdf.to_parquet(os.path.join(DATA, "hl_premium.parquet"))
+    print("saved funding %s, price %s, premium %s → %s" % (fdf.shape, pdf.shape, prdf.shape, DATA))
     ann = fdf.mean() * 365 * 100
     print("per-coin mean annualized funding (top by |mean|):")
     print(ann.reindex(ann.abs().sort_values(ascending=False).index).head(12).round(1).to_string())
