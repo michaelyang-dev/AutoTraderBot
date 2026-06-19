@@ -46,7 +46,7 @@ def log(msg):
 
 def refresh_enhanced_data():
     """Run fetch_all_data.py to refresh FMP caches."""
-    log("Refreshing FMP enhanced data (price targets, DCF, growth, profiles, crypto/forex)...")
+    log("Refreshing FMP enhanced data (price targets, DCF, growth, profiles)...")
     t0 = time.time()
     try:
         from strategies.fetch_all_data import main as fetch_main

@@ -213,11 +213,10 @@ class FastUniverse:
             for date, grp in ml_predictions.groupby("date"):
                 self._ml_preds[date] = dict(zip(grp["symbol"], grp["prob_ensemble"]))
 
-        # Enhanced data: price targets, DCF, financial growth, crypto/forex
+        # Enhanced data: price targets, DCF, financial growth
         self._price_targets = {}  # {symbol: {target_consensus, upside_pct}}
         self._dcf = {}            # {symbol: {dcf, upside_pct}}
         self._fin_growth = {}     # {symbol: [{date, revenue_growth, eps_growth, ...}]}
-        self._crypto_fx = {}      # {date: {btc_ret_20d, eth_ret_20d, ...}}
         self._ev = {}             # {symbol: [{date, ev_to_revenue, market_cap}]}
         self._profiles = {}       # {symbol: {beta, market_cap, sector, industry}}
         self._insiders = {}       # {symbol: DataFrame with date, is_buy, shares}
@@ -286,15 +285,6 @@ class FastUniverse:
                             "market_cap": row.get("market_cap"),
                             "industry": row.get("industry"),
                         }
-
-            # Crypto/forex (date-level)
-            cfx = enhanced_data.get("crypto_forex")
-            if cfx is not None and len(cfx) > 0:
-                for date in cfx.index:
-                    row = cfx.loc[date]
-                    self._crypto_fx[date] = {
-                        col: row[col] for col in cfx.columns if not np.isnan(row[col])
-                    }
 
             # Insider trades
             ins = enhanced_data.get("insiders")
@@ -1100,12 +1090,6 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
         # Blend factor: 0 = full bear config, 1 = full bull config
         blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
-        # Crypto risk-on boost: if BTC trending up strongly, tilt more bullish
-        cfx = uni._crypto_fx.get(date, {})
-        btc_ret = cfx.get("btc_ret_20d", 0)
-        if btc_ret and not np.isnan(btc_ret) and btc_ret > 0.15:
-            blend = min(1.0, blend + 0.10)  # slight bull tilt when crypto risk-on
-
         # Blended capital allocations
         blended_config = {}
         for name, bull_pct in STRATEGY_CONFIG_BULL:
@@ -1321,8 +1305,7 @@ def main():
                             ("dcf_values.parquet", "dcf"),
                             ("financial_growth.parquet", "financial_growth"),
                             ("enterprise_values.parquet", "enterprise_values"),
-                            ("company_profiles.parquet", "profiles"),
-                            ("crypto_forex_extended.parquet", "crypto_forex")]:
+                            ("company_profiles.parquet", "profiles")]:
             fpath = enhanced_dir / fname
             if fpath.exists():
                 enhanced_data[key] = pd.read_parquet(fpath)

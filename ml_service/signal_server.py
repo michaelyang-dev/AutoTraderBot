@@ -271,7 +271,6 @@ async def lifespan(app: FastAPI):
                             ("financial_growth.parquet", "financial_growth"),
                             ("enterprise_values.parquet", "enterprise_values"),
                             ("company_profiles.parquet", "profiles"),
-                            ("crypto_forex_extended.parquet", "crypto_forex"),
                             ("transcript_sentiment.parquet", "transcript_sentiment"),
                             ("options_snapshots.parquet", "options"),
                             ("ortex_short_interest.parquet", "ortex_si"),
@@ -479,7 +478,7 @@ def data_status():
     # Enhanced data (7-day cache TTL for some, daily for others)
     daily_enhanced = ["options_snapshots", "ortex_short_interest",
                       "ortex_short_dtc", "ortex_short_ctb",
-                      "ortex_short_availability", "crypto_forex_extended"]
+                      "ortex_short_availability"]
     weekly_enhanced = ["financial_growth", "enterprise_values",
                        "company_profiles", "transcript_sentiment",
                        "price_targets", "dcf_values"]

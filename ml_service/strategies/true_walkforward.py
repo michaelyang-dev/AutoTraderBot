@@ -277,8 +277,7 @@ def main():
                             ("dcf_values.parquet", "dcf"),
                             ("financial_growth.parquet", "financial_growth"),
                             ("enterprise_values.parquet", "enterprise_values"),
-                            ("company_profiles.parquet", "profiles"),
-                            ("crypto_forex_extended.parquet", "crypto_forex")]:
+                            ("company_profiles.parquet", "profiles")]:
             fpath = enhanced_dir / fname
             if fpath.exists():
                 enhanced_data[key] = pd.read_parquet(fpath)

@@ -305,58 +305,6 @@ def fetch_economic_calendar():
 #  Massive Data Fetchers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def fetch_crypto_forex_extended():
-    """Fetch BTC, ETH, EUR/USD, GBP/USD daily bars."""
-    cache = CACHE_DIR / "crypto_forex_extended.parquet"
-    if cache.exists() and (datetime.now() - datetime.fromtimestamp(cache.stat().st_mtime)).days < 1:
-        return pd.read_parquet(cache)
-
-    log("  Fetching crypto/forex extended ...")
-    result = pd.DataFrame()
-
-    tickers = [
-        ("X:BTCUSD", "btc"),
-        ("X:ETHUSD", "eth"),
-        ("C:EURUSD", "eurusd"),
-        ("C:GBPUSD", "gbpusd"),
-        ("C:USDJPY", "usdjpy"),
-    ]
-
-    for ticker, prefix in tickers:
-        data = massive_get("/v2/aggs/ticker/%s/range/1/day/2018-01-01/2027-01-01" % ticker,
-                            {"limit": 50000, "sort": "asc"})
-        bars = data.get("results", [])
-        if bars:
-            df = pd.DataFrame(bars)
-            df["date"] = pd.to_datetime(df["t"], unit="ms").dt.normalize()
-            df = df.set_index("date")
-            result[prefix + "_close"] = df["c"]
-            result[prefix + "_volume"] = df["v"]
-            log("    %s: %d bars" % (ticker, len(df)))
-        time.sleep(0.3)
-
-    # Compute derived features
-    for prefix in ["btc", "eth"]:
-        if prefix + "_close" in result:
-            result[prefix + "_ret_5d"] = result[prefix + "_close"].pct_change(5)
-            result[prefix + "_ret_20d"] = result[prefix + "_close"].pct_change(20)
-            result[prefix + "_ret_60d"] = result[prefix + "_close"].pct_change(60)
-            result[prefix + "_vol_20d"] = result[prefix + "_close"].pct_change().rolling(20).std()
-            result[prefix + "_sma50_dist"] = (
-                result[prefix + "_close"] / result[prefix + "_close"].rolling(50).mean() - 1
-            )
-
-    for prefix in ["eurusd", "gbpusd", "usdjpy"]:
-        if prefix + "_close" in result:
-            result[prefix + "_ret_5d"] = result[prefix + "_close"].pct_change(5)
-            result[prefix + "_ret_20d"] = result[prefix + "_close"].pct_change(20)
-
-    if len(result) > 0:
-        result.to_parquet(cache)
-    log("    Total crypto/forex features: %d columns" % len(result.columns))
-    return result
-
-
 def fetch_options_volume_history(symbols, lookback_months=6):
     """
     Fetch historical put/call volume for top stocks by downloading
@@ -550,10 +498,6 @@ def main():
     profiles = fetch_company_profiles(stock_symbols)
     econ = fetch_economic_calendar()
 
-    # ── Massive Data ──
-    log("\n── Massive Data ──")
-    crypto_fx = fetch_crypto_forex_extended()
-
     # ── Polygon Options Data ──
     log("\n── Options Data (Polygon) ──")
     options = fetch_options_snapshots(stock_symbols)
@@ -569,9 +513,6 @@ def main():
     log("  Enterprise value: %d rows" % (len(ev) if ev is not None else 0))
     log("  Company profiles: %d symbols" % (len(profiles) if profiles is not None else 0))
     log("  Economic calendar: %d events" % (len(econ) if econ is not None else 0))
-    log("  Crypto/Forex:     %d cols x %d rows" % (
-        len(crypto_fx.columns) if crypto_fx is not None else 0,
-        len(crypto_fx) if crypto_fx is not None else 0))
 
 
 if __name__ == "__main__":

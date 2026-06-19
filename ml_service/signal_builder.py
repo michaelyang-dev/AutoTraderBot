@@ -482,7 +482,7 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5):
     breadth = sum(1 for v in dist_sma50.values() if v > 0) / max(len(dist_sma50), 1) if dist_sma50 else 0.5
     blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
-    # Crypto tilt and VIX pause REMOVED — not in backtest, negligible impact
+    # Legacy regime tilts removed — not in backtest, negligible impact
     paused = set()
 
     # UMD crash regime (matches backtest: shift to value-heavy when momentum crashes).

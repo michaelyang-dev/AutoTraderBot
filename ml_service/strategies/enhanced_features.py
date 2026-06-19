@@ -1,8 +1,8 @@
 """
 Enhanced Features Builder
 =========================
-Computes additional features from FMP balance sheet, cash flow,
-and Massive crypto/forex for use in the v8 strategy framework.
+Computes additional features from FMP balance sheet and cash flow
+for use in the v8 strategy framework.
 
 Features added:
   1. gross_profitability: gross_profit / total_assets (Novy-Marx quality factor)
@@ -10,8 +10,6 @@ Features added:
   3. accruals: (net_income - operating_cf) / total_assets (earnings quality)
   4. revenue_acceleration: this Q rev growth vs last Q rev growth
   5. debt_change: QoQ change in total debt / total assets
-  6. btc_momentum_20d: BTC 20-day return (risk-on proxy)
-  7. eurusd_trend_20d: EUR/USD 20-day return (dollar strength)
 
 Usage:
     from strategies.enhanced_features import build_enhanced_features
@@ -130,35 +128,6 @@ def fetch_cash_flows(symbols):
     return df
 
 
-def fetch_crypto_forex():
-    """Fetch BTC and EUR/USD daily data from Massive."""
-    cache_file = CACHE_DIR / "crypto_forex.parquet"
-    if cache_file.exists():
-        age_days = (datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)).days
-        if age_days < 1:
-            return pd.read_parquet(cache_file)
-
-    print("  Fetching BTC and EUR/USD from Massive ...")
-    result = pd.DataFrame()
-
-    for ticker, col_prefix in [("X:BTCUSD", "btc"), ("C:EURUSD", "eurusd")]:
-        data = _massive_get("/v2/aggs/ticker/%s/range/1/day/2016-01-01/2027-01-01" % ticker,
-                             {"limit": 50000, "sort": "asc"})
-        bars = data.get("results", [])
-        if bars:
-            df = pd.DataFrame(bars)
-            df["date"] = pd.to_datetime(df["t"], unit="ms").dt.normalize()
-            df = df.set_index("date")
-            result[col_prefix + "_close"] = df["c"]
-            result[col_prefix + "_ret_5d"] = df["c"].pct_change(5)
-            result[col_prefix + "_ret_20d"] = df["c"].pct_change(20)
-            print("    %s: %d bars" % (ticker, len(df)))
-
-    if len(result) > 0:
-        result.to_parquet(cache_file)
-    return result
-
-
 def build_enhanced_features(symbols=None):
     """
     Build enhanced features and return as a dict of {feature_name: {date: {symbol: value}}}.
@@ -178,7 +147,6 @@ def build_enhanced_features(symbols=None):
     balance = fetch_balance_sheets(symbols)
     cashflow = fetch_cash_flows(symbols)
     income = pd.read_parquet(DATA_DIR / "fundamentals_income.parquet")
-    crypto_fx = fetch_crypto_forex()
 
     # Build features
     enhanced = {}
@@ -226,10 +194,6 @@ def build_enhanced_features(symbols=None):
         # We don't have market cap directly, but FCF per share is still useful
         fcf["fcf_per_share"] = fcf["free_cf"] / fcf["shares_outstanding"].replace(0, np.nan)
         enhanced["fcf_per_share"] = fcf[["symbol", "date", "fcf_per_share"]].dropna()
-
-    # Crypto/forex features (date-level, not symbol-level)
-    if len(crypto_fx) > 0:
-        enhanced["_crypto_forex"] = crypto_fx
 
     print("  Enhanced features built: %s" % ", ".join(enhanced.keys()))
     return enhanced
