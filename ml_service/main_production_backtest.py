@@ -233,6 +233,7 @@ class FastBacktester:
         self._gross_traded = 0.0  # research: cumulative $ traded (turnover measurement)
         self._track_tax = bool(config.get("track_tax"))  # research: FIFO lot tax tracking
         self._tax_events = []  # research: realized {gain, days} per FIFO lot sold
+        self._rebal_log = []  # research: (date, {sym: target_weight}) per rebalance when record_targets set
 
         if vixm_pct > 0 and trading_dates[0] in self.etf_df.index and "VIXM" in self.etf_df.columns:
             vp = self.etf_df.loc[trading_dates[0], "VIXM"]
@@ -402,6 +403,9 @@ class FastBacktester:
                         eq_pct *= trend_scale.get("caution", 0.75)
 
             target_d = {s: w * total_val * eq_pct for s, w in combined.items()}
+
+            if config.get("record_targets"):
+                self._rebal_log.append((date, dict(combined)))
 
             for sym in list(holdings):
                 if sym not in target_d:
