@@ -75,3 +75,4 @@ ml_service/data/edgar_filings/
 ecosystem.config.js.*backup
 ml_service/data/*.bak*
 ml_service/data/sentiment_archive/
+ml_service/data/crypto/*.parquet
