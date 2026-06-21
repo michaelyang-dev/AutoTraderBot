@@ -23,15 +23,17 @@ HL = "https://api.hyperliquid.xyz/info"
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "crypto")
 
 
-def post(body, retries=4):
-    for _ in range(retries):
+def post(body, retries=6):
+    # returns the parsed JSON on success (possibly an empty list = genuine no-data),
+    # or None on hard failure (e.g. 429 rate-limit after retries) — callers MUST distinguish.
+    for i in range(retries):
         try:
             r = requests.post(HL, json=body, timeout=25)
             if r.status_code == 200:
                 return r.json()
         except Exception:
             pass
-        time.sleep(0.6)
+        time.sleep(0.6 * (i + 1))
     return None
 
 
@@ -50,31 +52,50 @@ def universe_by_oi(top):
 
 
 def funding_history(coin, start_ms, end_ms):
+    # paginate by advancing past the last timestamp; stop ONLY on empty chunk or no forward progress.
+    # (the old `len(chunk) < 500` break truncated coins that returned a short chunk mid-history — a
+    #  silent data bug that ended SOL/BNB/LTC funding in 2023-24 though they trade through today.)
     out, t = [], start_ms
-    while t < end_ms:
+    for _ in range(3000):
         chunk = post({"type": "fundingHistory", "coin": coin, "startTime": t, "endTime": end_ms})
-        if not chunk:
+        if chunk is None:                          # request FAILED (rate-limit) — not end of data; back off & retry
+            time.sleep(3.0)
+            chunk = post({"type": "fundingHistory", "coin": coin, "startTime": t, "endTime": end_ms})
+            if chunk is None:
+                time.sleep(6.0)
+                chunk = post({"type": "fundingHistory", "coin": coin, "startTime": t, "endTime": end_ms})
+        if chunk is None or len(chunk) == 0:       # genuine end (empty list) or gave up
             break
         out += chunk
-        if len(chunk) < 500:
+        nt = chunk[-1]["time"] + 1
+        if nt <= t:
             break
-        t = chunk[-1]["time"] + 1
-        time.sleep(0.04)
+        t = nt
+        if t >= end_ms:
+            break
+        time.sleep(0.08)
     return out
 
 
 def daily_prices(coin, start_ms, end_ms):
     out, t = [], start_ms
-    while t < end_ms:
-        chunk = post({"type": "candleSnapshot", "req": {"coin": coin, "interval": "1d",
-                                                         "startTime": t, "endTime": end_ms}})
-        if not chunk:
+    for _ in range(3000):
+        req = {"type": "candleSnapshot", "req": {"coin": coin, "interval": "1d", "startTime": t, "endTime": end_ms}}
+        chunk = post(req)
+        if chunk is None:                          # rate-limit, not end — back off & retry
+            time.sleep(3.0); chunk = post(req)
+            if chunk is None:
+                time.sleep(6.0); chunk = post(req)
+        if chunk is None or len(chunk) == 0:
             break
         out += chunk
-        if len(chunk) < 500:
+        nt = chunk[-1]["t"] + 1
+        if nt <= t:
             break
-        t = chunk[-1]["t"] + 1
-        time.sleep(0.04)
+        t = nt
+        if t >= end_ms:
+            break
+        time.sleep(0.08)
     return out
 
 

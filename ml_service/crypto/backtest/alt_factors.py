@@ -25,7 +25,10 @@ RISK_FREE = 0.045
 
 
 def load():
-    df = pd.read_csv(os.path.join(DATA, "crypto2_history.csv"))
+    full = os.path.join(DATA, "crypto2_history_full.csv")
+    path = full if os.path.exists(full) else os.path.join(DATA, "crypto2_history.csv")
+    print("  universe file:", os.path.basename(path))
+    df = pd.read_csv(path)
     df["date"] = pd.to_datetime(df["timestamp"]).dt.normalize()
     df = df[~df["symbol"].isin(STABLES)]
     close = df.pivot_table(index="date", columns="symbol", values="close", aggfunc="last").sort_index()

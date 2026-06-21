@@ -24,6 +24,7 @@ ml_service/data/walkforward_short/
 ml_service/data/russell_short/
 ml_service/data/smallcap/
 ml_service/data/longshort/
+ml_service/data/crypto/
 ml_service/research/data/
 server/backtest_data/
 
