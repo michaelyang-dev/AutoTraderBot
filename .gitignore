@@ -77,3 +77,6 @@ ecosystem.config.js.*backup
 ml_service/data/*.bak*
 ml_service/data/sentiment_archive/
 ml_service/data/crypto/*.parquet
+
+# Research outputs/data (regenerable, large) — keep code, ignore outputs
+ml_service/research/_*
