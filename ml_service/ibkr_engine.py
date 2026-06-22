@@ -1200,23 +1200,46 @@ class IBKREngine:
                 log.error(f"Startup connect failed (attempt {attempt}): {e} — retrying in 30s")
                 await asyncio.sleep(30)
 
-    async def _cmd_reconnect(self):
-        # "Reconnect any issue": if the Gateway API port is dead, restarting the engine
-        # can't help — the Gateway itself is down (often needs 2FA after its daily
-        # restart). Restart the Gateway container (triggers IBKR Mobile 2FA). Otherwise
-        # it's an engine-side stale socket -> clean engine restart (as before).
+    async def _ibkr_alive(self):
+        """Actively verify IBKR is REALLY working: Gateway port open AND a live server
+        request returns. A dead login (you logged in elsewhere) keeps the port open but
+        times out on data — only a Gateway relogin fixes that. Uses a throwaway read-only
+        connection (separate clientId) so it never disturbs the engine's own connection."""
         if not self._gateway_port_open():
+            return False
+        probe = IB()
+        try:
+            await asyncio.wait_for(
+                probe.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID + 90,
+                                   readonly=True, timeout=8), timeout=10)
+            await asyncio.wait_for(probe.reqCurrentTimeAsync(), timeout=6)  # only returns if the session is live
+            return True
+        except Exception:
+            return False
+        finally:
+            try:
+                probe.disconnect()
+            except Exception:
+                pass
+
+    async def _cmd_reconnect(self):
+        # "Reconnect any issue": probe whether IBKR is REALLY working (port open AND data
+        # flowing), not just whether the port is open. A dead login (logged in elsewhere)
+        # leaves the port open but times out on data — the only fix is a Gateway relogin.
+        # So restart the Gateway whenever IBKR isn't truly alive (port closed OR session
+        # dead); only do a plain engine restart when IBKR genuinely is alive.
+        if not await self._ibkr_alive():
             ok, msg = await asyncio.to_thread(self._restart_gateway)
             if ok:
-                return ("🔄 Gateway was DOWN — restarting it now.\n"
-                        "📲 Approve the IBKR Mobile (IB Key) 2FA prompt on your phone.\n"
-                        "The engine auto-connects once it's back — send /connection in ~90s.")
-            return (f"⚠️ Gateway is down and its restart FAILED:\n{msg}\n"
+                return ("🔄 IBKR was down (Gateway closed or login dead) — restarting the\n"
+                        "Gateway now. 📲 Approve the IBKR Mobile (IB Key) 2FA on your phone if\n"
+                        "it asks. The engine auto-connects once it's back — /connection in ~90s.")
+            return (f"⚠️ Gateway restart FAILED:\n{msg}\n"
                     f"Restart it manually on the server: docker restart {IB_GATEWAY_CONTAINER}")
-        # send the reply, then exit ~2s later so PM2 restarts us with a clean reconnect
+        # IBKR is genuinely healthy -> engine-side stale socket -> clean engine restart.
         threading.Timer(2.0, lambda: os._exit(1)).start()
-        return ("🔄 Gateway is up — restarting the engine for a clean reconnect — give it\n"
-                "~45s, then send /connection to confirm.")
+        return ("🔄 IBKR is healthy — restarting just the engine for a clean reconnect —\n"
+                "give it ~45s, then send /connection to confirm.")
 
     async def _telegram_poll_loop(self):
         """Long-poll Telegram for /commands and reply. Read-only; never crashes the engine.
