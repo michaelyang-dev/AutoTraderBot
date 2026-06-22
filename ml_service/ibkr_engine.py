@@ -1370,10 +1370,18 @@ class IBKREngine:
                 cycle += 1
                 self._last_progress = time.time()   # watchdog heartbeat — proves the loop is alive
 
-                # Check IB connection health every cycle — reconnect if dropped
-                if not self.ib.isConnected():
-                    log.warning("IB connection lost in main loop — reconnecting...")
-                    self._on_disconnect_detected()  # silent for brief blips; escalates if >15 min
+                # Connection health: check the socket every cycle AND the real DATA FEED
+                # about once a minute. A dead login (you logged in elsewhere) keeps the
+                # socket up but the feed dead, so socket-only checks miss it — meaning no
+                # alert fired when the market was closed. _real_connectivity round-trips to
+                # IBKR (retries once so a transient blip won't false-fire).
+                if (cycle % 6 == 1) or not self.ib.isConnected():
+                    socket_ok, data_ok = await self._real_connectivity()
+                else:
+                    socket_ok, data_ok = True, True
+                if not (socket_ok and data_ok):
+                    log.warning(f"IB unhealthy (socket={socket_ok} data={data_ok}) — reconnecting...")
+                    self._on_disconnect_detected()  # silent for brief blips; escalates (2FA alert) if >15 min
                     try:
                         await self.connect()
                         self.ib.reqGlobalCancel()
@@ -1413,6 +1421,22 @@ class IBKREngine:
                             pass
                     await asyncio.sleep(10)
                     continue
+
+                # One-time daily "market OPEN" announcement (parallel to the Alpaca engine).
+                from zoneinfo import ZoneInfo
+                _td = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y-%m-%d")
+                if getattr(self, "_open_announced", None) != _td:
+                    self._open_announced = _td
+                    try:
+                        await self.update_positions()
+                        nav = (await self.get_account_summary()).get("NetLiquidation", 0)
+                        left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+                        send_telegram(
+                            f"🟢 IBKR market OPEN ({_td}) — engine live, holding "
+                            f"{len(self.positions)} positions, NAV ${nav:,.0f}.\n"
+                            f"Monitoring trailing stops; next rebalance in {left} trading days.")
+                    except Exception:
+                        send_telegram(f"🟢 IBKR market OPEN ({_td}) — engine live.")
 
                 # Check trailing stops every cycle (long positions)
                 await self.check_trailing_stops()
