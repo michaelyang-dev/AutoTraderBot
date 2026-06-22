@@ -1279,6 +1279,7 @@ class IBKREngine:
         self._disconnect_since = None   # outage tracking for escalating alerts
         self._escalated = False
         self._last_progress = time.time()
+        self.running = True             # set BEFORE telegram task: its loop is `while self.running`
         asyncio.create_task(self._telegram_poll_loop())
         # Robust startup connect: retry with backoff + 2FA escalation instead of fatal
         # crash-looping (the ~1/sec PM2 restart loop that spams alerts) when Gateway down.
