@@ -67,6 +67,7 @@ IB_HOST = os.getenv("IB_HOST", "127.0.0.1")
 IB_PORT = int(os.getenv("IB_PORT", "4002"))       # 4001=live, 4002=paper
 IBKR_INITIAL_CAPITAL = float(os.getenv("IBKR_INITIAL_CAPITAL", "30000"))  # funded amount, for since-inception P&L
 IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "1"))
+IB_GATEWAY_CONTAINER = os.getenv("IB_GATEWAY_CONTAINER", "ibgateway")  # docker container /reconnect restarts when the Gateway itself is down
 SIGNAL_PORT = os.getenv("SIGNAL_SERVER_PORT", "5001")
 SIGNAL_URL = f"http://localhost:{SIGNAL_PORT}/signals"
 SIGNAL_HEALTH_URL = f"http://localhost:{SIGNAL_PORT}/health"
@@ -1159,12 +1160,63 @@ class IBKREngine:
                     "Gateway itself needs a restart (which needs your 2FA).")
         return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
 
+    def _gateway_port_open(self):
+        """True if the IB Gateway API port accepts a TCP connection (Gateway logged
+        in). If False, the Gateway itself is down — restarting the engine won't help."""
+        import socket
+        try:
+            with socket.create_connection((IB_HOST, IB_PORT), timeout=5):
+                return True
+        except Exception:
+            return False
+
+    def _restart_gateway(self):
+        """Restart the IB Gateway docker container -> re-triggers IBKR login/2FA.
+        Engine runs as 'ubuntu' (in the docker group). Returns (ok, message)."""
+        import subprocess
+        try:
+            r = subprocess.run(["docker", "restart", IB_GATEWAY_CONTAINER],
+                               capture_output=True, text=True, timeout=90)
+            if r.returncode == 0:
+                return True, (r.stdout or "").strip()
+            return False, ((r.stderr or r.stdout) or "").strip()[:300]
+        except Exception as e:
+            return False, str(e)[:300]
+
+    async def _connect_with_retry(self):
+        """Startup connect that RETRIES (with the same 2FA escalation as a mid-session
+        disconnect) instead of fatal-crashing into a ~1/sec PM2 restart loop when the
+        Gateway is down. Stays alive so /reconnect stays reachable."""
+        attempt = 0
+        while True:
+            try:
+                await self.connect()
+                self._on_reconnect()   # clears outage state; confirms recovery if escalated
+                return
+            except Exception as e:
+                attempt += 1
+                self._last_progress = time.time()   # keep the watchdog calm
+                self._on_disconnect_detected()      # silent <15min; one 2FA alert after
+                log.error(f"Startup connect failed (attempt {attempt}): {e} — retrying in 30s")
+                await asyncio.sleep(30)
+
     async def _cmd_reconnect(self):
+        # "Reconnect any issue": if the Gateway API port is dead, restarting the engine
+        # can't help — the Gateway itself is down (often needs 2FA after its daily
+        # restart). Restart the Gateway container (triggers IBKR Mobile 2FA). Otherwise
+        # it's an engine-side stale socket -> clean engine restart (as before).
+        if not self._gateway_port_open():
+            ok, msg = await asyncio.to_thread(self._restart_gateway)
+            if ok:
+                return ("🔄 Gateway was DOWN — restarting it now.\n"
+                        "📲 Approve the IBKR Mobile (IB Key) 2FA prompt on your phone.\n"
+                        "The engine auto-connects once it's back — send /connection in ~90s.")
+            return (f"⚠️ Gateway is down and its restart FAILED:\n{msg}\n"
+                    f"Restart it manually on the server: docker restart {IB_GATEWAY_CONTAINER}")
         # send the reply, then exit ~2s later so PM2 restarts us with a clean reconnect
         threading.Timer(2.0, lambda: os._exit(1)).start()
-        return ("🔄 Restarting the engine for a clean reconnect — give it ~45s, then send\n"
-                "/connection to confirm. (Note: if the GATEWAY's uplink is broken, a restart\n"
-                "won't fix it — you'll need to log out elsewhere + the Gateway restarted.)")
+        return ("🔄 Gateway is up — restarting the engine for a clean reconnect — give it\n"
+                "~45s, then send /connection to confirm.")
 
     async def _telegram_poll_loop(self):
         """Long-poll Telegram for /commands and reply. Read-only; never crashes the engine.
@@ -1222,7 +1274,15 @@ class IBKREngine:
 
     async def run(self):
         """Main loop."""
-        await self.connect()
+        # Init outage tracking + start the Telegram bot BEFORE connecting, so /reconnect
+        # stays reachable even if the Gateway is down at startup (when you most need it).
+        self._disconnect_since = None   # outage tracking for escalating alerts
+        self._escalated = False
+        self._last_progress = time.time()
+        asyncio.create_task(self._telegram_poll_loop())
+        # Robust startup connect: retry with backoff + 2FA escalation instead of fatal
+        # crash-looping (the ~1/sec PM2 restart loop that spams alerts) when Gateway down.
+        await self._connect_with_retry()
 
         log.info("=" * 60)
         log.info("  IBKR Trading Engine v12 Started")
@@ -1262,12 +1322,8 @@ class IBKREngine:
 
         self.running = True
         cycle = 0
-        self._disconnect_since = None   # outage tracking for escalating alerts
-        self._escalated = False
         self._start_watchdog()          # force-restart if the loop ever hangs (Error 1100 etc.)
-
-        # Start the read-only Telegram command bot (concurrent task)
-        asyncio.create_task(self._telegram_poll_loop())
+        # (outage tracking + Telegram bot already started at the top of run())
 
         # One-time self-test: if the sentinel file exists, run every command once
         # (logs + sends results), then delete the sentinel so it never repeats.
