@@ -572,7 +572,7 @@ def main():
     log("  DAILY DATA REFRESH")
     log("=" * 60)
 
-    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 300, retries=1)
+    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 600, retries=1)  # 2x headroom: bulk FMP (11 sources x ~1500) occasionally >300s; false-alarmed 2026-06-23
     ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60, retries=1)
     ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 2400, retries=1)  # 40min for 1500 stocks × 8 FMP calls with rate limiting
     ok4 = _run_with_timeout(refresh_options, "options", 300, retries=1)
