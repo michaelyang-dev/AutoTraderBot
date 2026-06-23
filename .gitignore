@@ -80,3 +80,6 @@ ml_service/data/crypto/*.parquet
 
 # Research outputs/data (regenerable, large) — keep code, ignore outputs
 ml_service/research/_*
+
+# Norgate futures data (large, local only)
+ml_service/data/norgate/
