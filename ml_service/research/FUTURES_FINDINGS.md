@@ -49,3 +49,38 @@ survivorship) — net recent Sharpe likely ~0.3–0.45. At $30K, the modest dive
 benefit is marginal vs ongoing futures data/exchange/commission costs; the case
 strengthens with AUM. Live execution feasible via IBKR micros; live continuous series
 buildable from IBKR and verifiable against this Norgate snapshot.
+
+---
+
+# Deeper dive — first-principles, not the factor zoo
+
+**Pattern that emerged: you CANNOT use the futures panel to predict/time equities
+(efficient market), but you CAN harvest it as a diversifier — and conviction-weighting
+makes the book meaningfully better.**
+
+- **Macro PCA (2000–26):** PC1 (16%) = risk axis (equities vs bonds), PC2 (10%) =
+  dollar/liquidity. Real & economically interpretable — but no equity-predictive edge.
+- **Crash-timing via cross-asset stress** (dollar + flight-to-quality + VIX): **DEAD.**
+  "200d OR stress" is byte-identical to 200d alone; stress fires *later* than the 200d
+  (2020: Feb-17 vs Feb-3). SPY<200d is at the frontier — don't complicate it.
+- **Factor timing (momentum vs value) via macro state: DEAD.** IC≈0 (commod +0.03,
+  rates −0.01, dollar −0.03, combined −0.007); regime-tilted Sharpe 0.32 < fixed 0.56.
+  Factor timing fails OOS, as the literature warns.
+- **Cross-asset lead-lag: DEAD** at the tradeable horizon. fwd-1d ICs all < 0.04;
+  fwd-5d "notables" have inconsistent signs + overlap artifacts. Equities efficient.
+- **★ IMPROVED BOOK — the real win.** Conviction-weighting (risk-adjusted trend
+  *strength* via tanh, not just sign) + dropping equity-index trend:
+  recent (2015–26) Sharpe **0.32→0.60**, 2020s **0.39→0.77**, MaxDD −25%→−23%, crisis
+  convexity kept (2008 +46%, 2020 +9%, 2022 +9%). OI trend-quality filter ≈ neutral.
+  (Haircut for in-sample variant selection → realistic net ~0.45–0.5.)
+- **Integration with the improved book:** capital-efficient overlay (futures on margin)
+  at 50% → v12 **Sharpe 1.04→1.20, CAGR 19.9%→24.2%**, drawdown flat-to-better, corr
+  −0.07. Now adds *return AND Sharpe AND* crisis protection — not just modest DD.
+
+**REVISED VERDICT:** the actionable output is the **conviction-weighted diversified
+futures book as a capital-efficient overlay** on the equity strategy. It crossed from
+"marginal" (v1) to "worth seriously considering": ~+0.16 Sharpe + crisis convexity at
+zero capital cost (margin). Remaining honest caveats: idealized costs, $30K
+capacity/contract-granularity, ongoing data/exchange fees. Case strengthens with AUM.
+The equity strategy itself can't be improved by this data (timing & tilts are efficient);
+the value is purely the diversifying overlay.

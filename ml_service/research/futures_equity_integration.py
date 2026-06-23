@@ -15,8 +15,9 @@ m = bt.run("2018-01-01", "2025-12-31", V12)
 eqr = m["daily_values"].pct_change().dropna()
 print(f"v12 equity (1x): CAGR {m['cagr']:+.1%}  Sharpe {m['sharpe']:.2f}  MaxDD {m['max_dd']:.1%}")
 
-book = pd.read_parquet(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "_futures_book.parquet"))["book"]
+_bk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_futures_book_v2.parquet")
+book = pd.read_parquet(_bk)["book"]
+print(f"[using improved book: {_bk.split('/')[-1]}]")
 df = pd.concat([eqr.rename("eq"), book.rename("fut")], axis=1).dropna()
 print(f"overlap: {df.index.min().date()}..{df.index.max().date()} ({len(df)} days)")
 print(f"corr(equity, futures book): {df['eq'].corr(df['fut']):+.2f}")
