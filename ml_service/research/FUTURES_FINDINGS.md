@@ -84,3 +84,41 @@ zero capital cost (margin). Remaining honest caveats: idealized costs, $30K
 capacity/contract-granularity, ongoing data/exchange fees. Case strengthens with AUM.
 The equity strategy itself can't be improved by this data (timing & tilts are efficient);
 the value is purely the diversifying overlay.
+
+---
+
+# GO/NO-GO: realistic costs + $30K capacity (futures_capacity.py)
+
+Pushed book construction further (futures_book_v3.py): more trend horizons / risk-parity
+sleeve weighting = **diminishing returns** (recent Sharpe 0.59→0.62 but worse DD; risk-
+parity ≈ neutral). Conviction-weighting was the real win; we're at the construction
+ceiling (~recent Sharpe 0.6, idealized).
+
+Then the decisive stress test — integer micro/full contracts at real notionals + tiered
+realistic costs (2–10bps/side by liquidity), STIR excluded, 7x lev cap, weekly rebal:
+
+| | Sharpe (2010–26) | markets held | gross |
+|---|---|---|---|
+| IDEAL gross (no cost) | 0.90 | — | — |
+| IDEAL net (realistic costs) | **0.34** | — | 2.6x |
+| **AUM $30k** | **−0.34** | **0** | 0.05x |
+| AUM $100k | −0.17 | 2 | 0.19x |
+| AUM $300k | 0.17 | 7 | 0.38x |
+| AUM $1M | 0.13 | 22 | 1.26x |
+| AUM $3M | 0.45 | 43 | 1.63x |
+| AUM $10M | 0.49 | 58 | 1.76x |
+
+**Two decisive findings:**
+1. **Realistic costs roughly HALVE the edge** (idealized 0.90 → net 0.34). The 1.5bps
+   numbers overstate by ~2x. (Weekly rebal is conservative; monthly recovers some.)
+2. **At $30K it is a hard NO-GO.** 0 of 41 targeted markets can hold even ONE contract;
+   **no bonds** (the key crisis hedge has no micro, ~$100k notional); gross 0.05x = 95%
+   uninvested. The diversified book is *physically unbuildable* at this size. It needs
+   **~$2–3M+** to approximate the ideal (Sharpe ~0.45 at $3M); below ~$300k it's
+   nonfunctional.
+
+**FINAL:** the attractive overlay (v12 Sharpe 1.04→1.20) is real ON PAPER but
+**unimplementable at $30K** — it requires ~$2–3M of capital to hold the contracts. Plus
+realistic costs halve the standalone edge. **Decision: do NOT build at current size.**
+Shelve as a validated, ready sleeve; revisit at ~$2–3M+ AUM. Norgate snapshot + scripts
+are the reusable asset for that future build.

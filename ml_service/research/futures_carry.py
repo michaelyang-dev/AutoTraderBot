@@ -53,7 +53,7 @@ fl.crisis_table(carry_pnl, eq, "carry")
 j = carry_pnl.index.intersection(eq.index)
 print(f"\n  corr(carry, equity): {np.corrcoef(carry_pnl[j], eq[j])[0,1]:+.2f}")
 
-# save sleeve returns for the combined-book test
-out = pd.DataFrame({"carry": carry_pnl})
-out.to_parquet("_sleeve_carry.parquet")
-print("  [saved _sleeve_carry.parquet]")
+# save sleeve returns + the per-market carry SIGNAL for combined-book / capacity tests
+pd.DataFrame({"carry": carry_pnl}).to_parquet("_sleeve_carry.parquet")
+sig_carry.to_parquet("_sleeve_carry_sig.parquet")
+print("  [saved _sleeve_carry.parquet, _sleeve_carry_sig.parquet]")
