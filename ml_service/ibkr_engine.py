@@ -225,10 +225,33 @@ class IBKREngine:
             log.warning(f"Could not load NAV history: {e}")
         return []
 
+    def _is_trading_day(self, d=None):
+        """True if d (ISO 'YYYY-MM-DD' str, or None=today ET) is an NYSE trading day.
+        Uses pandas_market_calendars when available (handles holidays like Juneteenth);
+        falls back to a plain weekday check if the calendar can't be loaded."""
+        from datetime import date as _date
+        if d is None:
+            from zoneinfo import ZoneInfo
+            d = datetime.now(ZoneInfo("US/Eastern")).date()
+        elif isinstance(d, str):
+            d = _date.fromisoformat(d[:10])
+        if d.weekday() >= 5:
+            return False
+        try:
+            import pandas_market_calendars as mcal
+            iso = d.isoformat()
+            return len(mcal.get_calendar("NYSE").valid_days(iso, iso)) > 0
+        except Exception:
+            return True  # calendar unavailable -> weekday already passed above
+
     def record_nav(self, nav):
-        """Append today's NAV once per calendar day; keep last 70 days."""
+        """Append today's NAV once per trading day; keep last 70 days. Skips
+        weekends/holidays so flat non-trading days don't dampen the realized-vol
+        estimate used for vol-scaling (mirrors the backtest's trading-day series)."""
         try:
             import json
+            if not self._is_trading_day():
+                return
             today = datetime.now().date().isoformat()
             hist = self._load_nav_history()
             if hist and hist[-1][0] == today:
@@ -339,7 +362,8 @@ class IBKREngine:
         vol_scale = clamp(VOL_TARGET / realized_vol, floor, 1.0)."""
         if not VOL_SCALING:
             return 1.0, None
-        navs = [h[1] for h in self._load_nav_history()][-(VOL_LOOKBACK + 1):]
+        navs = [h[1] for h in self._load_nav_history()
+                if self._is_trading_day(h[0])][-(VOL_LOOKBACK + 1):]
         if len(navs) < 20:
             return 1.0, None  # insufficient history — ramp-up, no scaling yet
         rets = [navs[i] / navs[i - 1] - 1 for i in range(1, len(navs)) if navs[i - 1] > 0]
