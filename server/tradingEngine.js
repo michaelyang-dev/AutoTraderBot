@@ -3,6 +3,12 @@
 //  Runs all signal analysis, regime detection, trend following,
 //  and trade execution directly on the Express server.
 //  No React dependency — uses Alpaca SDK + Node http for v9.6 factor signals.
+//
+//  PARITY: this Alpaca PAPER engine runs the SAME v12 strategy as the IBKR LIVE
+//  engine (ml_service/ibkr_engine.py) — same :5001 signals, 20-day rebalance, 30
+//  max positions, 15% cap, 40% stop, ~1.49x effective leverage. The momentum /
+//  mean_reversion / mega_cap buckets below are DISABLED (0 slots); all picks come
+//  from the factor (v12) signal. See docs/LIVE_SYSTEM.md for the verified details.
 // ══════════════════════════════════════════════════════════════════════
 
 const http = require("http");

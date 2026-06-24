@@ -1,5 +1,11 @@
 # Backtest-Live Parity
 
+> ⚠️ **SUPERSEDED (as of 2026-06).** This document describes the *older multi-strategy*
+> slot config (`ml_medium:2, momentum:3, mega_cap:2, flex:1, max:8`). The live engines now
+> run **single-strategy v12** — all 30 slots go to the factor (v12) signals; momentum /
+> mean_reversion / mega_cap are **disabled**. For the current, verified source of truth see
+> **[LIVE_SYSTEM.md](LIVE_SYSTEM.md)**. Kept for historical reference only.
+
 Reconciliation of `ml_service/unified_backtester.py` with `server/tradingEngine.js`.
 
 **Date**: 2026-04-22
