@@ -1079,22 +1079,30 @@ class IBKREngine:
         out = ["💰 P&L\n"]
         try:
             s = await self._ibkr_snapshot()
-            nav = s["nav"]
-            line = f"🟢 IBKR LIVE\nNAV ${nav:,.0f} (now)\n"
+            live_nav = s["nav"]                                  # current NAV (after 4pm this includes after-hours)
             snap = self._load_close_snapshot()
-            if snap:
-                line += f"At close ({snap['date']}): ${snap['nav']:,.0f}\n"
-            # daily change from persisted NAV history (most recent prior trading day)
             hist = self._load_nav_history()
             today = datetime.now().date().isoformat()
             prev = [p for p in hist if p[0] != today]
+            mkt_open = self.is_market_open()
+            have_close = bool(snap and snap.get("date") == today and snap.get("nav"))
+            # "Today" P&L counts REGULAR HOURS ONLY: live NAV while open, frozen 4pm close after the bell
+            # (so the daily figure stops drifting on after-hours ticks — the bug this fixes).
+            session_nav = live_nav if (mkt_open or not have_close) else snap["nav"]
+            if mkt_open:
+                line = f"🟢 IBKR LIVE\nNAV ${live_nav:,.0f} (live)\n"
+            else:
+                line = f"🟢 IBKR LIVE\nNAV ${session_nav:,.0f} (4pm close)\n"
             if prev and prev[-1][1]:
-                d = nav - prev[-1][1]
-                line += f"Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)\n"
+                d = session_nav - prev[-1][1]
+                line += f"Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%) — regular hours\n"
             else:
                 line += "Today: n/a (building NAV history)\n"
+            if not mkt_open and have_close:                      # show after-hours move separately, not folded into "Today"
+                ah = live_nav - snap["nav"]
+                line += f"After-hours ${ah:+,.0f} ({ah/snap['nav']*100:+.2f}%) → now ${live_nav:,.0f}\n"
             line += f"Unrealized ${s['upl']:+,.0f}\n"
-            since = nav - IBKR_INITIAL_CAPITAL
+            since = live_nav - IBKR_INITIAL_CAPITAL
             line += f"Since ${IBKR_INITIAL_CAPITAL/1000:.0f}K funding: ${since:+,.0f} ({since/IBKR_INITIAL_CAPITAL*100:+.1f}%)"
             out.append(line)
         except Exception as e:

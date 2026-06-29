@@ -30,7 +30,7 @@ const INITIAL_CASH = 100000;
 const RISK = {
   MAX_POSITION_PCT: 0.15,              // v12: 15% max per position (prevents single-stock concentration)
   STOP_LOSS_PCT: -0.40,               // v12: -40% trailing stop from peak
-  TAKE_PROFIT_PCT: 1.00,              // effectively disabled — exits via rebalance
+  TAKE_PROFIT_PCT: 1.00,              // UNUSED — take-profit DELETED for parity (see `else if (false)` below). Backtest & IBKR have none.
   MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
   MAX_CASH_DEPLOY_PCT: 1.60,          // ~1.49x effective — tuned to match IBKR. This $1.3M account has negligible integer-share rounding, so 1.6 deploys ~1.47-1.49x, matching IBKR's 1.8-setting/1.49x on its $30K account. Different config number, same effective leverage (account-size difference). Do NOT raise to 1.8 (would over-leverage to ~1.76x).
   TRAILING_STOP_PCT: 0.40,            // v12: -40% trailing stop (wider = fewer whipsaws, better CAGR)
@@ -1170,8 +1170,28 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
 
   // ── ML strategy state ──
   let mlEntryDates = {};             // { symbol → cycleNumber at entry }
-  const REBAL_INTERVAL_CYCLES = 20 * 390;  // 20 trading days (v12: matches backtest rebal_days=20)
-  let lastRebalanceCycle = -REBAL_INTERVAL_CYCLES;  // allow immediate rebalance after restart
+  const REBAL_DAYS = 20;             // 20 trading days (v12: matches backtest rebal_days=20)
+  // PARITY FIX: the rebalance schedule is PERSISTED to disk (mirrors IBKR's ibkr_rebal_state.json)
+  // and counts TRADING DAYS — not in-memory cycles. So a restart no longer forces an off-schedule
+  // rebalance; this Alpaca paper engine stays on the exact same 20-trading-day cadence as IBKR live.
+  const REBAL_STATE_FILE = path.join(__dirname, "..", "ml_service", "data", "js_rebal_state.json");
+  function etDateStr(clk) {           // ET trading date as YYYY-MM-DD (en-CA → ISO-style date)
+    const d = (clk && clk.timestamp) ? new Date(clk.timestamp) : new Date();
+    return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  }
+  function saveRebalState() {
+    try { fs.writeFileSync(REBAL_STATE_FILE, JSON.stringify(rebalState)); }
+    catch (e) { addLog(`[rebal] state save failed: ${e.message}`, "error"); }
+  }
+  let rebalState;
+  try {
+    rebalState = JSON.parse(fs.readFileSync(REBAL_STATE_FILE, "utf8"));
+  } catch (_) {
+    // No persisted schedule (first run, or file lost) → rebalance on next open to (re)establish the
+    // book, then self-heal by persisting. Pre-seeded on deploy to match IBKR, so this is rarely hit.
+    rebalState = { trading_days_since_rebal: REBAL_DAYS, last_rebal_date: null, last_counted_day: null };
+    addLog("[rebal] no persisted schedule found — will rebalance on next open, then persist", "system");
+  }
   let mlTradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
 
   // ── Mean Reversion strategy state ──
@@ -1687,6 +1707,19 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       positionsRaw = rawPos;
       marketOpen = clock.is_open;
 
+      // PARITY: count a TRADING DAY once per ET date while the market is open, and persist it.
+      // This is the IBKR-equivalent counter — the rebalance schedule now survives restarts, so a
+      // restart no longer forces an off-schedule rebalance (the bug that drifted MO/V/HIMS).
+      if (marketOpen) {
+        const _today = etDateStr(clock);
+        if (rebalState.last_counted_day !== _today) {
+          rebalState.trading_days_since_rebal = (rebalState.trading_days_since_rebal || 0) + 1;
+          rebalState.last_counted_day = _today;
+          saveRebalState();
+          addLog(`[rebal] trading day ${_today} — ${rebalState.trading_days_since_rebal}/${REBAL_DAYS} since last rebalance`, "system");
+        }
+      }
+
       positions = {};
       for (const p of positionsRaw) {
         positions[p.symbol] = {
@@ -2133,7 +2166,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           } catch (err) {
             addLog(`Failed to close ${symbol}: ${err.message}`, "error");
           }
-        } else if (unrealized_plpc >= RISK.TAKE_PROFIT_PCT) {
+        } else if (false) {  // TAKE-PROFIT DELETED for parity — backtest & IBKR have NO take-profit. Was `unrealized_plpc >= RISK.TAKE_PROFIT_PCT`, which fired on MU's +132% (sold a winner the other two held).
           try {
             const strat = positionStrategy[symbol] || "legacy";
             await closePosition(symbol);
@@ -2478,8 +2511,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // v12: On rebalance day (every 20 trading days), sell ALL positions not in
       // target — NO min-hold. This matches backtest exactly (full reconstruction).
       // Between rebalance days, no selling (only trailing stops fire).
-      const cyclesSinceLastRebal = cycleNumber - lastRebalanceCycle;
-      const isRebalDay = cyclesSinceLastRebal >= REBAL_INTERVAL_CYCLES;
+      const isRebalDay = rebalState.trading_days_since_rebal >= REBAL_DAYS;
 
       if (mlSignals && mlSignals.length > 0) {
         const mlBuySet = new Set(mlSignals.filter(s => s.signal === "BUY").map(s => s.symbol));
@@ -2503,7 +2535,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               delete mlEntryDates[sym];
               delete positionStrategy[sym];
               delete trailingPeaks[sym];
-              // NOTE: don't set lastRebalanceCycle here — wait until buys are done too
+              // NOTE: don't reset the rebalance schedule here — wait until buys are done too
               const { qty, current_price: curr, unrealized_pl, unrealized_plpc } = pos;
               addLog(`REBALANCE SELL ${sym}: no longer in v10 top-${RISK.MAX_OPEN_POSITIONS} -- closing | P&L: $${unrealized_pl.toFixed(2)}`, "sell");
               tradeCount.sells++; mlTradeCount.sells++;
@@ -2776,7 +2808,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         // Batch rebalance: only allow NEW ml buys on rebalance day (v12)
         // Uses isRebalDay computed once at top of cycle — same check as sells
         if (isMLBuy && !isRebalDay) {
-          const daysLeft = ((REBAL_INTERVAL_CYCLES - cyclesSinceLastRebal) / 390).toFixed(1);
+          const daysLeft = Math.max(0, REBAL_DAYS - rebalState.trading_days_since_rebal).toFixed(1);
           addLog(`EVAL ${sym}: NEW BUY blocked — next rebalance in ${daysLeft}d (batch mode, matches backtest)`, "system");
           continue;
         }
@@ -3146,7 +3178,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           } else {
             liveCounts.ml++;
             mlEntryDates[opp.sym] = cycleNumber;
-            // Don't set lastRebalanceCycle here — wait for REBALANCE COMPLETE after ALL buys
+            // Don't reset the rebalance schedule here — wait for REBALANCE COMPLETE after ALL buys
           }
           liveCounts.total++;
 
@@ -3197,8 +3229,12 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
           // Check if there are still missing positions
           const missing = mlBuySymbols.filter(s => !heldNow.has(s));
           if (missing.length === 0) {
-            lastRebalanceCycle = cycleNumber;
-            addLog(`REBALANCE COMPLETE — all ${mlBuySymbols.length} targets held. Next in ${REBAL_INTERVAL_CYCLES / 390} trading days`, "system");
+            const _rd = etDateStr();
+            rebalState.trading_days_since_rebal = 0;
+            rebalState.last_rebal_date = _rd;
+            rebalState.last_counted_day = _rd;
+            saveRebalState();
+            addLog(`REBALANCE COMPLETE — all ${mlBuySymbols.length} targets held. Next in ${REBAL_DAYS} trading days`, "system");
           } else if (dailyStats.buys > 0 && dailyStats.sells === 0) {
             // We're buying but still missing some — keep isRebalDay active for next cycle
             addLog(`REBALANCE IN PROGRESS — ${missing.length} positions still needed: ${missing.join(", ")}`, "system");
