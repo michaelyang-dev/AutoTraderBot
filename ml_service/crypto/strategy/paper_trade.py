@@ -1,128 +1,110 @@
 """
-PAPER-TRADE the HL funding carry forward — live, zero capital, real-time out-of-sample validation.
+PAPER-TRADE the recommended book — live, zero capital. Two uncorrelated sleeves:
 
-Each run: pulls the ACTUAL realized HL funding since the last run for the held coins, accrues the
-paper P&L (you'd collect funding as the short), rebalances monthly (top-funding + hysteresis), and
-logs a growing track record. After a few weeks, compare the realized paper CAGR to the backtest's
-~15-21% — that's the honest live signal validation, before any account or dollar is committed.
+  CARRY (60%): long spot BTC/ETH + short HL perp, 1.5x, collect realized HL funding (delta-neutral).
+               BTC/ETH only — they don't squeeze, so no liquidation tail (validated 0 liq in 6yr).
+  BETA  (40%): risk-managed BTC/ETH (60/40), vol-target 30%, 200d regime de-risk (in CASH when BTC
+               < 200d SMA). Captures bull markets, sits out bears. Prices from Coinbase (US spot).
 
-Config mirrors the validated book: top-8 funding-weighted, monthly rebalance + hysteresis, 60bp
-round-trip costs, $10k notional (long spot / short HL perp, delta-neutral → P&L ≈ funding collected).
-
-State persists in data/crypto/paper_state.json; log in paper_log.csv. Run daily:
+Tracks each sleeve + combined P&L forward in real-time. Validated full-backtest: ~26% CAGR full /
+~20% OOS, -12% normal DD / -25% if HL fails, tail-aware Sharpe ~1.5. Run daily (AWS cron):
   python crypto/strategy/paper_trade.py
 """
-import sys, os, json
+import sys, os, json, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import time
 from datetime import datetime, timezone
-import pandas as pd
+import requests
 import numpy as np
-from crypto.data.funding_fetcher import post, funding_history, universe_by_oi
+import pandas as pd
+from crypto.data.funding_fetcher import funding_history
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "crypto")
 STATE = os.path.join(DATA, "paper_state.json")
 LOG = os.path.join(DATA, "paper_log.csv")
-STABLES = {"USDC", "USDT", "USDE", "DAI"}
 
-NOTIONAL = 10000.0        # paper notional per the carry (long spot / short perp, delta-neutral)
-TOP_K = 8
-REBAL_DAYS = 30
-KEEP_MULT = 2.0           # hysteresis: hold while still in top-(K*mult) by funding
-MIN_KEEP = 0.02           # drop if trailing ann funding < 2%
-RT_COST = 0.0060          # round-trip cost on rotation (spot leg dominated)
+NOTIONAL = 10000.0
+CARRY_W, BETA_W = 0.60, 0.40
+CARRY_LEV = 1.5
+WEIGHTS = {"BTC": 0.60, "ETH": 0.40}      # within each sleeve
+BETA_VOL_TARGET, REGIME_N, L_MAX, RF = 0.30, 200, 2.0, 0.045
 
 
 def now_ms():
     return int(time.time() * 1000)
 
 
-def trailing_funding(coins, days=14):
-    """annualized trailing funding per coin (for ranking) — sums realized hourly funding."""
-    start = now_ms() - days * 86400 * 1000
-    out = {}
-    for c in coins:
-        fh = funding_history(c, start, now_ms())
-        if fh:
-            rates = [float(x["fundingRate"]) for x in fh]
-            out[c] = sum(rates) / days * 365      # ann
-    return pd.Series(out)
-
-
 def realized_funding(coin, start_ms, end_ms):
-    """actual funding collected (per $1 short) from start to end — sum of realized hourly rates."""
     fh = funding_history(coin, start_ms, end_ms)
     return sum(float(x["fundingRate"]) for x in fh) if fh else 0.0
 
 
-def select(rank_series, held):
-    keep_set = set(rank_series.sort_values(ascending=False).head(int(TOP_K * KEEP_MULT)).index)
-    new = [c for c in held if c in keep_set and rank_series.get(c, -1) > MIN_KEEP]
-    for c in rank_series.sort_values(ascending=False).index:
-        if len(new) >= TOP_K:
-            break
-        if c not in new and rank_series.get(c, -1) > 0:
-            new.append(c)
-    return new
+def cb_candles(product):
+    r = requests.get(f"https://api.exchange.coinbase.com/products/{product}/candles",
+                     params={"granularity": 86400}, timeout=20, headers={"User-Agent": "auto-trader"})
+    r.raise_for_status()
+    df = pd.DataFrame(r.json(), columns=["t", "low", "high", "open", "close", "vol"])
+    return df.sort_values("t").set_index("t")["close"]
+
+
+def beta_state():
+    """current beta exposure + spot prices (regime + vol-target on Coinbase BTC/ETH)."""
+    px = pd.DataFrame({"BTC": cb_candles("BTC-USD"), "ETH": cb_candles("ETH-USD")}).dropna()
+    ret = px.pct_change()
+    basket = (ret * pd.Series(WEIGHTS)).sum(axis=1)
+    rvol = basket.tail(30).std() * np.sqrt(365)
+    sma = px["BTC"].tail(REGIME_N).mean()
+    regime_on = px["BTC"].iloc[-1] > sma
+    expo = float(np.clip(BETA_VOL_TARGET / rvol, 0, L_MAX)) * (1.0 if regime_on else 0.0) if rvol > 0 else 0.0
+    return expo, float(px["BTC"].iloc[-1]), float(px["ETH"].iloc[-1]), regime_on, float(rvol)
 
 
 def run():
     first = not os.path.exists(STATE)
     s = {} if first else json.load(open(STATE))
     t = now_ms()
-    uni = [c for c in universe_by_oi(40) if c not in STABLES]
+    expo, btc, eth, regime_on, rvol = beta_state()
 
-    if first:
-        rank = trailing_funding(uni)
-        held = select(rank, [])
+    if first or "carry_pnl" not in s:        # (re)initialize for the two-sleeve book
         s = {"inception": datetime.now(timezone.utc).isoformat(), "last_update_ms": t,
-             "last_rebal_ms": t, "positions": held, "cum_pnl": 0.0, "n_days": 0}
-        print("PAPER-TRADE INITIALIZED %s" % s["inception"][:10])
-        print("  initial positions (top-%d funding):" % TOP_K, held)
-        print("  current ann funding:", {c: round(rank.get(c, 0) * 100, 0) for c in held})
+             "carry_pnl": 0.0, "beta_pnl": 0.0, "n_days": 0.0,
+             "beta_expo": expo, "last_btc": btc, "last_eth": eth}
+        print("PAPER-TRADE INITIALIZED (carry+beta book) %s" % s["inception"][:10])
+        print("  carry 60%% (BTC/ETH funding, 1.5x) + beta 40%% (BTC/ETH vt30+regime)")
+        print("  beta regime: %s | exposure %.2fx" % ("RISK-ON" if regime_on else "RISK-OFF (cash)", expo))
     else:
         last = s["last_update_ms"]
-        held = s["positions"]
-        wt = 1.0 / len(held) if held else 0
-        # accrue realized funding since last run (you SHORT the perp → collect positive funding)
-        period_fund = sum(wt * realized_funding(c, last, t) for c in held)
-        period_pnl = period_fund * NOTIONAL
-        s["cum_pnl"] += period_pnl
-        s["n_days"] += (t - last) / 86400 / 1000
-        cost = 0.0
-        # monthly rebalance + hysteresis
-        if (t - s["last_rebal_ms"]) / 86400 / 1000 >= REBAL_DAYS:
-            rank = trailing_funding(uni)
-            new = select(rank, held)
-            turn = len(set(new) ^ set(held)) / max(len(new), 1)
-            cost = turn * RT_COST * NOTIONAL
-            s["cum_pnl"] -= cost
-            s["positions"] = new
-            s["last_rebal_ms"] = t
-            print("  REBALANCED:", held, "->", new)
-            held = new
-        s["last_update_ms"] = t
+        # CARRY sleeve: realized HL funding on BTC/ETH since last run, levered
+        fb = realized_funding("BTC", last, t); fe = realized_funding("ETH", last, t)
+        carry_ret = CARRY_LEV * (WEIGHTS["BTC"] * fb + WEIGHTS["ETH"] * fe)
+        carry_dpnl = CARRY_W * carry_ret * NOTIONAL
+        # BETA sleeve: basket return since last × the exposure we were holding (+ cash @ RF)
+        basket_ret = WEIGHTS["BTC"] * (btc / s["last_btc"] - 1) + WEIGHTS["ETH"] * (eth / s["last_eth"] - 1)
+        held = s["beta_expo"]
         days = (t - last) / 86400 / 1000
-        print("  +%.1f days: funding collected $%.2f%s | cum P&L $%.2f" %
-              (days, period_pnl, (" - cost $%.2f" % cost if cost else ""), s["cum_pnl"]))
+        beta_dpnl = BETA_W * (held * basket_ret + max(0, 1 - held) * RF * days / 365) * NOTIONAL
+        s["carry_pnl"] += carry_dpnl
+        s["beta_pnl"] += beta_dpnl
+        s["n_days"] += days
+        s["beta_expo"] = expo; s["last_btc"] = btc; s["last_eth"] = eth; s["last_update_ms"] = t
+        print("  +%.1fd: carry +$%.2f | beta +$%.2f (%s) | cum carry $%.2f beta $%.2f"
+              % (days, carry_dpnl, beta_dpnl, "on" if regime_on else "cash", s["carry_pnl"], s["beta_pnl"]))
 
     json.dump(s, open(STATE, "w"), indent=2)
-    # report running track record
+    cum = s["carry_pnl"] + s["beta_pnl"]; ret = cum / NOTIONAL
     n = max(s["n_days"], 1e-9)
-    ret = s["cum_pnl"] / NOTIONAL
     ann = (1 + ret) ** (365 / n) - 1 if n >= 1 else 0
-    line = pd.DataFrame([{"ts": datetime.now(timezone.utc).isoformat(), "n_days": round(s["n_days"], 1),
-                          "cum_pnl": round(s["cum_pnl"], 2), "cum_ret_pct": round(ret * 100, 3),
-                          "ann_pct": round(ann * 100, 1), "positions": "|".join(s["positions"])}])
-    line.to_csv(LOG, mode="a", header=not os.path.exists(LOG), index=False)
-    print("=" * 70)
-    print("  LIVE PAPER TRACK: %.1f days | cum %.3f%% | annualized %.1f%% | positions: %s"
-          % (s["n_days"], ret * 100, ann * 100, ", ".join(s["positions"])))
-    print("  (compare annualized to backtest ~15-21%% once a few weeks accrue)")
+    pd.DataFrame([{"ts": datetime.now(timezone.utc).isoformat(), "n_days": round(s["n_days"], 1),
+                   "carry_pnl": round(s["carry_pnl"], 2), "beta_pnl": round(s["beta_pnl"], 2),
+                   "cum_pnl": round(cum, 2), "cum_ret_pct": round(ret * 100, 3), "ann_pct": round(ann * 100, 1),
+                   "beta_regime": "on" if regime_on else "cash"}]).to_csv(LOG, mode="a", header=not os.path.exists(LOG), index=False)
+    print("=" * 74)
+    print("  LIVE PAPER (carry+beta): %.1fd | carry $%.2f + beta $%.2f = $%.2f | cum %.3f%% | ann %.1f%% | beta=%s"
+          % (s["n_days"], s["carry_pnl"], s["beta_pnl"], cum, ret * 100, ann * 100, "ON" if regime_on else "cash"))
+    print("  (validated backtest: ~20%% OOS / ~26%% full, tail-aware. beta is in cash until BTC > 200d SMA)")
 
 
 if __name__ == "__main__":
-    print("=" * 70)
-    print("HL CARRY — LIVE PAPER TRADE  (%s UTC)" % datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
-    print("=" * 70)
+    print("=" * 74)
+    print("RECOMMENDED BOOK — LIVE PAPER TRADE  (%s UTC)" % datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"))
+    print("=" * 74)
     run()
