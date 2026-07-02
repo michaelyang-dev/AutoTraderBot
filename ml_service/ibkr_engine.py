@@ -1111,10 +1111,10 @@ class IBKREngine:
         try:
             s = await self._ibkr_snapshot()
             out.append("<b>🟢 IBKR LIVE</b>\n" + self._tg_table([
-                f"NAV       ${s['nav']:>10,.0f}",
-                f"Cash      ${s['cash']:>10,.0f}",
-                f"Positions {len(s['items']):>11}",
-                f"Leverage  {s['lev']:>10.2f}x"]))
+                f"{'NAV':<10}│ ${s['nav']:>10,.0f}",
+                f"{'Cash':<10}│ ${s['cash']:>10,.0f}",
+                f"{'Positions':<10}│ {len(s['items']):>11}",
+                f"{'Leverage':<10}│ {s['lev']:>10.2f}x"]))
         except Exception as e:
             out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {_h.escape(str(e))}")
         snap = self._load_close_snapshot()
@@ -1126,10 +1126,10 @@ class IBKREngine:
             eq = float(acct.get("equity", 0)); cash = float(acct.get("cash", 0))
             gross = sum(abs(float(p["market_value"])) for p in poss) if poss else 0
             out.append("\n<b>🔵 ALPACA PAPER</b>\n" + self._tg_table([
-                f"NAV       ${eq:>10,.0f}",
-                f"Cash      ${cash:>10,.0f}",
-                f"Positions {len(poss) if poss else 0:>11}",
-                f"Leverage  {(gross/eq if eq else 0):>10.2f}x"]))
+                f"{'NAV':<10}│ ${eq:>10,.0f}",
+                f"{'Cash':<10}│ ${cash:>10,.0f}",
+                f"{'Positions':<10}│ {len(poss) if poss else 0:>11}",
+                f"{'Leverage':<10}│ {(gross/eq if eq else 0):>10.2f}x"]))
         else:
             out.append("\n<b>🔵 ALPACA PAPER</b> — unavailable")
         return "\n".join(out)
@@ -1137,12 +1137,14 @@ class IBKREngine:
     async def _cmd_positions(self):
         s = await self._ibkr_snapshot()
         items = sorted(s["items"], key=lambda it: -it.marketValue)
-        rows = [f"   {'SYM':<6}{'VALUE':>7}{'P&L':>8}{'%':>5}"]
+        rule = "   " + "─" * 6 + "┼" + "─" * 7 + "┼" + "─" * 8 + "┼" + "─" * 4
+        rows = [f"   {'SYM':<6}│{'VALUE':>6} │{'P&L':>7} │{'%':>4}", rule]
         for it in items:
             cost = it.marketValue - it.unrealizedPNL
             pct = (it.unrealizedPNL / cost * 100) if cost else 0
-            rows.append(f"{self._chip(it.unrealizedPNL)} {it.contract.symbol:<6}{it.marketValue:>7,.0f}{it.unrealizedPNL:>+8,.0f}{pct:>+5.0f}")
-        rows.append(f"{self._chip(s['upl'])} {'ALL':<6}{s['gross']:>7,.0f}{s['upl']:>+8,.0f}")
+            rows.append(f"{self._chip(it.unrealizedPNL)} {it.contract.symbol:<6}│{it.marketValue:>6,.0f} │{it.unrealizedPNL:>+7,.0f} │{pct:>+4.0f}")
+        rows.append(rule)
+        rows.append(f"{self._chip(s['upl'])} {'ALL':<6}│{s['gross']:>6,.0f} │{s['upl']:>+7,.0f} │")
         return (self._tg_header("📈 IBKR POSITIONS", self.is_market_open())
                 + f"{len(items)} positions · P&amp;L since entry\n\n"
                 + self._tg_table(rows))
@@ -1154,11 +1156,13 @@ class IBKREngine:
         poss = sorted(poss, key=lambda p: -float(p["market_value"]))
         upl = sum(float(p["unrealized_pl"]) for p in poss)
         gross = sum(abs(float(p["market_value"])) for p in poss)
-        rows = [f"   {'SYM':<6}{'VALUE':>8}{'P&L':>8}{'%':>5}"]
+        rule = "   " + "─" * 6 + "┼" + "─" * 10 + "┼" + "─" * 9 + "┼" + "─" * 4
+        rows = [f"   {'SYM':<6}│{'VALUE':>9} │{'P&L':>8} │{'%':>4}", rule]
         for p in poss[:30]:
-            rows.append(f"{self._chip(float(p['unrealized_pl']))} {p['symbol']:<6}{float(p['market_value']):>8,.0f}"
-                        f"{float(p['unrealized_pl']):>+8,.0f}{float(p['unrealized_plpc'])*100:>+5.0f}")
-        rows.append(f"{self._chip(upl)} {'ALL':<6}{gross:>8,.0f}{upl:>+8,.0f}")
+            rows.append(f"{self._chip(float(p['unrealized_pl']))} {p['symbol']:<6}│{float(p['market_value']):>9,.0f}"
+                        f" │{float(p['unrealized_pl']):>+8,.0f} │{float(p['unrealized_plpc'])*100:>+4.0f}")
+        rows.append(rule)
+        rows.append(f"{self._chip(upl)} {'ALL':<6}│{gross:>9,.0f} │{upl:>+8,.0f} │")
         return (self._tg_header("🔵 ALPACA POSITIONS", self.is_market_open())
                 + f"{len(poss)} positions · P&amp;L since entry\n\n"
                 + self._tg_table(rows))
@@ -1183,15 +1187,15 @@ class IBKREngine:
             if prev and prev[-1][1]:
                 d = session_nav - prev[-1][1]
                 lbl = "Today" if (mkt_open or have_close) else "Overnight"
-                rows.append(f"{self._chip(d)} {lbl:<10}{d:>+9,.0f}  {d/prev[-1][1]*100:>+6.2f}%")
+                rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/prev[-1][1]*100:>+6.2f}%")
             else:
                 rows.append("Today      n/a (building history)")
             if not mkt_open and have_close:
                 ah = live_nav - snap["nav"]
-                rows.append(f"{self._chip(ah)} {'After-hrs':<10}{ah:>+9,.0f}  {ah/snap['nav']*100:>+6.2f}%")
-            rows.append(f"{self._chip(s['upl'])} {'Open P&L':<10}{s['upl']:>+9,.0f}")
+                rows.append(f"{self._chip(ah)} {'After-hrs':<10}│{ah:>+9,.0f} │{ah/snap['nav']*100:>+6.2f}%")
+            rows.append(f"{self._chip(s['upl'])} {'Open P&L':<10}│{s['upl']:>+9,.0f} │")
             since = live_nav - IBKR_INITIAL_CAPITAL
-            rows.append(f"{self._chip(since)} {'All-time':<10}{since:>+9,.0f}  {since/IBKR_INITIAL_CAPITAL*100:>+6.1f}%")
+            rows.append(f"{self._chip(since)} {'All-time':<10}│{since:>+9,.0f} │{since/IBKR_INITIAL_CAPITAL*100:>+6.1f}%")
             out.append(f"<b>🟢 IBKR · ${session_nav:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
         except Exception as e:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {_h.escape(str(e))}")
@@ -1213,18 +1217,18 @@ class IBKREngine:
                                                or float(p["current_price"])) for p in poss)
                         nav_shown, tag = close_eq, "4pm close"
                         if le:
-                            rows.append(f"{self._chip(close_eq-le)} {'Today':<10}{close_eq-le:>+9,.0f}  {(close_eq-le)/le*100:>+6.2f}%")
+                            rows.append(f"{self._chip(close_eq-le)} {'Today':<10}│{close_eq-le:>+9,.0f} │{(close_eq-le)/le*100:>+6.2f}%")
                         ah = eq - close_eq
-                        rows.append(f"{self._chip(ah)} {'After-hrs':<10}{ah:>+9,.0f}  {ah/close_eq*100:>+6.2f}%")
+                        rows.append(f"{self._chip(ah)} {'After-hrs':<10}│{ah:>+9,.0f} │{ah/close_eq*100:>+6.2f}%")
                     else:                                                  # pre-market / no session today
                         tag = "pre-mkt"
                         if le:
-                            rows.append(f"{self._chip(eq-le)} {'Overnight':<10}{eq-le:>+9,.0f}  {(eq-le)/le*100:>+6.2f}%")
+                            rows.append(f"{self._chip(eq-le)} {'Overnight':<10}│{eq-le:>+9,.0f} │{(eq-le)/le*100:>+6.2f}%")
                 elif le:
-                    rows.append(f"{self._chip(eq-le)} {'Today':<10}{eq-le:>+9,.0f}  {(eq-le)/le*100:>+6.2f}%")
+                    rows.append(f"{self._chip(eq-le)} {'Today':<10}│{eq-le:>+9,.0f} │{(eq-le)/le*100:>+6.2f}%")
                 if poss:
                     upl_al = sum(float(p['unrealized_pl']) for p in poss)
-                    rows.append(f"{self._chip(upl_al)} {'Open P&L':<10}{upl_al:>+9,.0f}")
+                    rows.append(f"{self._chip(upl_al)} {'Open P&L':<10}│{upl_al:>+9,.0f} │")
                 out.append(f"\n<b>🔵 ALPACA · ${nav_shown:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
             except Exception as e:
                 out.append(f"\n<b>🔵 ALPACA</b> — ⚠️ {_h.escape(str(e))}")
@@ -1252,9 +1256,11 @@ class IBKREngine:
                 total += d
                 rows.append((sym, (px / prev - 1) * 100, d))
             rows.sort(key=lambda r: -r[2])
-            body = [f"   {'SYM':<7}{'DAY%':>7}{'DAY$':>10}"]
-            body += [f"{self._chip(d)} {sym:<7}{pct:>+7.1f}{d:>+10,.0f}" for sym, pct, d in rows]
-            body.append(f"{self._chip(total)} {'TOTAL':<7}{(total/nav*100 if nav else 0):>+7.2f}{total:>+10,.0f}")
+            rule = "   " + "─" * 6 + "┼" + "─" * 7 + "┼" + "─" * 9
+            body = [f"   {'SYM':<6}│{'DAY%':>6} │{'DAY$':>9}", rule]
+            body += [f"{self._chip(d)} {sym:<6}│{pct:>+6.1f} │{d:>+9,.0f}" for sym, pct, d in rows]
+            body.append(rule)
+            body.append(f"{self._chip(total)} {'TOTAL':<6}│{(total/nav*100 if nav else 0):>+6.2f} │{total:>+9,.0f}")
             note = f"\n<i>no data: {', '.join(missing)}</i>" if missing else ""
             pct_day = total / nav * 100 if nav else 0
             return f"{self._chip(total)} {pct_day:+.2f}% today", self._tg_table(body) + note
@@ -1310,8 +1316,8 @@ class IBKREngine:
             sigs = data.get("signals", []) if isinstance(data, dict) else data
             buys = sorted([s for s in sigs if s.get("signal") == "BUY"],
                           key=lambda s: -s.get("probability", 0))
-            rows = [f"{'#':>2} {'SYM':<7}{'CONV':>5}"]
-            rows += [f"{i:>2} {s['symbol']:<7}{s.get('probability', 0):>5.2f}"
+            rows = [f"{'#':>2} │ {'SYM':<6}│{'CONV':>5}", "─" * 3 + "┼" + "─" * 7 + "┼" + "─" * 5]
+            rows += [f"{i:>2} │ {s['symbol']:<6}│{s.get('probability', 0):>5.2f}"
                      for i, s in enumerate(buys[:15], 1)]
             return (self._tg_header("🎯 TOP SIGNALS") +
                     f"{len(buys)} BUY signals · top {min(15, len(buys))}\n\n"
