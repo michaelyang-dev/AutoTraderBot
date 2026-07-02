@@ -244,10 +244,15 @@ class IBKREngine:
         except Exception:
             return True  # calendar unavailable -> weekday already passed above
 
-    def record_nav(self, nav):
+    def record_nav(self, nav, at_close=False):
         """Append today's NAV once per trading day; keep last 70 days. Skips
         weekends/holidays so flat non-trading days don't dampen the realized-vol
-        estimate used for vol-scaling (mirrors the backtest's trading-day series)."""
+        estimate used for vol-scaling (mirrors the backtest's trading-day series).
+
+        at_close=True marks the authoritative 4pm value (the 16:05 EOD path) and may
+        overwrite today's entry. All other callers (e.g. engine startup) only SEED a
+        missing entry and never overwrite — an evening restart used to replace the 4pm
+        close with an after-hours NAV, corrupting the next day's 'Today' P&L baseline."""
         try:
             import json
             if not self._is_trading_day():
@@ -255,7 +260,9 @@ class IBKREngine:
             today = datetime.now().date().isoformat()
             hist = self._load_nav_history()
             if hist and hist[-1][0] == today:
-                hist[-1] = [today, nav]      # update today's value
+                if not at_close:
+                    return               # today already recorded — never clobber the close mark
+                hist[-1] = [today, nav]  # authoritative 4pm close value
             else:
                 hist.append([today, nav])
             hist = hist[-70:]
@@ -945,10 +952,18 @@ class IBKREngine:
     # TELEGRAM COMMAND BOT  (read-only — cannot place trades)
     # ═══════════════════════════════════════════════════════════════
     def _tg_send_raw(self, text, chat_id=None):
-        """Send a plain reply to a Telegram chat (defaults to the primary chat)."""
+        """Send a reply to a Telegram chat (defaults to the primary chat). Tries HTML
+        parse mode first (bold headers + <pre> aligned tables); if Telegram rejects the
+        markup (400 parse error), resends as plain text so a reply is never dropped."""
         try:
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                          json={"chat_id": chat_id or TELEGRAM_CHAT, "text": text}, timeout=10)
+            r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                              json={"chat_id": chat_id or TELEGRAM_CHAT, "text": text,
+                                    "parse_mode": "HTML"}, timeout=10)
+            if r.status_code != 200:  # bad markup — fall back to plain so the user still gets it
+                import re
+                requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                              json={"chat_id": chat_id or TELEGRAM_CHAT,
+                                    "text": re.sub(r"</?(b|i|code|pre)>", "", text)}, timeout=10)
         except Exception:
             pass
 
@@ -978,6 +993,38 @@ class IBKREngine:
         except Exception:
             return None
 
+    def _alpaca_daily_bars(self, symbols):
+        """Per-symbol daily price data from the Alpaca DATA API (works for ANY symbol,
+        not just Alpaca holdings — used to price the IBKR book's daily moves too).
+        Returns {sym: {px, close, prev, bar_date}}: px = latest trade (live-ish, IEX),
+        close = today's session close (dailyBar), prev = previous session close.
+        NOTE: chosen over the positions API's intraday fields because those RESET after
+        Alpaca's evening EOD processing (change_today=0 at night); daily bars stay correct."""
+        ak = (os.getenv("ALPACA_API_KEY") or "").strip()
+        sk = (os.getenv("ALPACA_SECRET_KEY") or "").strip()
+        out = {}
+        if not ak or not sk or not symbols:
+            return out
+        syms = sorted(set(symbols))
+        for i in range(0, len(syms), 50):
+            try:
+                r = requests.get("https://data.alpaca.markets/v2/stocks/snapshots",
+                                 params={"symbols": ",".join(syms[i:i + 50]), "feed": "iex"},
+                                 headers={"APCA-API-KEY-ID": ak, "APCA-API-SECRET-KEY": sk},
+                                 timeout=10)
+                if r.status_code != 200:
+                    continue
+                for sym, s in r.json().items():
+                    daily = s.get("dailyBar") or {}
+                    prev = s.get("prevDailyBar") or {}
+                    lt = s.get("latestTrade") or {}
+                    out[sym] = {"px": lt.get("p") or daily.get("c"),
+                                "close": daily.get("c"), "prev": prev.get("c"),
+                                "bar_date": (daily.get("t") or "")[:10]}
+            except Exception:
+                continue
+        return out
+
     async def _ibkr_snapshot(self):
         """Live IBKR NAV + per-position P&L from the engine's own connection."""
         summary = await self.get_account_summary()
@@ -994,8 +1041,16 @@ class IBKREngine:
     # DEFAULT-DENY: anything NOT in this set is owner-only, so any action command
     # (now /reconnect, and any added later) is automatically restricted to the owner.
     READONLY_COMMANDS = frozenset({
-        "start", "help", "portfolio", "positions", "alpaca", "pnl",
+        "start", "help", "portfolio", "positions", "alpaca", "pnl", "daily",
         "status", "signals", "rebal", "data", "connection"})
+
+    @staticmethod
+    def _tg_header(title, mkt_open=None):
+        """Uniform command header: bold title, ET timestamp, market state."""
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("US/Eastern"))
+        state = "" if mkt_open is None else ("  ·  🟢 market open" if mkt_open else "  ·  🌙 market closed")
+        return f"<b>{title}</b>\n<i>{now.strftime('%a %b %d, %I:%M %p ET').replace(' 0', ' ')}{state}</i>\n"
 
     async def _handle_command(self, text, chat_id=None):
         cmd = text.split()[0].lower().lstrip("/").split("@")[0]
@@ -1008,21 +1063,26 @@ class IBKREngine:
                     "engine and is restricted to the account owner.\nYou can use every "
                     "read-only command — send /help to see them.")
         if cmd in ("start", "help"):
-            base = ("🤖 AutoTrader bot — read-only commands:\n"
-                    "/portfolio — NAV, cash, leverage (both accounts)\n"
-                    "/positions — IBKR holdings + P&L\n"
-                    "/alpaca — Alpaca paper holdings + P&L\n"
-                    "/pnl — gains (unrealized + since funding)\n"
-                    "/status — system health\n"
-                    "/connection — real connection test (is the data feed live?)\n"
+            base = (self._tg_header("🤖 AutoTrader Bot") +
+                    "\n<b>💵 Money</b>\n"
+                    "/pnl — today, after-hours &amp; total gains\n"
+                    "/daily — <i>today's move, position by position</i>\n"
+                    "/portfolio — NAV, cash, leverage (both books)\n"
+                    "\n<b>📋 Books</b>\n"
+                    "/positions — IBKR holdings + P&amp;L since entry\n"
+                    "/alpaca — Alpaca paper holdings + P&amp;L\n"
+                    "\n<b>⚙️ System</b>\n"
+                    "/status — engine + signal health\n"
+                    "/connection — live data-feed round-trip test\n"
                     "/signals — current top picks\n"
-                    "/rebal — rebalance schedule\n"
+                    "/rebal — rebalance countdown\n"
                     "/data — data freshness check")
             if is_owner:
-                base += "\n\n🔑 owner-only:\n/reconnect — force a clean engine reconnect"
+                base += "\n\n<b>🔑 Owner</b>\n/reconnect — force a clean engine/Gateway reconnect"
             return base
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
-                    "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "status": self._cmd_status,
+                    "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "daily": self._cmd_daily,
+                    "status": self._cmd_status,
                     "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data,
                     "connection": self._cmd_connection, "reconnect": self._cmd_reconnect}
         h = handlers.get(cmd)
@@ -1032,91 +1092,186 @@ class IBKREngine:
         return await out if asyncio.iscoroutine(out) else out
 
     async def _cmd_portfolio(self):
-        out = ["📊 PORTFOLIO\n"]
+        import html as _h
+        mkt_open = self.is_market_open()
+        out = [self._tg_header("📊 PORTFOLIO", mkt_open)]
         try:
             s = await self._ibkr_snapshot()
-            out.append(f"🟢 IBKR LIVE (now)\nNAV ${s['nav']:,.0f} | Cash ${s['cash']:,.0f}\n"
-                       f"{len(s['items'])} positions | {s['lev']:.2f}x leverage")
+            out.append("<b>🟢 IBKR LIVE</b>\n<pre>"
+                       f"NAV        ${s['nav']:>12,.0f}\n"
+                       f"Cash       ${s['cash']:>12,.0f}\n"
+                       f"Positions  {len(s['items']):>13}\n"
+                       f"Leverage   {s['lev']:>12.2f}x</pre>")
         except Exception as e:
-            out.append(f"🟢 IBKR LIVE — error: {e}")
+            out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {_h.escape(str(e))}")
         snap = self._load_close_snapshot()
         if snap:
-            out.append(f"📸 at close ({snap['date']} {snap.get('captured', '')})\n"
-                       f"NAV ${snap['nav']:,.0f} | {len(snap.get('positions', []))} positions | {snap.get('lev', 0):.2f}x")
+            out.append(f"<i>📸 at close {snap['date']} ({snap.get('captured', '')}): "
+                       f"${snap['nav']:,.0f} · {len(snap.get('positions', []))} pos · {snap.get('lev', 0):.2f}x</i>")
         acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
         if acct:
             eq = float(acct.get("equity", 0)); cash = float(acct.get("cash", 0))
             gross = sum(abs(float(p["market_value"])) for p in poss) if poss else 0
-            out.append(f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f} | Cash ${cash:,.0f}\n"
-                       f"{len(poss) if poss else 0} positions | {(gross/eq if eq else 0):.2f}x leverage")
+            out.append("\n<b>🔵 ALPACA PAPER</b>\n<pre>"
+                       f"NAV        ${eq:>12,.0f}\n"
+                       f"Cash       ${cash:>12,.0f}\n"
+                       f"Positions  {len(poss) if poss else 0:>13}\n"
+                       f"Leverage   {(gross/eq if eq else 0):>12.2f}x</pre>")
         else:
-            out.append("\n🔵 ALPACA PAPER — unavailable")
+            out.append("\n<b>🔵 ALPACA PAPER</b> — unavailable")
         return "\n".join(out)
 
     async def _cmd_positions(self):
         s = await self._ibkr_snapshot()
         items = sorted(s["items"], key=lambda it: -it.marketValue)
-        lines = [f"📈 IBKR POSITIONS ({len(items)}) — unrealized ${s['upl']:+,.0f}\n"]
+        head = self._tg_header("📈 IBKR POSITIONS", self.is_market_open())
+        rows = [f"{'SYM':<6}{'VALUE':>8}{'P&L':>8}{'%':>6}", "─" * 28]
         for it in items:
             cost = it.marketValue - it.unrealizedPNL
             pct = (it.unrealizedPNL / cost * 100) if cost else 0
-            lines.append(f"{it.contract.symbol:5} ${it.marketValue:,.0f}  {it.unrealizedPNL:+,.0f} ({pct:+.0f}%)")
-        return "\n".join(lines)
+            rows.append(f"{it.contract.symbol:<6}{it.marketValue:>8,.0f}{it.unrealizedPNL:>+8,.0f}{pct:>+6.0f}")
+        rows += ["─" * 28, f"{'TOTAL':<6}{s['gross']:>8,.0f}{s['upl']:>+8,.0f}"]
+        return (head + f"{len(items)} positions · unrealized <b>${s['upl']:+,.0f}</b> (since entry)\n"
+                + "<pre>" + "\n".join(rows) + "</pre>")
 
     def _cmd_alpaca(self):
         poss = self._alpaca_get("/v2/positions")
         if poss is None:
-            return "🔵 ALPACA — unavailable"
+            return "<b>🔵 ALPACA</b> — unavailable"
         poss = sorted(poss, key=lambda p: -float(p["market_value"]))
         upl = sum(float(p["unrealized_pl"]) for p in poss)
-        lines = [f"🔵 ALPACA POSITIONS ({len(poss)}) — unrealized ${upl:+,.0f}\n"]
+        gross = sum(abs(float(p["market_value"])) for p in poss)
+        head = self._tg_header("🔵 ALPACA POSITIONS", self.is_market_open())
+        rows = [f"{'SYM':<6}{'VALUE':>9}{'P&L':>9}{'%':>6}", "─" * 30]
         for p in poss[:30]:
-            lines.append(f"{p['symbol']:5} ${float(p['market_value']):,.0f}  "
-                         f"{float(p['unrealized_pl']):+,.0f} ({float(p['unrealized_plpc'])*100:+.0f}%)")
-        return "\n".join(lines)
+            rows.append(f"{p['symbol']:<6}{float(p['market_value']):>9,.0f}"
+                        f"{float(p['unrealized_pl']):>+9,.0f}{float(p['unrealized_plpc'])*100:>+6.0f}")
+        rows += ["─" * 30, f"{'TOTAL':<6}{gross:>9,.0f}{upl:>+9,.0f}"]
+        return (head + f"{len(poss)} positions · unrealized <b>${upl:+,.0f}</b> (since entry)\n"
+                + "<pre>" + "\n".join(rows) + "</pre>")
 
     async def _cmd_pnl(self):
-        out = ["💰 P&L\n"]
+        import html as _h
+        mkt_open = self.is_market_open()
+        out = [self._tg_header("💰 P&L", mkt_open)]
+        today = datetime.now().date().isoformat()
+        # ── IBKR: "Today" counts REGULAR HOURS only. Live NAV while the market is open;
+        # frozen 4pm close after the bell (after-hours drift shown on its own line).
         try:
             s = await self._ibkr_snapshot()
-            live_nav = s["nav"]                                  # current NAV (after 4pm this includes after-hours)
+            live_nav = s["nav"]
             snap = self._load_close_snapshot()
             hist = self._load_nav_history()
-            today = datetime.now().date().isoformat()
             prev = [p for p in hist if p[0] != today]
-            mkt_open = self.is_market_open()
             have_close = bool(snap and snap.get("date") == today and snap.get("nav"))
-            # "Today" P&L counts REGULAR HOURS ONLY: live NAV while open, frozen 4pm close after the bell
-            # (so the daily figure stops drifting on after-hours ticks — the bug this fixes).
             session_nav = live_nav if (mkt_open or not have_close) else snap["nav"]
-            if mkt_open:
-                line = f"🟢 IBKR LIVE\nNAV ${live_nav:,.0f} (live)\n"
-            else:
-                line = f"🟢 IBKR LIVE\nNAV ${session_nav:,.0f} (4pm close)\n"
+            tag = "live" if mkt_open else ("4pm close" if have_close else "live·pre-mkt")
+            rows = [f"NAV       ${session_nav:>11,.0f}  {tag}"]
             if prev and prev[-1][1]:
                 d = session_nav - prev[-1][1]
-                line += f"Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%) — regular hours\n"
+                lbl = "Today" if (mkt_open or have_close) else "Overnight"
+                rows.append(f"{lbl:<9} ${d:>+11,.0f}  {d/prev[-1][1]*100:+.2f}%")
             else:
-                line += "Today: n/a (building NAV history)\n"
-            if not mkt_open and have_close:                      # show after-hours move separately, not folded into "Today"
+                rows.append("Today: n/a (building history)")
+            if not mkt_open and have_close:
                 ah = live_nav - snap["nav"]
-                line += f"After-hours ${ah:+,.0f} ({ah/snap['nav']*100:+.2f}%) → now ${live_nav:,.0f}\n"
-            line += f"Unrealized ${s['upl']:+,.0f}\n"
+                rows.append(f"After-hrs ${ah:>+11,.0f}  {ah/snap['nav']*100:+.2f}% → ${live_nav:,.0f}")
+            rows.append(f"Unrealzd  ${s['upl']:>+11,.0f}")
             since = live_nav - IBKR_INITIAL_CAPITAL
-            line += f"Since ${IBKR_INITIAL_CAPITAL/1000:.0f}K funding: ${since:+,.0f} ({since/IBKR_INITIAL_CAPITAL*100:+.1f}%)"
-            out.append(line)
+            rows.append(f"Total     ${since:>+11,.0f}  {since/IBKR_INITIAL_CAPITAL*100:+.1f}% since ${IBKR_INITIAL_CAPITAL/1000:.0f}K")
+            out.append("<b>🟢 IBKR LIVE</b>\n<pre>" + "\n".join(rows) + "</pre>")
         except Exception as e:
-            out.append(f"🟢 IBKR — error: {e}")
-        acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
+            out.append(f"<b>🟢 IBKR</b> — ⚠️ {_h.escape(str(e))}")
+        # ── ALPACA: same regular-hours discipline. equity drifts after hours, so when the
+        # market is closed we rebuild the 4pm close as cash + Σ qty×dailyBar.close from the
+        # data API (positions' intraday fields reset in the evening and can't be trusted).
+        acct = self._alpaca_get("/v2/account")
         if acct:
-            eq = float(acct.get("equity", 0)); le = float(acct.get("last_equity", 0))
-            line = f"\n🔵 ALPACA PAPER\nNAV ${eq:,.0f}\n"
-            if le:
-                d = eq - le
-                line += f"Today ${d:+,.0f} ({d/le*100:+.2f}%)\n"
-            if poss:
-                line += f"Unrealized ${sum(float(p['unrealized_pl']) for p in poss):+,.0f}"
-            out.append(line.rstrip())
+            try:
+                eq = float(acct.get("equity", 0)); le = float(acct.get("last_equity", 0))
+                poss = self._alpaca_get("/v2/positions") or []
+                rows = []
+                if mkt_open:
+                    rows.append(f"NAV       ${eq:>11,.0f}  live")
+                    if le:
+                        rows.append(f"Today     ${eq-le:>+11,.0f}  {(eq-le)/le*100:+.2f}%")
+                else:
+                    bars = self._alpaca_daily_bars([p["symbol"] for p in poss])
+                    fresh = [b for b in bars.values() if b.get("bar_date") == today]
+                    if poss and fresh and len(fresh) >= len(poss) * 0.8:   # today's bars exist → real close
+                        close_eq = float(acct.get("cash", 0)) + sum(
+                            float(p["qty"]) * (bars.get(p["symbol"], {}).get("close")
+                                               or float(p["current_price"])) for p in poss)
+                        rows.append(f"NAV       ${close_eq:>11,.0f}  4pm close")
+                        if le:
+                            rows.append(f"Today     ${close_eq-le:>+11,.0f}  {(close_eq-le)/le*100:+.2f}%")
+                        ah = eq - close_eq
+                        rows.append(f"After-hrs ${ah:>+11,.0f}  {ah/close_eq*100:+.2f}% → ${eq:,.0f}")
+                    else:                                                  # pre-market / no session today
+                        rows.append(f"NAV       ${eq:>11,.0f}  live·pre-mkt")
+                        if le:
+                            rows.append(f"Overnight ${eq-le:>+11,.0f}  {(eq-le)/le*100:+.2f}%")
+                if poss:
+                    rows.append(f"Unrealzd  ${sum(float(p['unrealized_pl']) for p in poss):>+11,.0f}")
+                out.append("\n<b>🔵 ALPACA PAPER</b>\n<pre>" + "\n".join(rows) + "</pre>")
+            except Exception as e:
+                out.append(f"\n<b>🔵 ALPACA</b> — ⚠️ {_h.escape(str(e))}")
+        return "\n".join(out)
+
+    async def _cmd_daily(self):
+        """NEW: today's move, position by position, for BOTH books. Prices from the
+        Alpaca data API daily bars (correct during market hours AND after the close;
+        also prices the IBKR book, which has no cheap per-symbol daily-change source)."""
+        import html as _h
+        mkt_open = self.is_market_open()
+        out = [self._tg_header("📅 TODAY BY POSITION", mkt_open)]
+
+        def table(entries, bars, nav):
+            """entries: [(sym, qty)] → aligned <pre> rows sorted by day-$ impact."""
+            rows, total, missing = [], 0.0, []
+            for sym, qty in entries:
+                b = bars.get(sym) or {}
+                px = (b.get("px") if mkt_open else b.get("close")) or b.get("px")
+                prev = b.get("prev")
+                if not px or not prev:
+                    missing.append(sym)
+                    continue
+                d = (px - prev) * qty
+                total += d
+                rows.append((sym, px, (px / prev - 1) * 100, d))
+            rows.sort(key=lambda r: -r[3])
+            body = [f"{'SYM':<6}{'PX':>8}{'DAY%':>7}{'DAY$':>9}", "─" * 30]
+            for sym, px, pct, d in rows:
+                body.append(f"{sym:<6}{px:>8,.1f}{pct:>+7.1f}{d:>+9,.0f}")
+            body += ["─" * 30,
+                     f"{'TOTAL':<6}{'':>8}{(total/nav*100 if nav else 0):>+7.2f}{total:>+9,.0f}"]
+            note = f"\n<i>no data: {', '.join(missing)}</i>" if missing else ""
+            return "<pre>" + "\n".join(body) + "</pre>" + note
+
+        # collect both books first so one data-API call prices everything
+        ib_entries, ib_nav, ib_err = [], 0, None
+        try:
+            s = await self._ibkr_snapshot()
+            ib_entries = [(it.contract.symbol, it.position) for it in s["items"]]
+            ib_nav = s["nav"]
+        except Exception as e:
+            ib_err = _h.escape(str(e))
+        poss = self._alpaca_get("/v2/positions") or []
+        al_entries = [(p["symbol"], float(p["qty"])) for p in poss]
+        acct = self._alpaca_get("/v2/account") or {}
+        al_nav = float(acct.get("equity", 0) or 0)
+        bars = self._alpaca_daily_bars([sym for sym, _ in ib_entries + al_entries])
+
+        if ib_err:
+            out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {ib_err}")
+        elif ib_entries:
+            out.append(f"<b>🟢 IBKR LIVE</b>  (${ib_nav:,.0f})\n" + table(ib_entries, bars, ib_nav))
+        if al_entries:
+            out.append(f"\n<b>🔵 ALPACA PAPER</b>  (${al_nav:,.0f})\n" + table(al_entries, bars, al_nav))
+        elif not ib_entries and not ib_err:
+            out.append("no positions in either book")
+        src = "live prices" if mkt_open else "today's session close vs prev close"
+        out.append(f"<i>DAY% = price vs prev close · DAY$ = qty × move · {src}</i>")
         return "\n".join(out)
 
     async def _cmd_status(self):
@@ -1130,11 +1285,12 @@ class IBKREngine:
         except Exception:
             sig = "❌ unreachable"
         vs, rv = (self.compute_vol_scale() if VOL_SCALING else (1.0, None))
-        return (f"🩺 STATUS\n"
-                f"IBKR: {ib_state} ({self.account_id})\n"
-                f"Signal server: {sig}\n"
-                f"Rebalance: {self._trading_days_since_rebal}/{REBAL_DAYS} days since (last {self._last_rebal_date})\n"
-                f"Vol-scale: {vs:.2f}" + (f" (realized vol {rv:.0%})" if rv else " (ramp-up)"))
+        left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+        return (self._tg_header("🩺 STATUS", self.is_market_open()) +
+                f"\nIBKR        {ib_state}  <i>({self.account_id})</i>\n"
+                f"Signals     {sig}\n"
+                f"Rebalance   day {self._trading_days_since_rebal}/{REBAL_DAYS} · next in {left}d\n"
+                f"Vol-scale   {vs:.2f}" + (f"  <i>(realized vol {rv:.0%})</i>" if rv else "  <i>(ramp-up)</i>"))
 
     def _cmd_signals(self):
         try:
@@ -1142,18 +1298,25 @@ class IBKREngine:
             sigs = data.get("signals", []) if isinstance(data, dict) else data
             buys = sorted([s for s in sigs if s.get("signal") == "BUY"],
                           key=lambda s: -s.get("probability", 0))
-            lines = [f"🎯 TOP SIGNALS ({len(buys)} BUY)\n"]
-            for i, s in enumerate(buys[:15], 1):
-                lines.append(f"{i:2}. {s['symbol']:5} ({s.get('probability', 0):.2f})")
-            return "\n".join(lines)
+            rows = [f"{'#':<3}{'SYM':<6}{'CONV':>6}", "─" * 15]
+            rows += [f"{i:<3}{s['symbol']:<6}{s.get('probability', 0):>6.2f}"
+                     for i, s in enumerate(buys[:15], 1)]
+            return (self._tg_header("🎯 TOP SIGNALS") +
+                    f"{len(buys)} BUY · top {min(15, len(buys))} by conviction\n"
+                    "<pre>" + "\n".join(rows) + "</pre>")
         except Exception as e:
-            return f"signals error: {e}"
+            import html as _h
+            return f"⚠️ signals error: {_h.escape(str(e))}"
 
     def _cmd_rebal(self):
         left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
-        return (f"🔄 REBALANCE\nLast: {self._last_rebal_date}\n"
-                f"Days since: {self._trading_days_since_rebal}/{REBAL_DAYS}\n"
-                f"Next: in {left} trading days")
+        done = min(self._trading_days_since_rebal, REBAL_DAYS)
+        bar = "▓" * done + "░" * (REBAL_DAYS - done)
+        return (self._tg_header("🔄 REBALANCE") +
+                f"<pre>{bar}</pre>"
+                f"Day <b>{self._trading_days_since_rebal}</b> of {REBAL_DAYS} · last {self._last_rebal_date}\n"
+                f"Next rebalance in <b>{left}</b> trading days\n"
+                f"<i>Both books rebalance together off the same signal.</i>")
 
     async def _cmd_data(self):
         try:
@@ -1389,7 +1552,7 @@ class IBKREngine:
                 selftest.unlink()
             except Exception:
                 pass
-            for c in ["/status", "/connection", "/portfolio", "/pnl", "/positions", "/alpaca", "/signals", "/rebal", "/data"]:
+            for c in ["/status", "/connection", "/portfolio", "/pnl", "/daily", "/positions", "/alpaca", "/signals", "/rebal", "/data", "/help"]:
                 try:
                     out = await self._handle_command(c)
                     log.info(f"SELFTEST {c} ->\n{out}")
@@ -1439,16 +1602,34 @@ class IBKREngine:
                         try:
                             summary = await self.get_account_summary()
                             nav = summary.get("NetLiquidation", 0)
-                            self.record_nav(nav)  # build NAV history for vol-scaling
+                            hist = self._load_nav_history()
+                            prev = [p for p in hist if p[0] != today_str]      # yesterday's close BEFORE recording today
+                            self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
                             await self._record_close_snapshot()  # close mark for /portfolio + /pnl
                             n_pos = len(self.positions)
-                            signals = self.fetch_signals()
-                            n_signals = len(signals) if signals else 0
-                            send_telegram(
-                                f"📊 IBKR Daily Summary ({today_str})\n"
-                                f"NAV: ${nav:,.0f} | Positions: {n_pos}/{n_signals} signals\n"
-                                f"Port: {IB_PORT} ({'LIVE' if IB_PORT == 4001 else 'PAPER'})"
-                            )
+                            msg = f"📊 Daily Close ({today_str})\nNAV ${nav:,.0f}"
+                            if prev and prev[-1][1]:
+                                d = nav - prev[-1][1]
+                                msg += f" | Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)"
+                            msg += f" | {n_pos} pos"
+                            try:  # top movers of the day (by $ impact on the book)
+                                s = await self._ibkr_snapshot()
+                                bars = self._alpaca_daily_bars([it.contract.symbol for it in s["items"]])
+                                mv = []
+                                for it in s["items"]:
+                                    b = bars.get(it.contract.symbol) or {}
+                                    if b.get("close") and b.get("prev"):
+                                        mv.append((it.contract.symbol, (b["close"] - b["prev"]) * it.position,
+                                                   (b["close"] / b["prev"] - 1) * 100))
+                                if mv:
+                                    mv.sort(key=lambda x: x[1])
+                                    lo, hi = mv[0], mv[-1]
+                                    msg += (f"\n🏆 {hi[0]} ${hi[1]:+,.0f} ({hi[2]:+.1f}%)"
+                                            f"\n💥 {lo[0]} ${lo[1]:+,.0f} ({lo[2]:+.1f}%)")
+                            except Exception:
+                                pass
+                            msg += "\nSend /daily for the full per-position breakdown."
+                            send_telegram(msg)
                         except Exception:
                             pass
                     await asyncio.sleep(10)
