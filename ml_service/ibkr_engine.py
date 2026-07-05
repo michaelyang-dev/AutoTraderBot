@@ -76,7 +76,10 @@ SIGNAL_HEALTH_URL = f"http://localhost:{SIGNAL_PORT}/health"
 MAX_POSITIONS = 30      # hold all combined sleeve picks (~22-25)
 POSITION_CAP = 0.15     # v12: 15% max per position
 TRAILING_STOP = 0.40    # v12: 40% trailing stop
-LEVERAGE = 1.80         # 1.8x target to offset integer-share rounding drag (~1.44x effective)
+LEVERAGE = 1.80         # CEILING for the adaptive sizing multiplier. Sizing is CLOSED-LOOP:
+                        # _calibrate_quantities targets EFFECTIVE_LEVERAGE of realized gross and
+                        # derives the overshoot itself each rebalance (the old fixed 1.8 was tuned
+                        # for $30K rounding drag and would silently over-lever as NAV grows).
 REBALANCE_INTERVAL = 600  # check every 10 minutes
 MIN_TRADE_PCT = 0.01    # don't trade if delta < 1% of portfolio (existing holdings only)
 
@@ -603,6 +606,45 @@ class IBKREngine:
 
         return trade
 
+    @staticmethod
+    def _calibrate_quantities(signals, prices, nav, vol_scale):
+        """CLOSED-LOOP position sizing. Chooses integer share counts whose ACTUAL
+        gross (after the 15% cap and whole-share truncation) hits
+        EFFECTIVE_LEVERAGE x vol_scale of NAV.
+
+        Replaces the open-loop LEVERAGE=1.8 overshoot: that constant was tuned for
+        ~$30K rounding drag, so as NAV grows (drag shrinks) realized leverage would
+        creep silently toward the raw multiplier — past the 1.49x optimum. Here the
+        multiplier m starts AT the target (no overshoot), we simulate cap+truncation
+        with real prices, and rescale m to close the gap. gross(m) is a monotone
+        step function, so 4 fixed-point passes converge to within ~1 share per name.
+        m is hard-capped at LEVERAGE (the old constant, now a safety ceiling) so the
+        worst case equals the old behavior, never exceeds it.
+
+        Pure function (no self, no I/O) — unit-testable offline.
+        Returns (qty_by_symbol, final_multiplier, projected_gross_$)."""
+        priced = [(s["symbol"], s.get("probability", 0), prices[s["symbol"]])
+                  for s in signals if prices.get(s["symbol"], 0) and prices[s["symbol"]] > 0]
+        if not priced or nav <= 0:
+            return {}, 0.0, 0.0
+        total_prob = sum(p for _, p, _ in priced)
+        target_gross = nav * EFFECTIVE_LEVERAGE * vol_scale
+        m = EFFECTIVE_LEVERAGE * vol_scale      # pass 1: assume zero rounding drag
+        qty, gross = {}, 0.0
+        for i in range(4):
+            qty, gross = {}, 0.0
+            for sym, prob, px in priced:
+                w = (prob / total_prob) * m if (total_prob > 0 and prob > 0) else m / MAX_POSITIONS
+                w = min(w, POSITION_CAP)        # v12: 15% cap AFTER vol-scale, matches backtest
+                q = int(nav * w / px)
+                if q > 0:
+                    qty[sym] = q
+                    gross += q * px
+            if i == 3 or gross <= 0:
+                break                            # keep qty consistent with the m that built it
+            m = min(m * (target_gross / gross), LEVERAGE)
+        return qty, m, gross
+
     async def rebalance(self):
         """Rebalance portfolio to match signal server picks.
 
@@ -677,41 +719,45 @@ class IBKREngine:
         # Vol-scaling overlay: scale effective leverage by realized portfolio vol.
         # Logs the realized-leverage path for the live-vs-backtest watch-item.
         vol_scale, realized_vol = self.compute_vol_scale()
-        eff_leverage = LEVERAGE * vol_scale
+        target_eff = EFFECTIVE_LEVERAGE * vol_scale
         if realized_vol is not None:
             log.info(f"VOL-SCALE: realized_vol={realized_vol:.1%} target={VOL_TARGET:.0%} "
-                     f"-> scale={vol_scale:.2f} -> effective leverage {eff_leverage:.2f}x (base {LEVERAGE})")
-            send_telegram(f"📊 Vol-scale: vol {realized_vol:.0%} → lev {eff_leverage:.2f}x ({vol_scale:.2f}× base)")
+                     f"-> scale={vol_scale:.2f} -> effective leverage target {target_eff:.2f}x "
+                     f"(base {EFFECTIVE_LEVERAGE})")
+            send_telegram(f"📊 Vol-scale: vol {realized_vol:.0%} → lev target {target_eff:.2f}x ({vol_scale:.2f}× base)")
         else:
-            log.info(f"VOL-SCALE: ramp-up (insufficient NAV history) — no scaling, leverage {LEVERAGE}x")
+            log.info(f"VOL-SCALE: ramp-up (insufficient NAV history) — no scaling, "
+                     f"leverage target {EFFECTIVE_LEVERAGE}x")
 
-        # 2. Compute target weights — signal-proportional (matches backtest)
-        # Higher conviction picks get more capital
-        total_prob = sum(s.get("probability", 0) for s in signals)
-        signal_targets = {}
-        for sig in signals:
-            prob = sig.get("probability", 0)
-            if total_prob > 0 and prob > 0:
-                w = (prob / total_prob) * eff_leverage
-                w = min(w, POSITION_CAP)  # v12: cap at 15% (after vol-scale, matches backtest)
-            else:
-                w = eff_leverage / MAX_POSITIONS  # fallback equal weight
-            signal_targets[sig["symbol"]] = portfolio_value * w
-
-        # 3. BUY new positions / adjust existing
+        # 2. Fetch prices for ALL targets first — closed-loop sizing needs the full
+        # price vector before any quantity is chosen.
+        live_prices = {}
         for sig in signals:
             sym = sig["symbol"]
             contract = Stock(sym, "SMART", "USD")
-
             price = await self.get_market_price(contract)
             if not price or price <= 0:
                 log.warning(f"Cannot get price for {sym} — skipping")
                 continue
+            live_prices[sym] = price
 
-            target_value_per_position = signal_targets.get(sym, portfolio_value * LEVERAGE / MAX_POSITIONS)
+        # 2b. Closed-loop sizing: integer quantities whose ACTUAL gross hits the
+        # EFFECTIVE_LEVERAGE target (see _calibrate_quantities for why).
+        target_qty_map, sizing_mult, projected_gross = self._calibrate_quantities(
+            signals, live_prices, portfolio_value, vol_scale)
+        log.info(f"SIZING: adaptive mult {sizing_mult:.2f} (ceiling {LEVERAGE:.2f}) -> "
+                 f"projected gross ${projected_gross:,.0f} = "
+                 f"{(projected_gross / portfolio_value if portfolio_value else 0):.2f}x NAV "
+                 f"(target {EFFECTIVE_LEVERAGE * vol_scale:.2f}x)")
+
+        # 3. BUY new positions / adjust existing
+        for sig in signals:
+            sym = sig["symbol"]
+            if sym not in live_prices:
+                continue
+            price = live_prices[sym]
             current_qty = self.positions.get(sym, {}).get("qty", 0)
-            current_value = current_qty * price
-            target_qty = int(target_value_per_position / price)
+            target_qty = target_qty_map.get(sym, 0)
             delta_qty = target_qty - current_qty
 
             # Skip if delta is too small — ONLY for existing holdings (avoid churn).
@@ -1527,7 +1573,7 @@ class IBKREngine:
         log.info(f"  Max positions: {MAX_POSITIONS}")
         log.info(f"  Position cap: {POSITION_CAP:.0%}")
         log.info(f"  Trailing stop: {TRAILING_STOP:.0%}")
-        log.info(f"  Leverage: {LEVERAGE:.1f}x")
+        log.info(f"  Leverage: adaptive -> {EFFECTIVE_LEVERAGE:.2f}x effective target (mult ceiling {LEVERAGE:.2f}x)")
         log.info(f"  Rebalance: every 20 trading days")
         log.info(f"  Rebalance check interval: {REBALANCE_INTERVAL}s")
         log.info(f"  Short sleeve: {'ENABLED' if SHORT_ENABLED else 'DISABLED'}")
