@@ -655,8 +655,12 @@ class IBKREngine:
         """
         # Rebal clock (_trading_days_since_rebal / _last_rebal_date / _last_counted_day) is
         # initialized AND loaded-from-disk in __init__, so it survives restarts.
-        # Only count trading days when market is open.
-        if not self.is_market_open():
+        # Only count trading days when market is open. BOTH gates required: the signal
+        # server's market_open flag misfired TRUE at 9:16am on the Jul-3-2026 holiday
+        # (counted a phantom trading day -> would have rebalanced a day before the JS
+        # engine, on a different signal). _is_trading_day() is the NYSE-calendar,
+        # holiday-aware check; it also stops orders being queued on a misfired holiday.
+        if not self.is_market_open() or not self._is_trading_day():
             return
 
         # Count trading days (only increment once per calendar day)
