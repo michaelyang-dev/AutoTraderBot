@@ -556,10 +556,12 @@ def cleanup_journal_db():
                 days = 7 if table == 'signals' else 30
                 conn.execute(f"DELETE FROM {table} WHERE {date_col} < datetime('now', '-{days} days')")
                 deleted += conn.total_changes
+        conn.commit()  # MUST commit the DELETEs first: VACUUM inside the implicit
+        # transaction raised "cannot VACUUM from within a transaction" every run,
+        # and the exception path then skipped commit — so cleanup NEVER applied.
         if deleted > 0:
             conn.execute("VACUUM")
             log(f"Journal cleanup: deleted {deleted} old rows, vacuumed")
-        conn.commit()
         conn.close()
         return True
     except Exception as e:
@@ -574,7 +576,7 @@ def main():
 
     ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 600, retries=1)  # 2x headroom: bulk FMP (11 sources x ~1500) occasionally >300s; false-alarmed 2026-06-23
     ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60, retries=1)
-    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 2400, retries=1)  # 40min for 1500 stocks × 8 FMP calls with rate limiting
+    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 3600, retries=1)  # 60min: the 40min ceiling false-alarmed 4 of 6 runs in early July (FMP slow days); pipeline is resumable so a longer ceiling just lets it finish
     ok4 = _run_with_timeout(refresh_options, "options", 300, retries=1)
     # v12: Ortex REMOVED (subscription canceled, SI hurts returns)
     ok5 = True  # skip Ortex

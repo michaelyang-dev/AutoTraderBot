@@ -53,17 +53,13 @@ def _fetch(url: str) -> str:
         return resp.read().decode()
 
 
-def _extract_sp500(html: str) -> list[str]:
-    """SP500 page has a table with id='constituents'."""
-    table_match = re.search(
-        r'<table[^>]*id="constituents"[^>]*>(.*?)</table>', html, re.DOTALL
-    )
-    if not table_match:
-        raise ValueError("Could not find SP500 constituents table")
-
+def _tickers_from_table(table_html: str) -> list[str]:
+    """First-column tickers from a table body. Rows are matched as <tr ...> WITH
+    attributes — Wikipedia's 2026-07 markup change added row attributes, and the old
+    bare '<tr>' pattern silently matched ZERO rows (broke sp400 7/2, sp500 7/6)."""
     tickers = []
-    for row in re.findall(r'<tr>(.*?)</tr>', table_match.group(1), re.DOTALL):
-        cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
+    for row in re.findall(r'<tr[^>]*>(.*?)</tr>', table_html, re.DOTALL):
+        cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.DOTALL)
         if cells:
             ticker = re.sub(r'<[^>]+>', '', cells[0]).strip()
             ticker = re.sub(r'\[.*?\]', '', ticker).strip()
@@ -72,51 +68,64 @@ def _extract_sp500(html: str) -> list[str]:
     return sorted(set(tickers))
 
 
-def _extract_wikitable(html: str) -> list[str]:
-    """SP400/SP600 pages use a standard wikitable."""
-    tables = re.findall(
-        r'<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>(.*?)</table>', html, re.DOTALL
-    )
-    for table in tables:
-        tickers = []
-        for row in re.findall(r'<tr>(.*?)</tr>', table, re.DOTALL):
-            cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
-            if cells:
-                ticker = re.sub(r'<[^>]+>', '', cells[0]).strip()
-                ticker = re.sub(r'\[.*?\]', '', ticker).strip()
-                if ticker and re.match(r'^[A-Z]{1,5}(\.[A-Z])?$', ticker):
-                    tickers.append(ticker)
+def _extract_constituents(html: str) -> list[str]:
+    """All three index pages now carry id="constituents" on the main table; try that
+    first, then fall back to scanning every wikitable for a plausibly-sized result."""
+    m = re.search(r'<table[^>]*id="constituents"[^>]*>(.*?)</table>', html, re.DOTALL)
+    if m:
+        tickers = _tickers_from_table(m.group(1))
         if len(tickers) > 100:
-            return sorted(set(tickers))
-    raise ValueError("Could not find constituents wikitable")
+            return tickers
+    for table in re.findall(r'<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>(.*?)</table>',
+                            html, re.DOTALL):
+        tickers = _tickers_from_table(table)
+        if len(tickers) > 100:
+            return tickers
+    raise ValueError("Could not find constituents table")
 
 
 def scrape() -> dict:
-    results = {}
+    # Per-index resilience: one broken page must NOT freeze the whole file (the
+    # 2026-07 format change froze sp1500_members.json for 5 days because a single
+    # sp400 failure aborted all three). On failure, reuse that index's last-good
+    # list from the existing members file and log loudly.
+    previous = {}
+    if OUTPUT_FILE.exists():
+        try:
+            previous = json.load(open(OUTPUT_FILE))
+        except Exception:
+            pass
 
+    results = {}
+    failures = []
     for name, url in URLS.items():
         log.info("Fetching %s from Wikipedia...", name)
-        html = _fetch(url)
-
-        if name == "sp500":
-            tickers = _extract_sp500(html)
-        else:
-            tickers = _extract_wikitable(html)
-
-        lo, hi = EXPECTED_COUNTS[name]
-        if not (lo <= len(tickers) <= hi):
-            raise ValueError(
-                f"{name}: got {len(tickers)} tickers, expected {lo}-{hi}. "
-                "Wikipedia format may have changed."
-            )
-
-        results[name] = tickers
-        log.info("  %s: %d tickers", name, len(tickers))
+        try:
+            html = _fetch(url)
+            tickers = _extract_constituents(html)
+            lo, hi = EXPECTED_COUNTS[name]
+            if not (lo <= len(tickers) <= hi):
+                raise ValueError(
+                    f"got {len(tickers)} tickers, expected {lo}-{hi}. "
+                    "Wikipedia format may have changed."
+                )
+            results[name] = tickers
+            log.info("  %s: %d tickers", name, len(tickers))
+        except Exception as e:
+            last_good = previous.get(name) or []
+            if not last_good:
+                raise  # no fallback available — keep the old fail-loud behavior
+            failures.append(name)
+            results[name] = last_good
+            log.error("FAILED %s (%s) — reusing %d last-good tickers from %s",
+                      name, e, len(last_good), previous.get("updated", "?"))
 
     total = sum(len(v) for v in results.values())
-    log.info("Total SP1500: %d", total)
+    log.info("Total SP1500: %d%s", total,
+             f" (STALE: {', '.join(failures)})" if failures else "")
 
-    data = {"updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), **results}
+    data = {"updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "stale": failures, **results}
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_FILE, "w") as f:
