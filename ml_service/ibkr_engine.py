@@ -122,9 +122,11 @@ def send_telegram(msg):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         # Tag every message with the engine so IBKR vs Alpaca is unambiguous
         tag = "🟢 [IBKR LIVE] " if IB_PORT == 4001 else "🟡 [IBKR PAPER] "
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": tag + str(msg)}, timeout=10)
-    except Exception:
-        pass  # never crash trading loop for telegram
+        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": tag + str(msg)}, timeout=10)
+        if r.status_code != 200:  # log it — a silent drop here is undiagnosable later
+            log.warning(f"Telegram send FAILED ({r.status_code}): {r.text[:120]}")
+    except Exception as e:
+        log.warning(f"Telegram send FAILED: {e}")  # log, but never crash the trading loop
 
 
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
@@ -1328,6 +1330,18 @@ class IBKREngine:
         acct = self._alpaca_get("/v2/account") or {}
         al_nav = float(acct.get("equity", 0) or 0)
         bars = self._alpaca_daily_bars([sym for sym, _ in ib_entries + al_entries])
+        if not mkt_open:
+            # CONSISTENCY with /pnl: after the bell, headers show the 4pm close, not the
+            # after-hours-drifting live NAV (the two commands used to disagree at night).
+            today = datetime.now().date().isoformat()
+            snap = self._load_close_snapshot()
+            if snap and snap.get("date") == today and snap.get("nav"):
+                ib_nav = snap["nav"]
+            fresh = [b for b in bars.values() if b.get("bar_date") == today]
+            if poss and fresh and len(fresh) >= len(poss) * 0.8:
+                al_nav = float(acct.get("cash", 0) or 0) + sum(
+                    float(p["qty"]) * (bars.get(p["symbol"], {}).get("close")
+                                       or float(p["current_price"])) for p in poss)
 
         if ib_err:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {ib_err}")
@@ -1656,50 +1670,56 @@ class IBKREngine:
                         await asyncio.sleep(60)
                         continue
 
+                # Daily end-of-day summary at 4:05 PM ET. Checked BEFORE the market-open
+                # branch: the signal server's market_open flag can lag the real close by
+                # ~30 min (seen 2026-07-09: EOD fired 16:30, polluting the close mark with
+                # after-hours drift), so this must not depend on reaching the closed branch.
+                if not hasattr(self, '_eod_sent_today'):
+                    self._eod_sent_today = None
+                from zoneinfo import ZoneInfo
+                now_et = datetime.now(ZoneInfo("US/Eastern"))
+                today_str = now_et.strftime("%Y-%m-%d")
+                if (now_et.hour == 16 and now_et.minute >= 5
+                        and self._eod_sent_today != today_str
+                        and self._is_trading_day()):
+                    self._eod_sent_today = today_str
+                    try:
+                        summary = await self.get_account_summary()
+                        nav = summary.get("NetLiquidation", 0)
+                        hist = self._load_nav_history()
+                        prev = [p for p in hist if p[0] != today_str]      # yesterday's close BEFORE recording today
+                        self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
+                        await self._record_close_snapshot()  # close mark for /portfolio + /pnl
+                        n_pos = len(self.positions)
+                        msg = f"📊 Daily Close ({today_str})\nNAV ${nav:,.0f}"
+                        if prev and prev[-1][1]:
+                            d = nav - prev[-1][1]
+                            msg += f" | {'🟩' if d >= 0 else '🟥'} Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)"
+                        msg += f" | {n_pos} pos"
+                        try:  # top movers of the day (by $ impact on the book)
+                            s = await self._ibkr_snapshot()
+                            bars = self._alpaca_daily_bars([it.contract.symbol for it in s["items"]])
+                            mv = []
+                            for it in s["items"]:
+                                b = bars.get(it.contract.symbol) or {}
+                                if b.get("close") and b.get("prev"):
+                                    mv.append((it.contract.symbol, (b["close"] - b["prev"]) * it.position,
+                                               (b["close"] / b["prev"] - 1) * 100))
+                            if mv:
+                                mv.sort(key=lambda x: x[1])
+                                lo, hi = mv[0], mv[-1]
+                                msg += (f"\n🏆 {hi[0]} ${hi[1]:+,.0f} ({hi[2]:+.1f}%)"
+                                        f"\n💥 {lo[0]} ${lo[1]:+,.0f} ({lo[2]:+.1f}%)")
+                        except Exception:
+                            pass
+                        msg += "\nSend /daily for the full per-position breakdown."
+                        send_telegram(msg)
+                    except Exception as e:
+                        log.warning(f"EOD summary failed: {e}")  # was silent — made it diagnosable
+
                 if not self.is_market_open():
                     if cycle % 60 == 1:  # log once per ~10 min
                         log.info("Market closed — waiting...")
-                    # Send daily end-of-day summary at 4:05 PM ET
-                    if not hasattr(self, '_eod_sent_today'):
-                        self._eod_sent_today = None
-                    from zoneinfo import ZoneInfo
-                    now_et = datetime.now(ZoneInfo("US/Eastern"))
-                    today_str = now_et.strftime("%Y-%m-%d")
-                    if now_et.hour == 16 and now_et.minute >= 5 and self._eod_sent_today != today_str:
-                        self._eod_sent_today = today_str
-                        try:
-                            summary = await self.get_account_summary()
-                            nav = summary.get("NetLiquidation", 0)
-                            hist = self._load_nav_history()
-                            prev = [p for p in hist if p[0] != today_str]      # yesterday's close BEFORE recording today
-                            self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
-                            await self._record_close_snapshot()  # close mark for /portfolio + /pnl
-                            n_pos = len(self.positions)
-                            msg = f"📊 Daily Close ({today_str})\nNAV ${nav:,.0f}"
-                            if prev and prev[-1][1]:
-                                d = nav - prev[-1][1]
-                                msg += f" | {'🟩' if d >= 0 else '🟥'} Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)"
-                            msg += f" | {n_pos} pos"
-                            try:  # top movers of the day (by $ impact on the book)
-                                s = await self._ibkr_snapshot()
-                                bars = self._alpaca_daily_bars([it.contract.symbol for it in s["items"]])
-                                mv = []
-                                for it in s["items"]:
-                                    b = bars.get(it.contract.symbol) or {}
-                                    if b.get("close") and b.get("prev"):
-                                        mv.append((it.contract.symbol, (b["close"] - b["prev"]) * it.position,
-                                                   (b["close"] / b["prev"] - 1) * 100))
-                                if mv:
-                                    mv.sort(key=lambda x: x[1])
-                                    lo, hi = mv[0], mv[-1]
-                                    msg += (f"\n🏆 {hi[0]} ${hi[1]:+,.0f} ({hi[2]:+.1f}%)"
-                                            f"\n💥 {lo[0]} ${lo[1]:+,.0f} ({lo[2]:+.1f}%)")
-                            except Exception:
-                                pass
-                            msg += "\nSend /daily for the full per-position breakdown."
-                            send_telegram(msg)
-                        except Exception:
-                            pass
                     await asyncio.sleep(10)
                     continue
 
