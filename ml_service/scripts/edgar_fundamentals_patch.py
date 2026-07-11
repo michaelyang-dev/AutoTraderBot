@@ -44,18 +44,29 @@ OUT = DATA / "wrds" / "compustat_fundamentals_quarterly_patched.parquet"
 REPORT = DATA / "edgar_patch_report.json"
 UA = {"User-Agent": "AutoTrader research michaelslyang@gmail.com"}
 
-# Compustat item -> ordered EDGAR us-gaap concept candidates. First candidate whose
-# value VALIDATES against Compustat's overlap quarter wins for that symbol.
+# Compustat item -> ordered candidate SPECS: (base_tag, [add_alternatives...], [sub_alternatives...]).
+# value = base + sum(first-available of each add-list, else 0) - sum(same for sub-lists).
+# Derived combos encode Compustat conventions: cogsq EXCLUDES D&A (verified: AAPL/MU/PAYX
+# match to the dollar after subtracting D&A); dlcq = current LTD + commercial paper/ST borrowings.
+# The per-symbol validation gate still decides — a wrong combo simply fails and stays stale.
+_DA = ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+       "DepreciationAmortizationAndAccretionNet", "Depreciation"]
+_STB = ["CommercialPaper", "ShortTermBorrowings", "OtherShortTermBorrowings", "ShortTermBankLoansAndNotesPayable"]
 CONCEPTS = {
-    "niq":   ["NetIncomeLoss", "ProfitLoss",
-              "NetIncomeLossAvailableToCommonStockholdersBasic"],
-    "saleq": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues",
-              "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"],
-    "cogsq": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"],
-    "seqq":  ["StockholdersEquity",
-              "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
-    "dlttq": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "dlcq":  ["LongTermDebtCurrent", "DebtCurrent"],
+    "niq":   [("NetIncomeLoss", [], []), ("ProfitLoss", [], []),
+              ("NetIncomeLossAvailableToCommonStockholdersBasic", [], [])],
+    "saleq": [("RevenueFromContractWithCustomerExcludingAssessedTax", [], []), ("Revenues", [], []),
+              ("SalesRevenueNet", [], []), ("RevenueFromContractWithCustomerIncludingAssessedTax", [], [])],
+    "cogsq": [("CostOfRevenue", [], [_DA]), ("CostOfGoodsAndServicesSold", [], [_DA]),
+              ("CostOfRevenue", [], []), ("CostOfGoodsAndServicesSold", [], []),
+              ("CostOfGoodsSold", [], [_DA]), ("CostOfGoodsSold", [], [])],
+    "seqq":  [("StockholdersEquity", [], []),
+              ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", [], [])],
+    "dlttq": [("LongTermDebtNoncurrent", [], []), ("LongTermDebtAndCapitalLeaseObligations", [], []),
+              ("LongTermDebt", [], [])],
+    "dlcq":  [("LongTermDebtCurrent", [_STB], []), ("DebtCurrent", [], []),
+              ("LongTermDebtCurrent", [], []), ("LongTermDebtAndCapitalLeaseObligationsCurrent", [_STB], []),
+              ("LongTermDebtAndCapitalLeaseObligationsCurrent", [], [])],
 }
 FLOWS = {"niq", "saleq", "cogsq"}          # duration items (need quarterly windows)
 ZERO_OK = {"dlttq", "dlcq", "cogsq"}       # items legitimately 0/absent for some firms
@@ -129,6 +140,33 @@ def value_at(quarters, annuals, end, is_flow):
     return None, None
 
 
+def spec_value(facts, spec, end, is_flow):
+    """Evaluate a candidate spec (base, add_alt_lists, sub_alt_lists) at a period end.
+    Add/sub components are flows/instants matching the base item's nature; absent
+    optional components contribute 0. Returns (value, filed) or (None, None)."""
+    base, adds, subs = spec
+    q, a = series_for_concept(facts, base)
+    if q is None:
+        return None, None
+    v, filed = value_at(q, a, end, is_flow)
+    if v is None:
+        return None, None
+    total = v
+    for alt_list in adds + [["___SUB___"] + x for x in subs]:
+        sign = 1
+        if alt_list and alt_list[0] == "___SUB___":
+            sign, alt_list = -1, alt_list[1:]
+        for tag in alt_list:
+            q2, a2 = series_for_concept(facts, tag)
+            if q2 is None:
+                continue
+            v2, _ = value_at(q2, a2, end, is_flow)
+            if v2 is not None:
+                total += sign * v2
+                break
+    return total, filed
+
+
 def close_enough(edgar, compustat):
     if pd.isna(compustat):
         return edgar is None or abs(edgar) <= ABS_TOL
@@ -143,7 +181,7 @@ def main():
     syms = sorted(set(members["sp500"] + members["sp400"] + members["sp600"]))
     fund = pd.read_parquet(FUND)
     fund["datadate"] = pd.to_datetime(fund["datadate"])
-    last_rows = fund.sort_values("datadate").groupby("tic").last()
+    last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
     cik_map = load_cik_map()
 
     stats = {"patched": [], "validated_no_new": [], "failed_validation": [],
@@ -173,13 +211,10 @@ def main():
         for item, candidates in CONCEPTS.items():
             cs_val = row[item]
             hit = None
-            for concept in candidates:
-                q, a = series_for_concept(facts, concept)
-                if q is None:
-                    continue
-                v, _ = value_at(q, a, overlap_end, item in FLOWS)
+            for spec in candidates:
+                v, _ = spec_value(facts, spec, overlap_end, item in FLOWS)
                 if close_enough(v, cs_val):
-                    hit = concept
+                    hit = spec
                     break
             if hit is None:
                 if item in ZERO_OK and (pd.isna(cs_val) or abs(cs_val) <= ABS_TOL):
@@ -195,22 +230,21 @@ def main():
         # find the newest quarter-end strictly after Compustat's last, where every
         # resolved concept has a value (validated tags only — no re-guessing)
         cand_ends = set()
-        for item, concept in resolved.items():
-            if concept is None:
+        for item, spec in resolved.items():
+            if spec is None:
                 continue
-            q, a = series_for_concept(facts, concept)
-            cand_ends |= {d for d in q if d > overlap_end + pd.Timedelta(days=20)}
+            q, a = series_for_concept(facts, spec[0])
+            cand_ends |= {d for d in (q or {}) if d > overlap_end + pd.Timedelta(days=20)}
         newer = sorted(cand_ends)
         patched = None
         for end in reversed(newer):
             vals, rdq = {}, None
             complete = True
-            for item, concept in resolved.items():
-                if concept is None:
+            for item, spec in resolved.items():
+                if spec is None:
                     vals[item] = np.nan if item == "dlttq" else 0.0
                     continue
-                q, a = series_for_concept(facts, concept)
-                v, filed = value_at(q, a, end, item in FLOWS)
+                v, filed = spec_value(facts, spec, end, item in FLOWS)
                 if v is None:
                     complete = False
                     break
