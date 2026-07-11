@@ -1318,6 +1318,15 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       circuitBreaker.peakDate = todayDate;
     }
 
+    // ── CIRCUIT BREAKERS DELETED 2026-07-11 (user decision, parity audit) ──
+    // IBKR live and the backtest have NO halt layers — vol-scaling + the bear blend are
+    // the designed risk management. These halts existed only on this paper mirror and
+    // made it lie about the real strategy (the stuck weekly halt of 7/7 would have
+    // blocked the 7/14 rebalance buys). State tracking above stays (feeds daily P&L
+    // logs); everything below this line is disabled.
+    return { safe: true, reason: "" };
+    /* eslint-disable no-unreachable */
+
     // ── Layer 3: Peak drawdown (check first — most severe) ──
     // Auto-recovery with escalating cooldowns:
     //   1st halt → 1 hour cooldown, then auto-reset

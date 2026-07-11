@@ -682,9 +682,12 @@ class IBKREngine:
             return
 
         log.info(f"═══ REBALANCE DAY ({self._trading_days_since_rebal}d since last) ═══")
-        self._trading_days_since_rebal = 0
-        self._last_rebal_date = today
-        self._save_rebal_state()
+        # NOTE (2026-07-11 audit fix): the day counter is reset AT THE END of this method,
+        # after the buy loop completes. Resetting here meant a mid-rebalance failure
+        # (gateway drop, crash) left a half-built book untouched for 20 days. Now a
+        # failure leaves the counter >= 20, so the next cycle simply retries: completed
+        # sells are no-ops (positions already gone) and missing buys resume — same
+        # convergent semantics as the JS engine's REBALANCE COMPLETE gate.
 
         # SAFETY: Close any accidental short positions first
         await self.update_positions()
@@ -782,6 +785,10 @@ class IBKREngine:
                 # TRIM (sell excess)
                 await self.sell_position(sym, abs(delta_qty), "trim_overweight")
 
+        # Rebalance COMPLETED — only now reset the day counter (see note at method top:
+        # a failure anywhere above leaves the counter >= 20 and the next cycle retries).
+        self._trading_days_since_rebal = 0
+        self._last_rebal_date = datetime.now().date().isoformat()
         self.last_rebalance = datetime.now()
         self._save_rebal_state()
         await self.update_positions()
