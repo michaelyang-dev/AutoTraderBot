@@ -48,6 +48,10 @@ const RISK = {
 const DISABLE_TREND_STRATEGY = true;  // Backtest proved trend hurts (-8.41pp alpha, -0.364 Sharpe)
 const ENABLE_MOMENTUM_REGIME_FILTER = true;  // Skip momentum buys when SPY < 50-SMA (OOS: +11.8pp CAGR, +0.69 Sharpe, -7.6pp DD)
 const ENABLE_SPY_PARKING = false;  // Walk-forward validated OFF: +0.42 Sharpe, +3.4% CAGR (commit f8bd464)
+const CONSENSUS_FALLBACK_TRADING = false;  // PARITY (2026-07-10 audit): when the signal server is
+// down/stale the engine must HOLD, exactly like IBKR (skips rebalance) and the backtest (always has
+// signals). Before this flag, SMA/RSI/MACD "consensus" candidates could BUY on any cycle (bypassing
+// batch mode, ETFs eligible) and consensus SELL could fire on untagged positions. Alert-only now.
 
 // ── Multi-strategy slot allocation ──
 // v9.6: all slots go to factor strategy (multi-strategy engine handles diversification)
@@ -2698,7 +2702,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         const buyCount = mlSignals.filter(s => s.signal === "BUY").length;
         addLog(`v10 active -- ${buyCount} BUY signal${buyCount !== 1 ? "s" : ""} (top-${buyCount} cross-sectional ranking) | vol scale: ${currentVolScale.toFixed(3)}`, "system");
       } else {
-        addLog("Signal server offline -- using consensus engine (fallback mode)", "system");
+        addLog("Signal server offline/stale -- HOLDING (fallback trading disabled for parity; stops still active)", "system");
       }
 
       // Include both held positions AND pending buy orders to prevent duplicate buys.
@@ -2764,7 +2768,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         // Old technical signals (SMA, RSI, MACD) would fight the factor-based strategy.
         const ML_MIN_HOLD_CYCLES = 5 * 390;
         const excludedStrategies = new Set(["momentum", "mean_reversion", "legacy", "mega_cap", "trend", "ml"]);
-        if (heldSymbols.has(sym) && !trendPositions[sym] && !excludedStrategies.has(positionStrategy[sym]) && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
+        // `|| "ml"`: an UNTAGGED position (e.g. manually placed, pre-rehydrate) must default to
+        // excluded — before this, undefined tags slipped past the set and were consensus-sellable.
+        if (CONSENSUS_FALLBACK_TRADING && heldSymbols.has(sym) && !trendPositions[sym] && !excludedStrategies.has(positionStrategy[sym] || "ml") && (analysis.consensus === "STRONG SELL" || analysis.consensus === "SELL")) {
           // Check minimum hold period before allowing consensus-based exit
           const mlEntryCycle = mlEntryDates[sym];
           if (mlEntryCycle != null) {
@@ -2851,8 +2857,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
               addLog(`ML SKIP ${sym} -- rank #${mlSig.rank}, not in top 8`, "system");
             }
           }
-        } else {
-          // Consensus fallback
+        } else if (CONSENSUS_FALLBACK_TRADING) {
+          // Consensus fallback — DISABLED for parity (flag above). When signals are
+          // unavailable the correct v12 behavior is to hold, not trade technicals.
           const signalQualifies = regime === "CAUTIOUS"
             ? analysis.consensus === "STRONG BUY"
             : analysis.consensus === "STRONG BUY" || analysis.consensus === "BUY";
