@@ -1,64 +1,104 @@
-# Live System — Source of Truth (verified 2026-06-24)
+# Live System — Source of Truth (verified 2026-07-10, full parity audit)
 
-Read this before analyzing the live engines, so the same confusions don't recur.
+Read this before analyzing the live engines. Canonical machine-readable config:
+`ml_service/live_config.py`. Canonical expectation numbers: bottom of this file.
 
-## The two engines run the SAME strategy (v12)
+## Architecture
 
-Both the **IBKR live** engine and the **Alpaca paper** engine consume the **same v12
-signals** from the shared **signal server (`:5001`)** and apply the same portfolio rules.
-They are NOT different strategies. Verified side-by-side:
+```
+signal server :5001 (signal_server.py + signal_builder.py, Polygon prices, FMP fundamentals)
+        │  same signals to both
+        ├── IBKR LIVE engine    (ml_service/ibkr_engine.py, real $, acct U25698604)
+        └── ALPACA PAPER mirror (server/tradingEngine.js, ~$1.4M paper)
+backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve code
+           (strategies/multi_strategy_engine.py) with the signal server.
+```
 
-| Parameter | IBKR live (`ml_service/ibkr_engine.py`) | Alpaca paper (`server/tradingEngine.js`) |
-|---|---|---|
-| Signal source | signal server `:5001` (v12, top_n=5) | signal server `:5001` (v12, top_n=5) |
-| Rebalance cadence | `REBAL_DAYS = 20` | `REBAL_INTERVAL_CYCLES = 20*390` (20 trading days) |
-| Max positions | `MAX_POSITIONS = 30` (~22-25 held) | `MAX_OPEN_POSITIONS = 30` |
-| Position cap | `POSITION_CAP = 0.15` | `MAX_POSITION_PCT = 0.15` |
-| Trailing stop | `TRAILING_STOP = 0.40` | `TRAILING_STOP_PCT = 0.40` |
-| Effective leverage | `LEVERAGE = 1.80` → **~1.49x** | `MAX_CASH_DEPLOY_PCT = 1.60` → **~1.49x** |
-| Direction | long-only (`SHORT_ENABLED=False`) | long-only |
-| Vol-scaling | on (target ~0.15 1x / 0.22 levered) | on (same) |
+## The strategy (v12) — every parameter, all three systems
 
-The leverage *config numbers differ on purpose* (1.8 vs 1.6) to land on the **same ~1.49x
-effective**: IBKR's $30K account has integer-share rounding drag (1.8 → 1.49), Alpaca's
-$1.3M account has negligible rounding (1.6 → 1.49). **Do not "align" them to the same
-number** — that would change the effective leverage.
+| Parameter | IBKR live | Alpaca paper | Backtest equivalent |
+|---|---|---|---|
+| Signals | `:5001` /signals | same | same shared sleeve code |
+| Sleeves | mom .50 / val .35 / lowvol .15 (bear .10/.30/.50/.10, breadth-blended) | same | same (`PROD_WEIGHTS_*`) |
+| Risk-parity in sleeves | **NO** (signal_builder skips it) | same | model with `use_rp=False` |
+| Rebalance | 20 trading days, persisted `ibkr_rebal_state.json`, NYSE-calendar gated | same via `js_rebal_state.json` | `rebal_days: 20` |
+| Position cap | 15% of NAV (≈10% of the 1.49x book) | same | model with `cap: 0.10` |
+| Trailing stop | 40% from peak | same | same |
+| Take-profit | none | none (deleted 2026-06-25) | none |
+| Sizing | **closed-loop** (2026-07-04): `_calibrate_quantities` targets 1.49x × vol_scale of MEASURED gross; old `LEVERAGE=1.8` is only a safety ceiling | `MAX_CASH_DEPLOY_PCT=1.6` × volScale (fractional, same effective) | overlay leverage on 1x returns |
+| Vol-scaling | target 0.15 1x-equiv (0.2235 on levered NAV), lookback 40d, floor 0.30, **de-risk-only cap 1.0** | same policy | `vol_scaling` flags (+ `vol_scale_cap: 1.0` via research fork) |
+| Financing | IBKR margin ~6.3%/yr on the borrowed portion | paper (model the same) | overlay (`research/leverage_financing_test.py`) |
+| Shorts / GLD / VIXM / SPY-parking / trend bucket | all OFF | all OFF (order-path inventory closed 2026-07-10) | all OFF (defaults 0) |
+| Signal outage | skip rebalance, HOLD | HOLD (consensus fallback **neutered 2026-07-10**, alert-only) | n/a (always has signals) |
 
-## Why Alpaca shows bigger gains than IBKR (it's NOT strategy)
-1. **Size:** Alpaca paper ≈ **$1.33M** vs IBKR live **$34K** (~39x). Same % move = ~39x the
-   dollars. This is the whole story if comparing dollar P&L.
-2. **Fractional vs integer:** Alpaca holds exact weights, fully invested; IBKR rounds to
-   whole shares → small cash drag at $34K.
-3. **Costs:** IBKR pays real commissions/slippage; Alpaca paper is frictionless + optimistic marks.
+## Verified divergence ledger (2026-07-10 audit)
 
-The % gap = the cost of running live at small size. It shrinks as the account grows.
+**Measured / by-design (no action needed):**
+- **Data feed** — WRDS CRSP (backtest) vs Polygon (live signals). Measured 2026-07-10:
+  daily-return corr **0.9998** median across 1,517 names; 6-1 momentum rank Spearman
+  **0.996** with **top-25 picks 25/25 identical**; low-vol Spearman 0.995. Price-side
+  data difference ≈ nil for ranking.
+- **Execution timing** — live fills near the open, backtest at close (~7bps/side, inside
+  the conservative 10bps/side cost model; real measured costs run BELOW the model).
+- **Integer shares** at small NAV — compensated by closed-loop sizing.
+- **Fundamentals vendor** for the value sleeve: FMP (live) vs Compustat (backtest) — the
+  one UNQUANTIFIED data difference (35% of the signal). Flagged for a future study.
+- **No margin-call mechanics** in the levered backtest DD figures.
+
+**Deliberate policy remainder:**
+- **Alpaca-only circuit breakers** (daily/weekly/peak-DD halts). IBKR + backtest have
+  none. Keep-or-remove is an open decision.
+- JS-only latent paths (earnings-eve exit, legacy-bucket exits): dormant — they only touch
+  positions NOT tagged `ml`, and the whole book is ml-tagged. The ml cooldown can delay a
+  rebalance re-buy ~30min (self-heals same day).
+
+## Canonical expectation numbers (2026-07-10 re-baseline)
+
+`research/final_live_config_test.py` — exact live config, levered 1.49x, financed 6.3%:
+
+| Period | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| 2018–2025 (3-start avg) | **+28.3%** | **0.95** | **-33.9%** |
+| 2001–2025 (2-start avg) | **+20.7%** | 0.77 | **-63.8%** |
+
+The old **+25.4%** / **+21.0%** headlines were the legacy config (RP-on, cap .15, no
+vol-scaling, 1x, no financing) — superseded for live expectations. The two config
+differences (no-RP, NAV-cap) were audited AND backtest BETTER than the legacy config —
+do not "fix" live to match old research; new research must import
+`ml_service/live_config.py`.
+
+Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling variants
+(e.g. t.20/cap1.5) LOSE at leverage — financing cost + Reg-T clamping + variance drag
+(`research/volpolicy_levered_test.py`). Do not re-tune without new evidence.
 
 ## Gotchas that previously caused misdiagnosis
-- **Alpaca multi-strategy buckets are DISABLED**, not active: `momentum: 0, mean_reversion: 0,
-  mega_cap: 0` — all 30 slots go to the `ml_medium` (= v12 factor) bucket. Log labels like
-  "ML 22/30, MOM 0/0" reflect this. Don't read the dormant `MOM`/`MR`/`MEGACAP` code as live.
-- **`REBALANCE_INTERVAL: 5` was a dead/unused constant** (removed 2026-06-24). The real
-  cadence is `REBAL_INTERVAL_CYCLES = 20*390`. Don't reintroduce it.
-- **"v9.6" in comments = the signal-generation version** (what `build_signals_v9` computes);
-  **"v12" = the strategy/portfolio version.** Both are correct and consistent — not a mismatch.
-- **Holdings lag the live BUY list by up to 20 days** (the rebalance cadence). If IBKR holds a
-  few names not in today's signal BUY list (and is missing a few new ones), that's EXPECTED —
-  it rebalances every 20 trading days, not daily. Both engines do this.
+- **Alpaca multi-strategy buckets are DISABLED**: `momentum: 0, mean_reversion: 0,
+  mega_cap: 0` — all 30 slots are the v12 factor bucket. Log labels "ML 22/30, MOM 0/0"
+  reflect this. The dormant bucket code is not live.
+- **"v9.6" in comments = signal-generation version; "v12" = strategy version.** Consistent,
+  not a mismatch.
+- **Holdings lag the BUY list by up to 20 days** (rebalance cadence) — expected, not a bug.
+- **Leverage config numbers differ on purpose** (IBKR adaptive w/ 1.8 ceiling; JS 1.6):
+  both land ~1.49x effective. Do not "align" the numbers.
+- The rebalance clock is persisted + NYSE-calendar-gated on BOTH engines (holiday
+  phantom-count fixed 2026-07-04); the two day-counts must always match.
+- `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
+- Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
+  `sp1500_members.json`.
 
 ## Services (PM2 on EC2 54.158.238.15)
-- `ibkr-engine` — LIVE v12, $30K, IBKR (IB Gateway in docker, socat 4003→4001, connects :4001)
-- `trading-engine` — Alpaca PAPER v12, $1.3M
-- `signal-server` — v12 signal brain on `:5001` (restarts 17:50 daily)
+- `ibkr-engine` — LIVE v12, IBKR (IB Gateway in docker, engine connects :4001)
+- `trading-engine` — Alpaca PAPER v12 mirror
+- `signal-server` — v12 signal brain on `:5001` (restarted 17:50 daily)
 - `edgar-monitor` — stopped (intentional)
-- `pm2-logrotate`
 
-Key crons: `refresh_data.py` 17:30 (enhanced-data timeout 600s as of 2026-06-23),
-`scrape_sp1500.py` 06:00, `sentiment_collector.py` every 6h, `data_freshness_check.py` 09:00/13:00.
+Key crons: `refresh_data.py` 17:30 (fundamentals timeout 3600s), `scrape_sp1500.py` 06:00,
+`sentiment_collector.py` every 6h.
 
-## Strategy validity (v12 production backtest, 2018-2025, 1x)
-CAGR **+21.0%**, Sharpe **1.10**, MaxDD **−24%**, alpha **+6.9%** vs SPY. Weakest year 2022
-(+0.3%, the bear); best 2024 (+46.8%). Realistic live alpha after frictions ≈ 15-25%/yr.
+Telegram bot (ibkr-engine): `/pnl /daily /portfolio /positions /alpaca /status /signals
+/rebal /data /connection` read-only for allowlist; `/reconnect` owner-only (restarts the
+Gateway; approve IB-Key 2FA when asked). Never log into IBKR Client Portal/web — it kills
+the Gateway session.
 
-> NOTE: `docs/BACKTEST_LIVE_PARITY.md` (April 2026) describes the **older multi-strategy**
-> slot config (`momentum:3, mega_cap:2, flex:1`). That has since been superseded by the
-> single-strategy v12 setup documented here (all slots → factor signals).
+> `docs/BACKTEST_LIVE_PARITY.md` (April 2026) describes the older multi-strategy setup —
+> historical only, superseded by this document.

@@ -1,20 +1,59 @@
 # AutoTrader v12
 
-Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P 1500 universe through Interactive Brokers and Alpaca with 1.5x margin leverage. Fully automated data pipeline, signal generation, order execution, risk management, and monitoring.
+Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P 1500 universe through Interactive Brokers (live) and Alpaca (paper mirror) with ~1.49x closed-loop leverage. Fully automated data pipeline, signal generation, order execution, risk management, and monitoring.
 
-**Honest backtest (deployed config, no look-ahead, start-day averaged, 10bps costs). Two horizons — read both:**
+> **Source of truth:** `docs/LIVE_SYSTEM.md` (full parameter table + verified divergence ledger,
+> 2026-07-10 parity audit) and `ml_service/live_config.py` (canonical machine-readable config —
+> import it in ALL research that claims to test the live strategy).
 
-| Metric (at 1x) | Recent regime (2018-2025) | Through-cycle (2000-2025) |
-|--------|---------------------------|---------------------------|
-| **CAGR** | 22.0% +/- 2.5% | ~11-13.5% |
-| **Sharpe** | 0.90 | ~0.63 |
-| **Max Drawdown** | -28.3% | **-59%** (GFC); ~-47% with the live vol-scaling overlay |
+**Canonical expectation numbers (re-baselined 2026-07-10, `research/final_live_config_test.py`):
+the EXACT live config — live weight scheme, vol-scaling, 1.49x closed-loop leverage, 6.3% margin
+financing on the borrowed portion. Multi-start averaged, deployed data condition (enhanced OFF,
+SI OFF), 10bps round-trip costs, no look-ahead. Two horizons — read both:**
 
-> **Why two numbers, and which to believe.** The 22% is real but it's a *favorable-regime* number — 2018-2025 was a momentum-friendly, mega-cap-tech-led market with no sustained bear. Extend the same strategy back across **26 years** (including the 2000-02 dot-com bust and the 2008 GFC) and the honest through-cycle CAGR is **low-teens at 1x, with a ~-59% drawdown** in the GFC (the 15% low-vol sleeve barely dents a real deleveraging bear; the live vol-scaling overlay cuts it to ~-47% for ~2pp of CAGR). The pre-2010 market is **structurally different** (different liquidity, sector mix, and no AI/mega-cap momentum regime), so treat the 26-year figure as a *through-cycle stress lens*, not a prediction — and the 22% as the *good-times* case. The truth forward is regime-dependent and lands between them. **Plan with the conservative number; the −59% is why leverage stays modest** (a −59% 1x drawdown is ruin at 1.49x).
+| | Recent regime (2018–2025, 3-start avg) | Through-cycle (2001–2025, 2-start avg) |
+|---|---|---|
+| **CAGR (levered, financed)** | **+28.3%** | **+20.7%** |
+| **Sharpe** | 0.95 | 0.77 |
+| **Max Drawdown** | **-33.9%** | **-63.8%** (GFC; no margin-call modeling) |
+| Same config at 1x, unfinanced | +20.6% / 1.00 / -23.5% | +15.6% / 0.81 / -48.0% |
 
-> **These numbers reflect the ACTUAL deployed config** (enhanced data OFF, short interest OFF), verified June 2026 by re-running the backtest with the exact data the live system uses. An earlier claim of 25.4% CAGR / 1.00 Sharpe was **inflated** — it came from a run with enhanced data + short interest *enabled* using static (look-ahead-biased) snapshots, neither of which is used in production. See [Backtest Results](#backtest-results).
+> **Why two horizons, and which to believe.** 2018-2025 was a momentum-friendly, mega-cap-led
+> regime with no sustained bear; the 26-year column includes the dot-com bust and the GFC and is
+> the *through-cycle stress lens*, not a prediction. The truth forward is regime-dependent and
+> lands between them. **Plan with the conservative column** — the levered GFC drawdown (and the
+> unmodeled margin-call risk inside it) is why leverage stays modest and vol-scaling stays on.
+> Vol-scaling (target 15% 1x-vol, 40d lookback, de-risk-only) was validated best-of-5 policies at
+> 1x AND at leverage: levered it costs ~zero CAGR (financing savings + variance-drag savings offset
+> the exposure drag) while cutting MaxDD ~10pp on both horizons. Up-scaling variants (e.g.
+> t.20/cap1.5) LOSE at leverage — financing + Reg-T clamping + variance drag
+> (`research/volpolicy_levered_test.py`).
 
-> **Note on leverage:** The leverage numbers are estimates — the backtest runs at 1x only. Live runs at ~1.49x effective (IBKR `LEVERAGE=1.8`, Alpaca `MAX_CASH_DEPLOY_PCT=1.6` — different config numbers, same effective leverage because of account-size/rounding differences). At 1.49x, returns scale by ~1.49x minus margin interest (~5-6% on the borrowed portion), and drawdowns amplify by ~1.49x. Margin-call risk exists if the portfolio drops below maintenance margin (~25%).
+> **Live ≠ old research config (audited 2026-07-10, kept deliberately).** The deployed signals skip
+> the old backtest's within-sleeve risk-parity and cap positions at 15% of NAV (≈10% of the levered
+> book). Both divergences were quantified and the live scheme backtests BETTER (+22.8%/0.94 vs
+> +20.9%/0.89 at 1x, 2018-25). All prior headline numbers (25.4%, 22.0%, 21.0%) tested the legacy
+> config and are superseded for live expectations. See [Backtest Results](#backtest-results) for
+> the legacy figures and the inflated-data warning that still applies to enhanced/SI snapshots.
+
+### July 2026 changes (all deployed + verified)
+- **Closed-loop sizing** (7/04): the engine targets 1.49x *measured* gross each rebalance
+  (`_calibrate_quantities`); the old fixed `LEVERAGE=1.8` overshoot (which had silently drifted the
+  live book to 1.53-1.55x) is now only a safety ceiling.
+- **Vol-scaling activates** at 20 NAV days (~7/14) — policy validated on 25 years (see above).
+- **Rebalance clocks hardened**: persisted on both engines, NYSE-holiday-gated (phantom-day bug fixed 7/04).
+- **Parity fixes**: Alpaca take-profit deleted (6/25); Alpaca rebalance schedule persisted (6/25);
+  consensus-fallback trading neutered (7/10 — signal outage now means HOLD, matching IBKR/backtest);
+  untagged-position consensus-sell hole closed.
+- **Data pipeline**: Wikipedia SP1500 scraper fixed for the July markup change, with per-index
+  last-good fallback (`stale` field); journal-cleanup transaction bug fixed; fundamentals refresh
+  timeout 40→60min.
+- **Telegram**: new `/daily` (per-position day moves, both books); `/pnl` regular-hours vs
+  after-hours split; green/red chips; ruled tables without the copy-button overlay; send-failure
+  logging; EOD summary fires 16:05 sharp on trading days only.
+- **Data-vendor parity measured** (7/10): WRDS-vs-Polygon daily-return corr 0.9998 (1,517 names);
+  momentum rank Spearman 0.996, top-25 picks 25/25 identical. FMP-vs-Compustat (value sleeve) is
+  the one remaining unquantified data difference.
 
 ---
 
