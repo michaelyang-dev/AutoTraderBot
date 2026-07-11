@@ -226,8 +226,8 @@ const TRADE_CYCLE_MS = 60000;
 // leverage DOWN when realized account-NAV vol exceeds the target (de-risk only).
 // Target is the LEVERAGED account vol = 1.46x (effective) * 0.15 (1x target) = ~0.22.
 // currentVolScale is applied to MAX_CASH_DEPLOY_PCT in the buy sizing below.
-// dailyReturns rebuilds over VOL_LOOKBACK days after a restart (ramp-up = scale 1.0).
-const VOL_TARGET = 0.22;    // annualized account-NAV vol target (= ~1.46 * 15% 1x)
+// Vol computed from DAILY equity closes (Alpaca portfolio history), once per ET day.
+const VOL_TARGET = 0.2235;  // annualized account-NAV vol target (= 1.49 x 15% 1x — matches IBKR exactly)
 const MAX_LEVERAGE = 1.0;   // cap: vol-scaling can only DE-RISK, never lever up
 const MIN_LEVERAGE = 0.30;  // floor: never cut below 30% of base leverage
 const VOL_LOOKBACK = 40;
@@ -1154,9 +1154,8 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
   let tick = 0;
 
   // ── Volatility targeting state ──
-  let dailyReturns = [];     // store daily portfolio returns for vol calculation
+  let volScaleCache = { day: null, vol: null };  // vol recomputed once per ET day from DAILY equity closes
   let currentVolScale = 1.0; // current position size multiplier
-  let previousDayValue = null; // previous day's portfolio value for daily return calc
   const activityLog = [];
   const portfolioHist = [];
   let tradeCount = { buys: 0, sells: 0, wins: 0, losses: 0, totalPnL: 0 };
@@ -2054,30 +2053,38 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       // Persist circuit breaker state each cycle (peak tracking)
       saveCircuitBreakerState();
 
-      // ── Volatility targeting: track daily returns and update scale ──
-      if (previousDayValue !== null && previousDayValue > 0) {
-        const dailyRet = (cyclePortfolioValue - previousDayValue) / previousDayValue;
-        dailyReturns.push(dailyRet);
-        if (dailyReturns.length > 60) dailyReturns.splice(0, dailyReturns.length - 60);
-      }
-      previousDayValue = cyclePortfolioValue;
-
-      if (dailyReturns.length >= VOL_LOOKBACK) {
-        const last20 = dailyReturns.slice(-VOL_LOOKBACK);
-        const mean = last20.reduce((a, b) => a + b, 0) / last20.length;
-        const variance = last20.reduce((s, r) => s + (r - mean) ** 2, 0) / last20.length;
-        const dailyVol = Math.sqrt(variance);
-        const annualVol = dailyVol * Math.sqrt(252);
-        if (annualVol > 0) {
-          let scale = VOL_TARGET / annualVol;
-          scale = Math.max(MIN_LEVERAGE, Math.min(scale, MAX_LEVERAGE));
-          currentVolScale = scale;
-        } else {
-          currentVolScale = 1.0;
+      // ── Volatility targeting: DAILY-close equity vol from Alpaca portfolio history ──
+      // FIXED 2026-07-11 (parity audit): the old code pushed a return EVERY ~60s CYCLE into
+      // "dailyReturns" and annualized with sqrt(252) — minute-noise read as daily vol, ~20x
+      // understated, so the scale was mathematically pinned at 1.0 and the overlay NEVER
+      // de-risked. Now mirrors IBKR: trailing daily closes, recomputed once per ET day.
+      const _volDay = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      if (volScaleCache.day !== _volDay) {
+        try {
+          const ph = await alpaca.getPortfolioHistory({ period: "6M", timeframe: "1D" });
+          const eq = (ph.equity || []).filter(v => v && v > 0);
+          const rets = [];
+          for (let i = Math.max(1, eq.length - VOL_LOOKBACK); i < eq.length; i++) {
+            rets.push(eq[i] / eq[i - 1] - 1);
+          }
+          if (rets.length >= 20) {
+            const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+            const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / rets.length;
+            const annualVol = Math.sqrt(variance) * Math.sqrt(252);
+            currentVolScale = annualVol > 0.01
+              ? Math.max(MIN_LEVERAGE, Math.min(VOL_TARGET / annualVol, MAX_LEVERAGE))
+              : 1.0;
+            volScaleCache = { day: _volDay, vol: annualVol };
+            addLog(`[vol-scale] realized DAILY NAV vol ${(annualVol * 100).toFixed(1)}% (${rets.length}d) target ${(VOL_TARGET * 100).toFixed(1)}% -> scale ${currentVolScale.toFixed(2)} -> effective leverage ${(RISK.MAX_CASH_DEPLOY_PCT * currentVolScale).toFixed(2)}x (base ${RISK.MAX_CASH_DEPLOY_PCT})`, "system");
+          } else {
+            currentVolScale = 1.0;
+            volScaleCache = { day: _volDay, vol: null };
+            addLog(`[vol-scale] ramp-up: only ${rets.length} daily returns (<20) — no scaling`, "system");
+          }
+        } catch (e) {
+          addLog(`[vol-scale] portfolio history fetch failed (${e.message}) — keeping scale ${currentVolScale.toFixed(2)}`, "error");
+          volScaleCache = { day: _volDay, vol: null };
         }
-        addLog(`[vol-scale] realized NAV vol ${(annualVol * 100).toFixed(1)}% target ${(VOL_TARGET * 100).toFixed(0)}% -> scale ${currentVolScale.toFixed(2)} -> effective leverage ${(RISK.MAX_CASH_DEPLOY_PCT * currentVolScale).toFixed(2)}x (base ${RISK.MAX_CASH_DEPLOY_PCT})`, "system");
-      } else {
-        currentVolScale = 1.0;
       }
 
       // Fetch upcoming earnings (cached)
@@ -3698,7 +3705,7 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       mlSignals,
       mlStatus,
       idleSpyShares,
-      volTargeting: { scale: currentVolScale, dailyReturnsCount: dailyReturns.length },
+      volTargeting: { scale: currentVolScale, realizedVol: volScaleCache.vol },
       circuitBreaker: {
         state: circuitBreaker.peakHalted ? "peak_halt" : circuitBreaker.weeklyHalted ? "weekly_halt" : circuitBreaker.dailyHalted ? "daily_halt" : "ok",
         dailyHalted: circuitBreaker.dailyHalted,

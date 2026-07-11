@@ -6,7 +6,7 @@ Read this before analyzing the live engines. Canonical machine-readable config:
 ## Architecture
 
 ```
-signal server :5001 (signal_server.py + signal_builder.py, Polygon prices, FMP fundamentals)
+signal server :5001 (signal_server.py + signal_builder.py, Polygon prices, WRDS Compustat/IBES fundamentals w/ FMP fallback)
         │  same signals to both
         ├── IBKR LIVE engine    (ml_service/ibkr_engine.py, real $, acct U25698604)
         └── ALPACA PAPER mirror (server/tradingEngine.js, ~$1.4M paper)
@@ -41,11 +41,18 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 - **Execution timing** — live fills near the open, backtest at close (~7bps/side, inside
   the conservative 10bps/side cost model; real measured costs run BELOW the model).
 - **Integer shares** at small NAV — compensated by closed-loop sizing.
-- **Fundamentals vendor** for the value sleeve: FMP (live) vs Compustat (backtest) — the
-  one UNQUANTIFIED data difference (35% of the signal). Flagged for a future study.
+- **Fundamentals**: SAME vendor both sides — live signal_builder loads WRDS Compustat +
+  WRDS IBES as PRIMARY (FMP is only the fallback if those parquets fail). The remaining
+  difference is STALENESS: live WRDS files refresh quarterly (manual download), so live
+  fundamentals lag up to ~1 quarter vs the backtest's point-in-time data. Earnings-boost
+  multipliers (_revenue_surprise/_beat_streak) are OFF on both sides; the eps_surprise_last
+  feature is ON on both sides from the same IBES source.
 - **No margin-call mechanics** in the levered backtest DD figures.
 
 **Deliberate policy remainder:**
+- **Alpaca vol-scaling was INERT until 2026-07-11** (sampled 60-second returns as daily —
+  scale pinned at 1.0). Fixed: daily-close equity from Alpaca portfolio history, recomputed
+  once per ET day, target 0.2235 matching IBKR. First live use: 2026-07-14 rebalance.
 - **Alpaca-only circuit breakers** (daily/weekly/peak-DD halts). IBKR + backtest have
   none. Keep-or-remove is an open decision.
 - JS-only latent paths (earnings-eve exit, legacy-bucket exits): dormant — they only touch

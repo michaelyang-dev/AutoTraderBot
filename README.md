@@ -52,8 +52,11 @@ SI OFF), 10bps round-trip costs, no look-ahead. Two horizons — read both:**
   after-hours split; green/red chips; ruled tables without the copy-button overlay; send-failure
   logging; EOD summary fires 16:05 sharp on trading days only.
 - **Data-vendor parity measured** (7/10): WRDS-vs-Polygon daily-return corr 0.9998 (1,517 names);
-  momentum rank Spearman 0.996, top-25 picks 25/25 identical. FMP-vs-Compustat (value sleeve) is
-  the one remaining unquantified data difference.
+  momentum rank Spearman 0.996, top-25 picks 25/25 identical. Fundamentals are WRDS
+  Compustat/IBES on BOTH sides (FMP is only a fallback) — the residual difference is the
+  quarterly staleness of the live WRDS files, not the vendor.
+- **Alpaca vol-scaling fixed** (7/11): was inert since inception (60-second returns annualized as
+  daily → scale pinned 1.0); now computed from daily equity closes, matching IBKR's policy.
 
 ---
 
