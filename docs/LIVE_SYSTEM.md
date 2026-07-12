@@ -59,6 +59,19 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
   positions NOT tagged `ml`, and the whole book is ml-tagged. The ml cooldown can delay a
   rebalance re-buy ~30min (self-heals same day).
 
+## EDGAR freshness overlay (phase 3 — SHADOW running since 2026-07-11)
+- `scripts/edgar_fundamentals_patch.py` (daily cron 18:40): per-feature proof gate vs
+  Compustat -> `data/edgar_feature_overlay.json`. Coverage: roe 93% / gm 34% / d2e 22% /
+  eps_surprise 100% (FMP events, 91.5% sign agreement vs IBES on 57,864 events).
+- `signal_builder.build_signals_v9(..., edgar_overlay=True)` applies it via a
+  non-mutating universe proxy; the signal server builds BOTH each refresh and serves the
+  shadow at `/signals?edgar=1`, logging a per-refresh diff line ("EDGAR shadow: ...").
+- LIVE path is untouched (param defaults False). FLIP = change the server's live build
+  to edgar_overlay=True — only after shadow review + user approval.
+- Vintage guards: Compustat-datadate guard (3 ratios) + IBES-vintage guard (eps) mean a
+  fresh WRDS upload automatically retires stale overlay entries — WRDS is now the
+  quarterly CALIBRATION ANCHOR, not a live dependency.
+
 ## Canonical expectation numbers (2026-07-10 re-baseline)
 
 `research/final_live_config_test.py` — exact live config, levered 1.49x, financed 6.3%:
