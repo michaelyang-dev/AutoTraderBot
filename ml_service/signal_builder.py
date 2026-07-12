@@ -450,15 +450,19 @@ def _load_edgar_overlay(data_dir):
                                columns=["tic", "datadate"])
         fund["datadate"] = pd.to_datetime(fund["datadate"])
         last_dd = fund.groupby("tic")["datadate"].max()
-        out = {"roe": {}, "gross_margin": {}, "debt_to_equity": {}}
+        out = {"roe": {}, "gross_margin": {}, "debt_to_equity": {}, "eps_surprise_last": {}}
         for sym, feats in ov.get("features", {}).items():
             dd = last_dd.get(sym)
             for feat, e in feats.items():
-                if feat in out and (dd is None or pd.Timestamp(e["period_end"]) > dd):
+                if feat not in out:
+                    continue
+                # eps entries are vintage-guarded by the patcher (vs IBES, regenerated
+                # daily by cron); the Compustat-datadate guard applies to the other three
+                if feat == "eps_surprise_last" or (dd is None or pd.Timestamp(e["period_end"]) > dd):
                     out[feat][sym] = float(e["value"])
         _edgar_cache["mtime"], _edgar_cache["data"] = mtime, out
-        log.info("EDGAR overlay loaded: roe=%d gm=%d d2e=%d fresh symbols",
-                 len(out["roe"]), len(out["gross_margin"]), len(out["debt_to_equity"]))
+        log.info("EDGAR overlay loaded: roe=%d gm=%d d2e=%d eps=%d fresh symbols",
+                 len(out["roe"]), len(out["gross_margin"]), len(out["debt_to_equity"]), len(out["eps_surprise_last"]))
         return out
     except Exception as e:
         log.warning("EDGAR overlay load failed (%s) — proceeding without", e)
