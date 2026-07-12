@@ -73,6 +73,16 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 - Vintage guards: Compustat-datadate guard (3 ratios) + IBES-vintage guard (eps) mean a
   fresh WRDS upload automatically retires stale overlay entries — WRDS is now the
   quarterly CALIBRATION ANCHOR, not a live dependency.
+- **TRUE A/B verdict (2026-07-12, `research/assistant_ab_test.py` v3, PIT-honest):**
+  upload-world (live today) 18.75%/0.84 vs upload+assistant (live after flip)
+  **19.25%/0.855 — +0.5pp CAGR, same-signed both starts, no DD cost**; ideal-fresh
+  ceiling 23.2%/0.95. Summer-gap arms: the missing Sep upload alone costs ~0-0.2pp CAGR
+  but deepens MaxDD (assistant trims ~0.8pp of it). Diagnostic: gm/d2e staleness costs
+  ~2.4pp under the real upload-freeze model (OVERTURNS the old "gm/d2e harmless" 63td
+  result) — unharvestable today (no 99%-certifiable source; XBRL + LLM both failed).
+  PIT trap for future research: historical EDGAR reconstruction MUST use earliest-filed
+  instances (`spec_value(..., pit=True)`) — latest-filed serves restated comparatives
+  with ~16-month availability lag and fakes a negative A/B (v1 bug, fixed).
 
 ## Canonical expectation numbers (2026-07-10 re-baseline)
 
