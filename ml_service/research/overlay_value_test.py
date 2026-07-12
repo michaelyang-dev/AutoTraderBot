@@ -29,7 +29,13 @@ def clear_deployed(bt):
 
 
 def main():
-    bt = FastBacktester()
+    import sys
+    long_run = "--26yr" in sys.argv
+    path = "data/wrds/sp1500_universe_2000.pkl" if long_run else "data/wrds/complete_sp1500_universe.pkl"
+    global STARTS, END
+    if long_run:
+        STARTS = ["2001-01-02", "2001-01-17"]
+    bt = FastBacktester(universe_path=path)
     clear_deployed(bt)
     dates = sorted(bt.uni._feat_by_date.keys())
     idx = {d: i for i, d in enumerate(dates)}
@@ -49,10 +55,19 @@ def main():
             date = dates[max(0, idx[date] - LAG_TDAYS)]
         return orig(date, feature, members)
 
+    def overlay_fmp_noise_map(date, feature, members=None):
+        # same, but fresh eps carries FMP-quality noise: a deterministic 8.5% of
+        # symbols get their surprise SIGN flipped (measured FMP-vs-IBES disagreement)
+        base = lagged_subset_map(date, feature, members)
+        if feature == "eps_surprise_last":
+            base = {s: (-v if (hash(s) % 1000) < 85 else v) for s, v in base.items()}
+        return base
+
     print(f"{'variant':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
     for label, fn in [("ALL FRESH (ceiling)", orig),
                       (f"ALL STALE {LAG_TDAYS}td (no overlay)", lagged_map),
-                      ("OVERLAY WORLD (roe+eps fresh)", lagged_subset_map)]:
+                      ("OVERLAY WORLD (roe+eps fresh)", lagged_subset_map),
+                      ("OVERLAY + FMP eps noise (8.5%)", overlay_fmp_noise_map)]:
         bt.uni.get_feature_map = fn
         for st in STARTS:
             m = bt.run(st, END, cfg)
