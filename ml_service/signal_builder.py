@@ -461,7 +461,11 @@ def _load_edgar_overlay(data_dir):
                                columns=["tic", "datadate"])
         fund["datadate"] = pd.to_datetime(fund["datadate"])
         last_dd = fund.groupby("tic")["datadate"].max()
-        out = {"roe": {}, "gross_margin": {}, "debt_to_equity": {}, "eps_surprise_last": {}}
+        # LIVE-ELIGIBLE FEATURES ONLY — calibrated 2026-07-12: roe extractions test at
+        # 99.2% next-quarter accuracy (deploy); gross_margin (~92%) and debt_to_equity
+        # (~93%) are NOT provable to the 99% bar at any gate depth -> they stay
+        # stale-clean in live signals (still generated in the overlay for research).
+        out = {"roe": {}, "eps_surprise_last": {}}
         for sym, feats in ov.get("features", {}).items():
             dd = last_dd.get(sym)
             for feat, e in feats.items():

@@ -67,6 +67,11 @@ CONCEPTS = {
               ("LongTermDebtAndCapitalLeaseObligationsCurrent", [], [])],
 }
 FLOWS = {"niq", "saleq", "cogsq"}
+# CALIBRATED GATE DEPTHS (gate_calibration_test.py, 1,504 symbols, next-quarter holdout):
+# roe inputs at 1 anchor = 99.2% next-q accuracy (2 anchors adds NOTHING, costs coverage);
+# cogs/debt items never exceed ~88-93% at any depth -> their features are generated for
+# research but EXCLUDED from the live overlay by the loader (see signal_builder).
+GATE_DEPTH = {"niq": 1, "seqq": 1, "saleq": 1, "cogsq": 2, "dlttq": 2, "dlcq": 2}
 ZERO_OK = {"dlttq", "dlcq"}            # legitimately 0/absent (debt-free firms)
 REL_TOL, ABS_TOL = 0.02, 2.0           # 2% relative or $2M absolute ($MM units)
 
@@ -230,7 +235,7 @@ def main():
                 v, _ = spec_value(facts, spec, overlap_end, item in FLOWS)
                 if not close_enough(v, cs_val):
                     continue
-                if prior_row is not None:
+                if GATE_DEPTH.get(item, 1) >= 2 and prior_row is not None:
                     v2, _ = spec_value(facts, spec, prior_row["datadate"], item in FLOWS)
                     if not close_enough(v2, prior_row[item]):
                         continue
