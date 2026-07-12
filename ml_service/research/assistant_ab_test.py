@@ -64,7 +64,7 @@ def main():
 
     def arm_b(date, feature, members=None):
         if feature != "roe":
-            return orig(date, feature, members)
+            return arm_a(date, feature, members)   # SAME stale base as arm A (gm/d2e)
         base = arm_a(date, feature, members)          # stale fallback for uncovered
         cutoff = pd.Timestamp(date) - pd.Timedelta(days=1)
         syms = members if members is not None else list(base.keys())
