@@ -12,10 +12,12 @@ Arms (identical everything except how the roe feature is served):
               filed dates) available the day after filing. Uncovered symbols keep
               ARM A staleness — mirrors production coverage exactly.
 
-Conservative choice (disclosed): arm B serves the extraction even for quarters the
-upload already covers (production would serve exact Compustat there via the vintage
-guard) — so arm B carries the FULL 1.1% extraction-error burden. Bias runs AGAINST
-the assistant; the real flip can only do better.
+ARM B implements the PRODUCTION VINTAGE GUARD exactly: the extraction is used ONLY
+when its period_end is NEWER than the quarter available in the last upload; otherwise
+the upload's exact Compustat value serves (v1 of this test skipped the guard and let
+full-time extraction noise swamp the freshness gain — wash result, now corrected).
+SUMMER arms model the ACTUAL current situation: uploads stop after May 15 (WRDS closed
+until Sept) — the decision-relevant scenario for flipping now.
 8yr, 2 starts, live config, 1x. Run AFTER build_edgar_pit_roe.py + scp of the parquet.
 """
 import bisect
@@ -38,6 +40,7 @@ def main():
     pit = pd.read_parquet(os.path.join(ML, "data/edgar_pit_roe.parquet"))
     pit = pit.sort_values("filed")
     pit_map = {s: (list(g.filed), list(g.roe)) for s, g in pit.groupby("symbol")}
+    pit_pe = {s: list(g.period_end) for s, g in pit.groupby("symbol")}
     print(f"assistant PIT coverage: {len(pit_map)} symbols, {len(pit)} quarter-values")
 
     bt = FastBacktester()
@@ -62,33 +65,74 @@ def main():
         return orig(min(pd.Timestamp(date), u), feature, members) if u <= pd.Timestamp(date) \
             else orig(date, feature, members)
 
-    def arm_b(date, feature, members=None):
-        if feature != "roe":
-            return arm_a(date, feature, members)   # SAME stale base as arm A (gm/d2e)
-        base = arm_a(date, feature, members)          # stale fallback for uncovered
-        cutoff = pd.Timestamp(date) - pd.Timedelta(days=1)
-        syms = members if members is not None else list(base.keys())
-        for s in syms:
-            e = pit_map.get(s)
-            if not e:
-                continue
-            i = bisect.bisect_right(e[0], cutoff) - 1
-            if i >= 0:
-                base[s] = e[1][i]
-        return base
+    # per-symbol (rdq -> datadate) for the vintage guard: which quarter an upload holds
+    fundq = pd.read_parquet(os.path.join(ML, "data/wrds/compustat_fundamentals_quarterly.parquet"),
+                            columns=["tic", "datadate", "rdq"]).dropna()
+    fundq["datadate"] = pd.to_datetime(fundq["datadate"]); fundq["rdq"] = pd.to_datetime(fundq["rdq"])
+    fundq = fundq.sort_values("rdq")
+    upload_q = {t: (list(g.rdq), list(g.datadate)) for t, g in fundq.groupby("tic")}
+
+    def make_arm_b(upload_fn, uploads_list):
+        def arm_b(date, feature, members=None):
+            if feature != "roe":
+                return upload_fn(date, feature, members)   # SAME stale base (gm/d2e)
+            base = upload_fn(date, feature, members)
+            d = pd.Timestamp(date)
+            i_u = bisect.bisect_right(uploads_list, d) - 1
+            u = uploads_list[max(i_u, 0)]
+            cutoff = d - pd.Timedelta(days=1)
+            syms = members if members is not None else list(base.keys())
+            for s in syms:
+                e = pit_map.get(s)
+                if not e:
+                    continue
+                i = bisect.bisect_right(e[0], cutoff) - 1
+                if i < 0:
+                    continue
+                # VINTAGE GUARD: use extraction only if newer than the upload quarter
+                uq = upload_q.get(s)
+                q_upload = None
+                if uq:
+                    j = bisect.bisect_right(uq[0], u) - 1
+                    if j >= 0:
+                        q_upload = uq[1][j]
+                p_end = pit_pe[s][i]
+                if q_upload is None or p_end > q_upload:
+                    base[s] = e[1][i]
+            return base
+        return arm_b
 
     cfg = dict(V12_LIVE_BACKTEST_CONFIG)
     for k in ("vol_scaling", "vol_target", "vol_lookback"):
         cfg.pop(k, None)
 
-    print(f"{'arm':<28}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
+    # SUMMER world: uploads STOP after May 15 each "gap year" — model the real 2026
+    # situation by dropping uploads between May 15 and Nov 15 every year (worst-case
+    # recurring summer gap; matches the current WRDS closure).
+    uploads_summer = [u for u in uploads if u.month not in (8,)]  # drop the Aug upload
+    def last_upload_summer(date):
+        i = bisect.bisect_right(uploads_summer, pd.Timestamp(date)) - 1
+        return uploads_summer[max(i, 0)]
+    def arm_a_summer(date, feature, members=None):
+        if feature not in STALE_FEATS:
+            return orig(date, feature, members)
+        u = last_upload_summer(date)
+        return orig(min(pd.Timestamp(date), u), feature, members) if u <= pd.Timestamp(date) \
+            else orig(date, feature, members)
+
+    arm_b = make_arm_b(arm_a, uploads)
+    arm_b_summer = make_arm_b(arm_a_summer, uploads_summer)
+
+    print(f"{'arm':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
     for label, fn in [("CEILING (ideal fresh)", orig),
-                      ("A: NO assistant (uploads)", arm_a),
-                      ("B: WITH assistant", arm_b)]:
+                      ("A: no assistant (uploads)", arm_a),
+                      ("B: assistant+guard", arm_b),
+                      ("A-summer: gap, no assist", arm_a_summer),
+                      ("B-summer: gap + assistant", arm_b_summer)]:
         bt.uni.get_feature_map = fn
         for st in STARTS:
             m = bt.run(st, END, cfg)
-            print(f"{label:<28}{st:<13}{m['cagr']:>+8.1%}{m['sharpe']:>8.2f}{m['max_dd']:>+8.1%}", flush=True)
+            print(f"{label:<30}{st:<13}{m['cagr']:>+8.1%}{m['sharpe']:>8.2f}{m['max_dd']:>+8.1%}", flush=True)
     bt.uni.get_feature_map = orig
 
 
