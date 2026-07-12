@@ -3,16 +3,19 @@ THE TRUE ASSISTANT A/B — with vs without, using the assistant's REAL extracted
 
 Arms (identical everything except how the roe feature is served):
   CEILING   — backtest's own PIT-fresh roe (ideal, for reference)
-  ARM A     — "life without the assistant": roe frozen to quarterly manual uploads
-              (upload grid Feb/May/Aug/Nov 15 — a diligent downloader ~45d after
-              quarter-end; value held constant until the next upload)
-  ARM B     — "life with the assistant": roe = the EDGAR-extracted value (real specs,
-              real filed dates from data/edgar_pit_roe.parquet) available the day after
-              filing; symbols the gate doesn't cover fall back to ARM A staleness —
-              EXACTLY mirroring production coverage.
+  ARM A     — "life without the assistant" = LIVE TODAY: all three Compustat
+              fundamentals (roe, gross_margin, debt_to_equity) frozen to quarterly
+              manual uploads (grid Feb/May/Aug/Nov 15; values held until next upload)
+  ARM B     — "life with the assistant" = LIVE AFTER THE FLIP: identical to ARM A
+              (same upload-stale gm/d2e, same base), except roe for GATE-COVERED
+              symbols is overridden by the EDGAR-extracted value (real specs, real
+              filed dates) available the day after filing. Uncovered symbols keep
+              ARM A staleness — mirrors production coverage exactly.
 
-gm/d2e/eps are served identically in every arm (production parity: assistant never
-touches them), so the A-vs-B delta isolates precisely what flipping the switch changes.
+Conservative choice (disclosed): arm B serves the extraction even for quarters the
+upload already covers (production would serve exact Compustat there via the vintage
+guard) — so arm B carries the FULL 1.1% extraction-error burden. Bias runs AGAINST
+the assistant; the real flip can only do better.
 8yr, 2 starts, live config, 1x. Run AFTER build_edgar_pit_roe.py + scp of the parquet.
 """
 import bisect
@@ -50,8 +53,10 @@ def main():
         i = bisect.bisect_right(uploads, pd.Timestamp(date)) - 1
         return uploads[max(i, 0)]
 
+    STALE_FEATS = {"roe", "gross_margin", "debt_to_equity"}   # the upload-fed features
+
     def arm_a(date, feature, members=None):
-        if feature != "roe":
+        if feature not in STALE_FEATS:
             return orig(date, feature, members)
         u = last_upload(date)
         return orig(min(pd.Timestamp(date), u), feature, members) if u <= pd.Timestamp(date) \
