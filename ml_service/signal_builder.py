@@ -480,6 +480,11 @@ def _load_edgar_overlay(data_dir):
                     continue
                 # eps entries are vintage-guarded by the patcher (vs IBES, regenerated
                 # daily by cron); the Compustat-datadate guard applies to the other three
+                # LLM-sourced entries are RESEARCH-ONLY: holdout failed the 99% bar
+                # (roe n=1; cogsq 17%, gm 33%) — only tag-extracted (XBRL) values,
+                # certified at 98.9% over ~6k events, are live-eligible.
+                if str(e.get("source", "")).startswith("llm"):
+                    continue
                 if feat == "eps_surprise_last" or (dd is None or pd.Timestamp(e["period_end"]) > dd):
                     v = float(e["value"])
                     # plausibility bounds (any source): absurd values never reach signals
