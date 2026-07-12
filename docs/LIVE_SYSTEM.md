@@ -66,6 +66,8 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 - `signal_builder.build_signals_v9(..., edgar_overlay=True)` applies it via a
   non-mutating universe proxy; the signal server builds BOTH each refresh and serves the
   shadow at `/signals?edgar=1`, logging a per-refresh diff line ("EDGAR shadow: ...").
+- eps-surprise boost REMOVED from live 2026-07-12 (divergence #61: live-only unvalidated
+  feature; PIT A/B showed -0.5pp CAGR). Overlay live-set = roe only.
 - LIVE path is untouched (param defaults False). FLIP = change the server's live build
   to edgar_overlay=True — only after shadow review + user approval.
 - Vintage guards: Compustat-datadate guard (3 ratios) + IBES-vintage guard (eps) mean a
