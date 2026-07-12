@@ -470,7 +470,13 @@ def _load_edgar_overlay(data_dir):
                 # eps entries are vintage-guarded by the patcher (vs IBES, regenerated
                 # daily by cron); the Compustat-datadate guard applies to the other three
                 if feat == "eps_surprise_last" or (dd is None or pd.Timestamp(e["period_end"]) > dd):
-                    out[feat][sym] = float(e["value"])
+                    v = float(e["value"])
+                    # plausibility bounds (any source): absurd values never reach signals
+                    if feat == "gross_margin" and not (-1.0 <= v <= 1.0):
+                        continue
+                    if feat in ("roe", "debt_to_equity", "eps_surprise_last") and abs(v) > 25:
+                        continue
+                    out[feat][sym] = v
         _edgar_cache["mtime"], _edgar_cache["data"] = mtime, out
         log.info("EDGAR overlay loaded: roe=%d gm=%d d2e=%d eps=%d fresh symbols",
                  len(out["roe"]), len(out["gross_margin"]), len(out["debt_to_equity"]), len(out["eps_surprise_last"]))

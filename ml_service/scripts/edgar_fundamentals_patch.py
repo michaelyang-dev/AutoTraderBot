@@ -194,6 +194,7 @@ def main():
     fund = pd.read_parquet(FUND)
     fund["datadate"] = pd.to_datetime(fund["datadate"])
     last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
+    two_rows = fund.sort_values("datadate").groupby("tic").tail(2)  # two-quarter validation anchor
     cik_map = load_cik_map()
 
     stats = {f: {"validated": 0, "patched": 0, "failed": 0} for f in FEATURES}
@@ -214,17 +215,27 @@ def main():
             continue
         row = last_rows.loc[sym]
         overlap_end = row["datadate"]
+        prior = two_rows[(two_rows.tic == sym) & (two_rows.datadate < overlap_end)]
+        prior_row = prior.iloc[-1] if len(prior) else None
 
-        # resolve each ITEM once (first spec that validates on the overlap quarter)
+        # resolve each ITEM once. TWO-QUARTER GATE (2026-07-11 hardening): the spec must
+        # reproduce Compustat on the LAST TWO overlapping quarters (where a second
+        # exists) — protects against unstable/fluke tag mappings and mid-stream
+        # reclassifications; a method that only matches once is not trusted.
         resolved = {}
         for item, candidates in CONCEPTS.items():
             cs_val = row[item]
             hit = None
             for spec in candidates:
                 v, _ = spec_value(facts, spec, overlap_end, item in FLOWS)
-                if close_enough(v, cs_val):
-                    hit = spec
-                    break
+                if not close_enough(v, cs_val):
+                    continue
+                if prior_row is not None:
+                    v2, _ = spec_value(facts, spec, prior_row["datadate"], item in FLOWS)
+                    if not close_enough(v2, prior_row[item]):
+                        continue
+                hit = spec
+                break
             if hit is None and item in ZERO_OK and (pd.isna(cs_val) or abs(cs_val) <= ABS_TOL):
                 resolved[item] = "ZERO"      # provably ~0 at overlap; treat as 0 going forward
                 continue
@@ -260,9 +271,19 @@ def main():
                 if complete:
                     fv = formula(vals)
                     if fv is not None and np.isfinite(fv):
-                        sym_overlay[feat] = {"value": round(float(fv), 6),
-                                             "period_end": str(end.date()), "rdq": rdq}
-                        stats[feat]["patched"] += 1
+                        # JUMP GUARD: a reclassification mid-stream shows up as an
+                        # implausible leap vs the stale value — withhold those for review
+                        stale_inputs = {it: (row[it] if pd.notna(row[it]) else 0.0)
+                                        for it in inputs}
+                        old = formula(stale_inputs) if all(
+                            it in stale_inputs for it in inputs) else None
+                        if (old is not None and np.isfinite(old)
+                                and abs(fv) > 5 * max(abs(old), 0.01) and abs(fv) > 0.5):
+                            stats[feat]["jump_guarded"] = stats[feat].get("jump_guarded", 0) + 1
+                        else:
+                            sym_overlay[feat] = {"value": round(float(fv), 6),
+                                                 "period_end": str(end.date()), "rdq": rdq}
+                            stats[feat]["patched"] += 1
                     break
         if sym_overlay:
             overlay[sym] = sym_overlay
