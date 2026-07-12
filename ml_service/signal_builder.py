@@ -442,10 +442,21 @@ def _load_edgar_overlay(data_dir):
         f = data_dir / "edgar_feature_overlay.json"
         if not f.exists():
             return {}
-        mtime = f.stat().st_mtime
+        llm_f = data_dir / "edgar_llm_overlay.json"
+        mtime = (f.stat().st_mtime, llm_f.stat().st_mtime if llm_f.exists() else 0)
         if _edgar_cache["mtime"] == mtime:
             return _edgar_cache["data"]
         ov = _json.load(open(f))
+        # merge LLM-extracted entries (same proof gate upstream); XBRL wins conflicts
+        if llm_f.exists():
+            try:
+                llm_feats = _json.load(open(llm_f)).get("features", {})
+                for sym, feats in llm_feats.items():
+                    tgt = ov.setdefault("features", {}).setdefault(sym, {})
+                    for feat, e in feats.items():
+                        tgt.setdefault(feat, e)
+            except Exception:
+                pass
         fund = pd.read_parquet(data_dir / "wrds" / "compustat_fundamentals_quarterly.parquet",
                                columns=["tic", "datadate"])
         fund["datadate"] = pd.to_datetime(fund["datadate"])
