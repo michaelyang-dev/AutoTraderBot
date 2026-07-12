@@ -326,8 +326,15 @@ def _fill_fundamentals(features, data_dir):
         except Exception as e:
             log.warning(f"WRDS Compustat load failed: {e}, falling back to FMP")
 
-    # ── PRIMARY: WRDS IBES for earnings surprise ──
-    if wrds_ibes.exists():
+    # ── EPS-SURPRISE BOOST REMOVED 2026-07-12 (divergence #61) ──
+    # The backtest feature store NEVER populated eps_surprise_last, so the x1.15
+    # momentum boost it controls never fired in ANY validated number. Live DID load
+    # it from IBES (this block) => live ran an unvalidated live-only feature. PIT A/B
+    # (research/eps_boost_test.py, 3 starts, 2018-25): boost ON = -0.5pp CAGR,
+    # -0.02 Sharpe, worse on 3/3 starts. Removed for parity + performance. Re-enable
+    # ONLY with fresh evidence.
+    EPS_BOOST_ENABLED = False
+    if EPS_BOOST_ENABLED and wrds_ibes.exists():
         try:
             ibes = pd.read_parquet(wrds_ibes)
             ibes["ANNDATS_ACT"] = pd.to_datetime(ibes["ANNDATS_ACT"], errors="coerce")
@@ -465,7 +472,7 @@ def _load_edgar_overlay(data_dir):
         # 99.2% next-quarter accuracy (deploy); gross_margin (~92%) and debt_to_equity
         # (~93%) are NOT provable to the 99% bar at any gate depth -> they stay
         # stale-clean in live signals (still generated in the overlay for research).
-        out = {"roe": {}, "eps_surprise_last": {}}
+        out = {"roe": {}}  # eps removed 2026-07-12 (boost hurts; divergence #61)
         for sym, feats in ov.get("features", {}).items():
             dd = last_dd.get(sym)
             for feat, e in feats.items():
