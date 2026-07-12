@@ -130,7 +130,7 @@ def filing_statements(cik, report_date):
             t = re.sub(r"<[^>]+>", " ", t)
             t = re.sub(r"[ \t]+", " ", t)
             t = re.sub(r"\n\s*\n+", "\n", t)
-            text += t[:20000] + "\n\n"
+            text += t[:9000] + "\n\n"
     return (text if text else None), fdate
 
 
