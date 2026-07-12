@@ -489,8 +489,8 @@ def _load_edgar_overlay(data_dir):
                         continue
                     out[feat][sym] = v
         _edgar_cache["mtime"], _edgar_cache["data"] = mtime, out
-        log.info("EDGAR overlay loaded: roe=%d gm=%d d2e=%d eps=%d fresh symbols",
-                 len(out["roe"]), len(out["gross_margin"]), len(out["debt_to_equity"]), len(out["eps_surprise_last"]))
+        log.info("EDGAR overlay loaded: %s fresh symbols",
+                 {k: len(v) for k, v in out.items()})
         return out
     except Exception as e:
         log.warning("EDGAR overlay load failed (%s) — proceeding without", e)
