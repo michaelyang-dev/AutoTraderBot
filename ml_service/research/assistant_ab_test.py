@@ -109,7 +109,10 @@ def main():
     # SUMMER world: uploads STOP after May 15 each "gap year" — model the real 2026
     # situation by dropping uploads between May 15 and Nov 15 every year (worst-case
     # recurring summer gap; matches the current WRDS closure).
-    uploads_summer = [u for u in uploads if u.month not in (8,)]  # drop the Aug upload
+    # grid months are 3/6/9/12 (pd "3MS" snaps to month starts) -> drop the SEPTEMBER
+    # upload: gap Jun 15 -> Dec 15 each year (v2 dropped month 8 = nothing; arms were
+    # silently identical to normal -- caught by identical-to-the-decimal results)
+    uploads_summer = [u for u in uploads if u.month not in (9,)]
     def last_upload_summer(date):
         i = bisect.bisect_right(uploads_summer, pd.Timestamp(date)) - 1
         return uploads_summer[max(i, 0)]
@@ -123,12 +126,20 @@ def main():
     arm_b = make_arm_b(arm_a, uploads)
     arm_b_summer = make_arm_b(arm_a_summer, uploads_summer)
 
+    # DIAGNOSTIC: assistant roe + FRESH gm/d2e — isolates how much of the remaining
+    # ceiling gap is gm/d2e staleness (certifiable someday) vs roe coverage/noise.
+    def arm_b_plus(date, feature, members=None):
+        if feature == "roe":
+            return arm_b(date, feature, members)
+        return orig(date, feature, members)
+
     print(f"{'arm':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
     for label, fn in [("CEILING (ideal fresh)", orig),
                       ("A: no assistant (uploads)", arm_a),
                       ("B: assistant+guard", arm_b),
                       ("A-summer: gap, no assist", arm_a_summer),
-                      ("B-summer: gap + assistant", arm_b_summer)]:
+                      ("B-summer: gap + assistant", arm_b_summer),
+                      ("DIAG: B + fresh gm/d2e", arm_b_plus)]:
         bt.uni.get_feature_map = fn
         for st in STARTS:
             m = bt.run(st, END, cfg)
