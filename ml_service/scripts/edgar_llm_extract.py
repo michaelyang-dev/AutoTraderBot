@@ -44,6 +44,8 @@ thousands or millions). Reply with ONLY a JSON object, keys:
   cogs_presented     cost of revenue / cost of sales AS PRESENTED on the income statement
   da_in_costs        depreciation & amortization included in cost of revenue if separately
                      disclosed on these statements, else null
+  da_total           total depreciation & amortization for the quarter (usually on the
+                     cash flow statement), else null
   net_income         net income attributable to the company (loss negative)
   stockholders_equity  total stockholders' equity (parent, excl. noncontrolling interests
                      if broken out)
@@ -107,19 +109,24 @@ def filing_statements(cik, report_date):
         if "PARENTHETICAL" in name or "COMPREHENSIVE" in name:
             continue
         if re.search(r"STATEMENTS? OF (OPERATIONS|INCOME)|INCOME STATEMENTS?", name) or \
-           re.search(r"BALANCE SHEETS?|FINANCIAL POSITION", name):
+           re.search(r"BALANCE SHEETS?|FINANCIAL POSITION", name) or \
+           re.search(r"CASH FLOWS?", name):
             picks.append(file_m.group(1))
-        if len(picks) >= 2:
+        if len(picks) >= 3:
             break
     if not picks:
         return None, None
     text = ""
-    for f in picks[:2]:
+    for f in picks[:3]:
         page = sec_get(f"{base}/{f}")
         if page:
-            t = re.sub(r"<[^>]+>", " ", page.text)
-            t = re.sub(r"\s+", " ", t)
-            text += t[:25000] + "\n\n"
+            t = page.text
+            t = re.sub(r"</t[dh]>", " | ", t, flags=re.I)     # keep column boundaries
+            t = re.sub(r"</tr>", "\n", t, flags=re.I)         # keep row boundaries
+            t = re.sub(r"<[^>]+>", " ", t)
+            t = re.sub(r"[ \t]+", " ", t)
+            t = re.sub(r"\n\s*\n+", "\n", t)
+            text += t[:20000] + "\n\n"
     return (text if text else None), fdate
 
 
@@ -131,8 +138,13 @@ def candidates_from_llm(vals):
         out["saleq"] = [g("revenue")]
     if g("cogs_presented") is not None:
         c = g("cogs_presented")
-        da = g("da_in_costs") or 0
-        out["cogsq"] = [c - da, c] if da else [c]
+        cands = []
+        if g("da_in_costs"):
+            cands.append(c - g("da_in_costs"))
+        if g("da_total"):
+            cands.append(c - g("da_total"))
+        cands.append(c)
+        out["cogsq"] = cands
     if g("net_income") is not None:
         out["niq"] = [g("net_income")]
     if g("stockholders_equity") is not None:
