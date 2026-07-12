@@ -34,6 +34,10 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 API_KEY = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
 MODELS = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-4-6"}
 OUT = DATA / "edgar_llm_overlay.json"
+STATE = DATA / "edgar_llm_processed.json"   # {sym: last_processed_period_end} — makes daily
+# runs INCREMENTAL: a symbol is re-attempted only when a NEWER filing exists, so the
+# recurring cost is ~10-50 new filings/day in earnings season (~$0.2-1/day), not a full
+# $20 backfill. Delete the file to force a full re-run.
 LLM_ITEMS = {"saleq", "cogsq", "niq", "seqq", "dlttq", "dlcq"}
 
 PROMPT = """From the financial statements below, extract these values for the fiscal
@@ -206,9 +210,23 @@ def main():
         missing = [it for it, h in resolved.items() if h is None]
         if not missing:
             continue
+        # incremental guard: skip if no filing newer than what we already processed
+        try:
+            processed = json.load(open(STATE)) if STATE.exists() else {}
+        except Exception:
+            processed = {}
         stats["targets"] += 1
         done += 1
 
+        last_done = processed.get(sym)
+        if last_done and not any(
+                pd.Timestamp(r) > pd.Timestamp(last_done)
+                for r in (sec_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+                          .get("filings", {}).get("recent", {}).get("reportDate", [])[:12] if True else [])
+                if r):
+            stats["targets"] -= 1
+            done -= 1
+            continue
         text, _ = filing_statements(cik, overlap_end)
         if not text:
             stats["no_docs"] += 1
@@ -276,6 +294,12 @@ def main():
         if sym_out:
             overlay[sym] = sym_out
             stats["fresh"] += 1
+            try:
+                processed = json.load(open(STATE)) if STATE.exists() else {}
+            except Exception:
+                processed = {}
+            processed[sym] = str(newest[0].date())
+            json.dump(processed, open(STATE, "w"))
         if done % 5 == 0:
             print(f"  {done} targets ({time.time()-t0:.0f}s) pass={stats['gate_pass']} "
                   f"fail={stats['gate_fail']}", flush=True)
