@@ -240,6 +240,17 @@ async def _refresh() -> bool:
             log.info("EDGAR shadow: %d BUY vs live %d | added=%s dropped=%s",
                      len(sh_buys), len(live_buys),
                      sorted(sh_buys - live_buys)[:8], sorted(live_buys - sh_buys)[:8])
+            # persistent record (pm2 logs rotate): one JSONL row per refresh, so the
+            # week-of-shadow review compares live vs overlay across the whole window
+            try:
+                with open(DATA_DIR / "edgar_shadow_diffs.jsonl", "a") as fh:
+                    fh.write(_json.dumps({
+                        "ts": datetime.now(ET).isoformat(timespec="seconds"),
+                        "live_buys": sorted(live_buys), "shadow_buys": sorted(sh_buys),
+                        "added": sorted(sh_buys - live_buys),
+                        "dropped": sorted(live_buys - sh_buys)}) + "\n")
+            except Exception:
+                pass
         except Exception as e:
             state.cache_edgar = []
             log.warning("EDGAR shadow build failed (live unaffected): %s", e)
