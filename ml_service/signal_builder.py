@@ -430,9 +430,71 @@ def _fill_sector_relative(features, data_dir):
 # (shared with the backtest — single source of truth). Imported at top.
 
 
-def build_signals_v9(raw, enhanced_data=None, top_n=5):
+_edgar_cache = {"mtime": None, "data": {}}
+
+
+def _load_edgar_overlay(data_dir):
+    """{feature: {sym: fresh_value}} from the EDGAR overlay, vintage-guarded: an entry
+    applies ONLY if its period_end is NEWER than the symbol's current Compustat quarter
+    (a fresh WRDS upload automatically retires stale overlay entries). Never raises —
+    any problem returns {} and behavior is byte-identical to no-overlay."""
+    try:
+        f = data_dir / "edgar_feature_overlay.json"
+        if not f.exists():
+            return {}
+        mtime = f.stat().st_mtime
+        if _edgar_cache["mtime"] == mtime:
+            return _edgar_cache["data"]
+        ov = _json.load(open(f))
+        fund = pd.read_parquet(data_dir / "wrds" / "compustat_fundamentals_quarterly.parquet",
+                               columns=["tic", "datadate"])
+        fund["datadate"] = pd.to_datetime(fund["datadate"])
+        last_dd = fund.groupby("tic")["datadate"].max()
+        out = {"roe": {}, "gross_margin": {}, "debt_to_equity": {}}
+        for sym, feats in ov.get("features", {}).items():
+            dd = last_dd.get(sym)
+            for feat, e in feats.items():
+                if feat in out and (dd is None or pd.Timestamp(e["period_end"]) > dd):
+                    out[feat][sym] = float(e["value"])
+        _edgar_cache["mtime"], _edgar_cache["data"] = mtime, out
+        log.info("EDGAR overlay loaded: roe=%d gm=%d d2e=%d fresh symbols",
+                 len(out["roe"]), len(out["gross_margin"]), len(out["debt_to_equity"]))
+        return out
+    except Exception as e:
+        log.warning("EDGAR overlay load failed (%s) — proceeding without", e)
+        return {}
+
+
+class _EdgarOverlayUniverse:
+    """Read-only proxy over the cached FastUniverse: overrides ONLY the three
+    fundamentals in get_feature_map with gate-validated EDGAR values; everything
+    else delegates. The cached universe itself is never mutated."""
+
+    def __init__(self, uni, overlay):
+        object.__setattr__(self, "_uni", uni)
+        object.__setattr__(self, "_ov", overlay)
+
+    def __getattr__(self, name):
+        return getattr(self._uni, name)
+
+    def get_feature_map(self, date, feature, members=None):
+        base = self._uni.get_feature_map(date, feature, members)
+        fresh = self._ov.get(feature)
+        if fresh:
+            for sym, v in fresh.items():
+                if members is None or sym in members:
+                    base[sym] = v
+        return base
+
+
+def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     """
     Build signals using v9.6 multi-strategy framework.
+
+    edgar_overlay=True applies the gate-validated EDGAR freshness overlay to the three
+    fundamentals (roe / gross_margin / debt_to_equity) via a non-mutating universe proxy.
+    Used by the signal server's SHADOW build; the live default stays False until the
+    shadow diff has been reviewed and the user flips it.
 
     Returns list of signal dicts in the same format as build_signals():
     [{symbol, probability, confidence, ml_mode, rank, is_top_5, signal}, ...]
@@ -457,6 +519,11 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5):
         log.info("v9.6 FastUniverse ready")
 
     uni = _uni_cache
+    if edgar_overlay:
+        # SHADOW/overlay path only — wraps (never mutates) the cached universe.
+        overlay = _load_edgar_overlay(Path(__file__).resolve().parent / "data")
+        if any(overlay.get(k) for k in ("roe", "gross_margin", "debt_to_equity")):
+            uni = _EdgarOverlayUniverse(_uni_cache, overlay)
 
     # Run all strategies (day_idx=0 forces rebalance)
     s4_active = {}

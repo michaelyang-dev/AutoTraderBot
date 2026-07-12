@@ -90,6 +90,7 @@ ET              = ZoneInfo("America/New_York")
 # ── Server state ──────────────────────────────────────────────────────────────
 class State:
     cache:          list                   = []
+    cache_edgar:    list                   = []   # EDGAR-overlay SHADOW signals (/signals?edgar=1)
     last_update:    Optional[datetime]     = None
     is_stale:       bool                   = True
     refresh_task:   Optional[asyncio.Task] = None
@@ -225,6 +226,23 @@ async def _refresh() -> bool:
         state.is_stale    = False
         state._last_raw   = raw  # store for short sleeve price access
         _save_signal_cache(new_signals)
+
+        # EDGAR SHADOW build (cheap: reuses the daily universe cache via a read-only
+        # proxy). Served on /signals?edgar=1 ONLY — the live path above is untouched.
+        # The logged diff line is the daily evidence for the phase-3 flip decision.
+        try:
+            edgar_signals = await asyncio.get_event_loop().run_in_executor(
+                None, build_signals_v9, raw, None, state.top_n, True
+            )
+            state.cache_edgar = edgar_signals
+            live_buys = {s["symbol"] for s in new_signals if s["signal"] == "BUY"}
+            sh_buys = {s["symbol"] for s in edgar_signals if s["signal"] == "BUY"}
+            log.info("EDGAR shadow: %d BUY vs live %d | added=%s dropped=%s",
+                     len(sh_buys), len(live_buys),
+                     sorted(sh_buys - live_buys)[:8], sorted(live_buys - sh_buys)[:8])
+        except Exception as e:
+            state.cache_edgar = []
+            log.warning("EDGAR shadow build failed (live unaffected): %s", e)
 
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
@@ -362,16 +380,20 @@ def health():
 
 
 @app.get("/signals")
-def get_signals():
-    if not state.cache:
+def get_signals(edgar: int = 0):
+    # edgar=1 serves the SHADOW (EDGAR-overlay) build — diagnostics only; both live
+    # engines call this endpoint WITHOUT the param and are unaffected.
+    cache = state.cache_edgar if edgar else state.cache
+    if not cache:
         raise HTTPException(status_code=503, detail="Signals not yet available — try again shortly")
     return {
-        "signals":     state.cache,
+        "signals":     cache,
         "last_update": state.last_update.isoformat() if state.last_update else None,
         "is_stale":    state.is_stale,
-        "count":       len(state.cache),
-        "buy_count":   sum(1 for s in state.cache if s["signal"] == "BUY"),
+        "count":       len(cache),
+        "buy_count":   sum(1 for s in cache if s["signal"] == "BUY"),
         "strategy":    state.strategy_version,
+        "edgar_shadow": bool(edgar),
     }
 
 
