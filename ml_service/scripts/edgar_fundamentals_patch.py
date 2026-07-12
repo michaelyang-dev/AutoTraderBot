@@ -1,35 +1,28 @@
 """
-EDGAR XBRL FUNDAMENTALS FRESHNESS PATCH — Compustat-quality gate, stale-clean fallback.
+EDGAR XBRL FRESHNESS OVERLAY — per-FEATURE validation gate, Compustat-quality or nothing.
 
-Purpose: WRDS Compustat refreshes quarterly by manual download (unavailable in summer).
-This patcher freshens ONLY the newest missing quarter per symbol, directly from SEC EDGAR
-companyfacts (the primary source Compustat itself derives from), under a hard per-symbol
-validation gate:
+v3 redesign (2026-07-11): instead of synthesizing whole Compustat rows (all-or-nothing on
+6 items -> 8% pass rate, blocked by COGS/debt conventions), validate and patch PER FEATURE.
+Each sleeve-consumed feature has its own input set and its own gate:
 
-  A symbol is patched ONLY if our EDGAR extraction REPRODUCES Compustat's own last
-  overlapping quarter for ALL six items (niq, saleq, cogsq, seqq, dlttq, dlcq) within
-  2% relative / $2M absolute. Any mismatch, missing tag, or ambiguity -> the symbol
-  stays stale-but-clean (measured: stale-clean beats fresh-noisy). Quality is proven
-  per symbol, never assumed.
+    roe            = 4*niq/seqq          inputs: niq, seqq            (~96% provable)
+    gross_margin   = (saleq-cogsq)/saleq inputs: saleq, cogsq
+    debt_to_equity = (dlttq+dlcq)/seqq   inputs: dlttq, dlcq, seqq
 
-Items patched are exactly the inputs of the three sleeve-consumed features
-(roe = 4*niq/seqq, gross_margin = (saleq-cogsq)/saleq, debt_to_equity = (dlttq+dlcq)/seqq,
-formulas per signal_builder._fill_fundamentals). All other columns in the synthesized row
-carry forward the symbol's previous values (they feed no sleeve; NaN would be worse).
-Flows use quarterly-duration XBRL entries (80-100d); fiscal-Q4 flows are derived as
-FY minus the three sibling quarters. Instants (equity/debt) are taken at period end.
-`rdq` (the point-in-time selector used by signal_builder) = the SEC `filed` date.
+GATE (unchanged in spirit): a feature for a symbol is patched ONLY if every one of ITS
+inputs, extracted from EDGAR companyfacts with a candidate tag-spec, REPRODUCES Compustat's
+own last overlapping quarter within 2% / $2M. All inputs of a feature must come from the
+SAME (newer) period end — no mixed-quarter features. Anything unproven stays stale-clean.
 
-Usage (AWS):
-  venv/bin/python scripts/edgar_fundamentals_patch.py                 # VALIDATE-ONLY report
-  venv/bin/python scripts/edgar_fundamentals_patch.py --emit          # + write patched parquet
-Output: data/wrds/compustat_fundamentals_quarterly_patched.parquet (original untouched)
-        data/edgar_patch_report.json
-NEVER wired into live here — signal_builder keeps reading the original file until the
-shadow-diff phase proves the patched picks are sane and the user flips it.
+Output: data/edgar_feature_overlay.json — INERT until signal_builder integration (flagged,
+shadow-tested). Formulas mirror signal_builder._fill_fundamentals verbatim, including
+dlcq/dlttq NaN->0. `rdq` = SEC filed date (point-in-time honest).
+
+Facts are cached in data/edgar_cache/*.json.gz (20h TTL) so re-runs take seconds.
+Usage (AWS): venv/bin/python scripts/edgar_fundamentals_patch.py
 """
+import gzip
 import json
-import sys
 import time
 from pathlib import Path
 
@@ -40,37 +33,53 @@ import requests
 ML = Path(__file__).resolve().parent.parent
 DATA = ML / "data"
 FUND = DATA / "wrds" / "compustat_fundamentals_quarterly.parquet"
-OUT = DATA / "wrds" / "compustat_fundamentals_quarterly_patched.parquet"
+OVERLAY = DATA / "edgar_feature_overlay.json"
 REPORT = DATA / "edgar_patch_report.json"
+CACHE = DATA / "edgar_cache"
 UA = {"User-Agent": "AutoTrader research michaelslyang@gmail.com"}
 
-# Compustat item -> ordered candidate SPECS: (base_tag, [add_alternatives...], [sub_alternatives...]).
-# value = base + sum(first-available of each add-list, else 0) - sum(same for sub-lists).
-# Derived combos encode Compustat conventions: cogsq EXCLUDES D&A (verified: AAPL/MU/PAYX
-# match to the dollar after subtracting D&A); dlcq = current LTD + commercial paper/ST borrowings.
-# The per-symbol validation gate still decides — a wrong combo simply fails and stays stale.
+# Candidate specs: (base_tag, [add_alternative_lists], [sub_alternative_lists]).
+# value = base + sum(first-available of each add-list else 0) - sum(same for subs).
+# Derived combos encode Compustat conventions; the per-symbol gate arbitrates.
 _DA = ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
        "DepreciationAmortizationAndAccretionNet", "Depreciation"]
-_STB = ["CommercialPaper", "ShortTermBorrowings", "OtherShortTermBorrowings", "ShortTermBankLoansAndNotesPayable"]
+_STB = ["CommercialPaper", "ShortTermBorrowings", "OtherShortTermBorrowings",
+        "ShortTermBankLoansAndNotesPayable"]
+_FLN = ["FinanceLeaseLiabilityNoncurrent"]
+_FLC = ["FinanceLeaseLiabilityCurrent"]
 CONCEPTS = {
     "niq":   [("NetIncomeLoss", [], []), ("ProfitLoss", [], []),
               ("NetIncomeLossAvailableToCommonStockholdersBasic", [], [])],
-    "saleq": [("RevenueFromContractWithCustomerExcludingAssessedTax", [], []), ("Revenues", [], []),
-              ("SalesRevenueNet", [], []), ("RevenueFromContractWithCustomerIncludingAssessedTax", [], [])],
+    "saleq": [("RevenueFromContractWithCustomerExcludingAssessedTax", [], []),
+              ("Revenues", [], []), ("SalesRevenueNet", [], []),
+              ("RevenueFromContractWithCustomerIncludingAssessedTax", [], []),
+              ("RevenuesNetOfInterestExpense", [], []),      # banks/financials
+              ("InterestAndDividendIncomeOperating", [], [])],
     "cogsq": [("CostOfRevenue", [], [_DA]), ("CostOfGoodsAndServicesSold", [], [_DA]),
               ("CostOfRevenue", [], []), ("CostOfGoodsAndServicesSold", [], []),
               ("CostOfGoodsSold", [], [_DA]), ("CostOfGoodsSold", [], [])],
     "seqq":  [("StockholdersEquity", [], []),
               ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", [], [])],
-    "dlttq": [("LongTermDebtNoncurrent", [], []), ("LongTermDebtAndCapitalLeaseObligations", [], []),
-              ("LongTermDebt", [], [])],
+    "dlttq": [("LongTermDebtNoncurrent", [], []), ("LongTermDebtNoncurrent", [_FLN], []),
+              ("LongTermDebtAndCapitalLeaseObligations", [], []), ("LongTermDebt", [], [])],
     "dlcq":  [("LongTermDebtCurrent", [_STB], []), ("DebtCurrent", [], []),
-              ("LongTermDebtCurrent", [], []), ("LongTermDebtAndCapitalLeaseObligationsCurrent", [_STB], []),
+              ("LongTermDebtCurrent", [], []), ("LongTermDebtCurrent", [_FLC], []),
               ("LongTermDebtAndCapitalLeaseObligationsCurrent", [], [])],
 }
-FLOWS = {"niq", "saleq", "cogsq"}          # duration items (need quarterly windows)
-ZERO_OK = {"dlttq", "dlcq", "cogsq"}       # items legitimately 0/absent for some firms
-REL_TOL, ABS_TOL = 0.02, 2.0               # 2% relative or $2M absolute (Compustat is $MM)
+FLOWS = {"niq", "saleq", "cogsq"}
+ZERO_OK = {"dlttq", "dlcq"}            # legitimately 0/absent (debt-free firms)
+REL_TOL, ABS_TOL = 0.02, 2.0           # 2% relative or $2M absolute ($MM units)
+
+# The sleeve-consumed features and EXACT live formulas (signal_builder._fill_fundamentals)
+FEATURES = {
+    "roe":            (["niq", "seqq"],
+                       lambda v: 4 * v["niq"] / v["seqq"] if v.get("seqq") else None),
+    "gross_margin":   (["saleq", "cogsq"],
+                       lambda v: (v["saleq"] - v["cogsq"]) / v["saleq"] if v.get("saleq") else None),
+    "debt_to_equity": (["dlttq", "dlcq", "seqq"],
+                       lambda v: ((v.get("dlttq") or 0) + (v.get("dlcq") or 0)) / v["seqq"]
+                       if v.get("seqq") else None),
+}
 
 
 def load_cik_map():
@@ -80,12 +89,23 @@ def load_cik_map():
 
 
 def fetch_facts(cik):
+    CACHE.mkdir(exist_ok=True)
+    f = CACHE / f"{cik}.json.gz"
+    if f.exists() and time.time() - f.stat().st_mtime < 20 * 3600:
+        try:
+            return json.load(gzip.open(f, "rt"))
+        except Exception:
+            pass
     url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
     for attempt in range(3):
         try:
             r = requests.get(url, headers=UA, timeout=30)
             if r.status_code == 200:
-                return r.json()
+                data = r.json()
+                with gzip.open(f, "wt") as fh:
+                    json.dump(data, fh)
+                time.sleep(0.12)
+                return data
             if r.status_code == 404:
                 return None
         except requests.RequestException:
@@ -95,8 +115,7 @@ def fetch_facts(cik):
 
 
 def series_for_concept(facts, concept):
-    """{period_end(Timestamp): (value_$MM, filed_date)} — latest-filed wins per period.
-    For FLOW concepts also returns annual windows for Q4 derivation."""
+    """{period_end: (value_$MM, filed)} quarterly + annual buckets; latest-filed wins."""
     node = facts.get("facts", {}).get("us-gaap", {}).get(concept)
     if not node:
         return None, None
@@ -111,13 +130,13 @@ def series_for_concept(facts, concept):
             filed = e.get("filed", "1900-01-01")
         except (KeyError, TypeError, ValueError):
             continue
-        if "start" in e and e.get("start"):
+        if e.get("start"):
             days = (end - pd.Timestamp(e["start"])).days
             bucket = quarters if 80 <= days <= 100 else annuals if 350 <= days <= 380 else None
             if bucket is None:
                 continue
         else:
-            bucket = quarters   # instant
+            bucket = quarters
         prev = bucket.get(end)
         if prev is None or filed >= prev[1]:
             bucket[end] = (val, filed)
@@ -125,8 +144,7 @@ def series_for_concept(facts, concept):
 
 
 def value_at(quarters, annuals, end, is_flow):
-    """Value for the quarter ending `end` (±5d). Flows: direct quarterly window, else
-    fiscal-Q4 = annual(end) - three sibling quarters inside that annual window."""
+    """Quarter value at `end` (±5d); fiscal-Q4 flows derived as FY - 3 sibling quarters."""
     for d, (v, filed) in (quarters or {}).items():
         if abs((d - end).days) <= 5:
             return v, filed
@@ -141,9 +159,6 @@ def value_at(quarters, annuals, end, is_flow):
 
 
 def spec_value(facts, spec, end, is_flow):
-    """Evaluate a candidate spec (base, add_alt_lists, sub_alt_lists) at a period end.
-    Add/sub components are flows/instants matching the base item's nature; absent
-    optional components contribute 0. Returns (value, filed) or (None, None)."""
     base, adds, subs = spec
     q, a = series_for_concept(facts, base)
     if q is None:
@@ -152,18 +167,16 @@ def spec_value(facts, spec, end, is_flow):
     if v is None:
         return None, None
     total = v
-    for alt_list in adds + [["___SUB___"] + x for x in subs]:
-        sign = 1
-        if alt_list and alt_list[0] == "___SUB___":
-            sign, alt_list = -1, alt_list[1:]
-        for tag in alt_list:
-            q2, a2 = series_for_concept(facts, tag)
-            if q2 is None:
-                continue
-            v2, _ = value_at(q2, a2, end, is_flow)
-            if v2 is not None:
-                total += sign * v2
-                break
+    for sign, groups in ((1, adds), (-1, subs)):
+        for alt_list in groups:
+            for tag in alt_list:
+                q2, a2 = series_for_concept(facts, tag)
+                if q2 is None:
+                    continue
+                v2, _ = value_at(q2, a2, end, is_flow)
+                if v2 is not None:
+                    total += sign * v2
+                    break
     return total, filed
 
 
@@ -176,7 +189,6 @@ def close_enough(edgar, compustat):
 
 
 def main():
-    emit = "--emit" in sys.argv
     members = json.load(open(DATA / "sp1500_members.json"))
     syms = sorted(set(members["sp500"] + members["sp400"] + members["sp600"]))
     fund = pd.read_parquet(FUND)
@@ -184,30 +196,27 @@ def main():
     last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
     cik_map = load_cik_map()
 
-    stats = {"patched": [], "validated_no_new": [], "failed_validation": [],
-             "no_cik": [], "no_facts": [], "no_overlap": []}
-    new_rows = []
+    stats = {f: {"validated": 0, "patched": 0, "failed": 0} for f in FEATURES}
+    fail_items = {}
+    overlay = {}
     t0 = time.time()
     for i, sym in enumerate(syms):
         if i % 150 == 0:
-            print(f"  {i}/{len(syms)} ({time.time()-t0:.0f}s) patched={len(stats['patched'])} "
-                  f"failed={len(stats['failed_validation'])}", flush=True)
+            print(f"  {i}/{len(syms)} ({time.time()-t0:.0f}s) roe_ok={stats['roe']['validated']} "
+                  f"roe_patched={stats['roe']['patched']}", flush=True)
         if sym not in last_rows.index:
             continue
         cik = cik_map.get(sym.upper().replace(".", "-")) or cik_map.get(sym.upper())
         if cik is None:
-            stats["no_cik"].append(sym)
             continue
         facts = fetch_facts(cik)
-        time.sleep(0.12)
         if facts is None:
-            stats["no_facts"].append(sym)
             continue
-
         row = last_rows.loc[sym]
         overlap_end = row["datadate"]
-        # resolve, per item, the first concept that validates on the overlap quarter
-        resolved, ok = {}, True
+
+        # resolve each ITEM once (first spec that validates on the overlap quarter)
+        resolved = {}
         for item, candidates in CONCEPTS.items():
             cs_val = row[item]
             hit = None
@@ -216,74 +225,60 @@ def main():
                 if close_enough(v, cs_val):
                     hit = spec
                     break
-            if hit is None:
-                if item in ZERO_OK and (pd.isna(cs_val) or abs(cs_val) <= ABS_TOL):
-                    resolved[item] = None     # legitimately absent; treat as 0/NaN downstream
-                    continue
-                ok = False
-                stats["failed_validation"].append(f"{sym}:{item}")
-                break
-            resolved[item] = hit
-        if not ok:
-            continue
-
-        # find the newest quarter-end strictly after Compustat's last, where every
-        # resolved concept has a value (validated tags only — no re-guessing)
-        cand_ends = set()
-        for item, spec in resolved.items():
-            if spec is None:
+            if hit is None and item in ZERO_OK and (pd.isna(cs_val) or abs(cs_val) <= ABS_TOL):
+                resolved[item] = "ZERO"      # provably ~0 at overlap; treat as 0 going forward
                 continue
-            q, a = series_for_concept(facts, spec[0])
-            cand_ends |= {d for d in (q or {}) if d > overlap_end + pd.Timedelta(days=20)}
-        newer = sorted(cand_ends)
-        patched = None
-        for end in reversed(newer):
-            vals, rdq = {}, None
-            complete = True
-            for item, spec in resolved.items():
-                if spec is None:
-                    vals[item] = np.nan if item == "dlttq" else 0.0
+            if hit is None:
+                fail_items[item] = fail_items.get(item, 0) + 1
+            resolved[item] = hit
+
+        sym_overlay = {}
+        for feat, (inputs, formula) in FEATURES.items():
+            if any(resolved.get(it) is None for it in inputs):
+                stats[feat]["failed"] += 1
+                continue
+            stats[feat]["validated"] += 1
+            # newest period end AFTER the overlap where ALL of this feature's inputs exist
+            base_ends = set()
+            for it in inputs:
+                if resolved[it] == "ZERO":
                     continue
-                v, filed = spec_value(facts, spec, end, item in FLOWS)
-                if v is None:
-                    complete = False
+                q, _a = series_for_concept(facts, resolved[it][0])
+                base_ends |= {d for d in (q or {}) if d > overlap_end + pd.Timedelta(days=20)}
+            for end in sorted(base_ends, reverse=True):
+                vals, rdq, complete = {}, None, True
+                for it in inputs:
+                    if resolved[it] == "ZERO":
+                        vals[it] = 0.0
+                        continue
+                    v, filed = spec_value(facts, resolved[it], end, it in FLOWS)
+                    if v is None:
+                        complete = False
+                        break
+                    vals[it] = v
+                    rdq = max(rdq or filed, filed)
+                if complete:
+                    fv = formula(vals)
+                    if fv is not None and np.isfinite(fv):
+                        sym_overlay[feat] = {"value": round(float(fv), 6),
+                                             "period_end": str(end.date()), "rdq": rdq}
+                        stats[feat]["patched"] += 1
                     break
-                vals[item] = v
-                rdq = max(rdq or filed, filed)
-            if complete:
-                patched = (end, vals, rdq)
-                break
-        if patched is None:
-            stats["validated_no_new"].append(sym)
-            continue
+        if sym_overlay:
+            overlay[sym] = sym_overlay
 
-        end, vals, rdq = patched
-        nr = row.copy()                      # carry forward unconsumed columns
-        nr["datadate"] = end
-        if "rdq" in nr.index:
-            nr["rdq"] = pd.Timestamp(rdq)
-        for item, v in vals.items():
-            nr[item] = v
-        nr["tic"] = sym
-        new_rows.append(nr)
-        stats["patched"].append(f"{sym}:{end.date()}")
-
-    print(f"\n===== EDGAR PATCH REPORT ({time.time()-t0:.0f}s) =====")
-    for k in stats:
-        print(f"  {k}: {len(stats[k])}")
-    coverage = len(stats["patched"]) / max(1, len(syms))
-    print(f"  freshness coverage: {coverage:.1%} of SP1500 gets a newer validated quarter")
-    REPORT.parent.mkdir(exist_ok=True)
-    json.dump({k: v for k, v in stats.items()}, open(REPORT, "w"), indent=1, default=str)
-    print(f"  report -> {REPORT}")
-
-    if emit and new_rows:
-        add = pd.DataFrame(new_rows).reset_index(drop=True)
-        out = pd.concat([fund, add], ignore_index=True)
-        out.to_parquet(OUT)
-        print(f"  emitted {len(add)} synthesized rows -> {OUT} (original untouched)")
-    elif not emit:
-        print("  VALIDATE-ONLY mode (pass --emit to write the patched parquet)")
+    print(f"\n===== EDGAR OVERLAY REPORT ({time.time()-t0:.0f}s, {len(syms)} symbols) =====")
+    for feat, s in stats.items():
+        print(f"  {feat:<16} validated {s['validated']:>4} ({s['validated']/len(syms):.0%})"
+              f"  | fresher-quarter available now: {s['patched']:>4}")
+    print(f"  item failures: {fail_items}")
+    json.dump({"generated": time.strftime("%Y-%m-%d %H:%M:%S"),
+               "compustat_max_datadate": str(fund['datadate'].max().date()),
+               "stats": stats, "fail_items": fail_items,
+               "features": overlay}, open(OVERLAY, "w"), indent=1)
+    json.dump({"stats": stats, "fail_items": fail_items}, open(REPORT, "w"), indent=1)
+    print(f"  overlay -> {OVERLAY} ({len(overlay)} symbols with >=1 fresh feature)")
+    print("  INERT: nothing reads this file until the flagged signal_builder integration + shadow pass.")
 
 
 if __name__ == "__main__":
