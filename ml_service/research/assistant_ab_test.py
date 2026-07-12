@@ -42,6 +42,16 @@ def main():
     pit_map = {s: (list(g.filed), list(g.roe)) for s, g in pit.groupby("symbol")}
     pit_pe = {s: list(g.period_end) for s, g in pit.groupby("symbol")}
     print(f"assistant PIT coverage: {len(pit_map)} symbols, {len(pit)} quarter-values")
+    # full three-feature PIT set (for the B++ "is 92-96%-accurate fresh gm/d2e worth it" arm)
+    pitf_path = os.path.join(ML, "data/edgar_pit_features.parquet")
+    pitf_map, pitf_pe = {}, {}
+    if os.path.exists(pitf_path):
+        pf = pd.read_parquet(pitf_path).sort_values("filed")
+        for (feat, sym), g in pf.groupby(["feature", "symbol"]):
+            pitf_map.setdefault(feat, {})[sym] = (list(g.filed), list(g.value))
+            pitf_pe.setdefault(feat, {})[sym] = list(g.period_end)
+        print("full-feature PIT coverage:",
+              {f: len(v) for f, v in pitf_map.items()})
 
     bt = FastBacktester()
     bt.uni._fin_growth = {}; bt.uni._ev = {}; bt.uni._estimates = {}
@@ -133,13 +143,45 @@ def main():
             return arm_b(date, feature, members)
         return orig(date, feature, members)
 
+    # B++: ALL THREE features from REAL extractions (with their real 92-96% gm/d2e
+    # accuracy), real filed dates, vintage guard — tests whether fresh-but-imperfect
+    # beats stale-but-exact under the real upload calendar (the 99%-bar assumption).
+    def arm_bpp(date, feature, members=None):
+        if feature not in STALE_FEATS or feature not in pitf_map:
+            return arm_a(date, feature, members) if feature in STALE_FEATS \
+                else orig(date, feature, members)
+        base = arm_a(date, feature, members)
+        fm, fpe = pitf_map[feature], pitf_pe[feature]
+        d = pd.Timestamp(date)
+        i_u = bisect.bisect_right(uploads, d) - 1
+        u = uploads[max(i_u, 0)]
+        cutoff = d - pd.Timedelta(days=1)
+        syms = members if members is not None else list(base.keys())
+        for s in syms:
+            e = fm.get(s)
+            if not e:
+                continue
+            i = bisect.bisect_right(e[0], cutoff) - 1
+            if i < 0:
+                continue
+            uq = upload_q.get(s)
+            q_upload = None
+            if uq:
+                j = bisect.bisect_right(uq[0], u) - 1
+                if j >= 0:
+                    q_upload = uq[1][j]
+            if q_upload is None or fpe[s][i] > q_upload:
+                base[s] = e[1][i]
+        return base
+
     print(f"{'arm':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
     for label, fn in [("CEILING (ideal fresh)", orig),
                       ("A: no assistant (uploads)", arm_a),
                       ("B: assistant+guard", arm_b),
                       ("A-summer: gap, no assist", arm_a_summer),
                       ("B-summer: gap + assistant", arm_b_summer),
-                      ("DIAG: B + fresh gm/d2e", arm_b_plus)]:
+                      ("DIAG: B + fresh gm/d2e", arm_b_plus),
+                      ("B++: real gm/d2e extracts", arm_bpp)]:
         bt.uni.get_feature_map = fn
         for st in STARTS:
             m = bt.run(st, END, cfg)
