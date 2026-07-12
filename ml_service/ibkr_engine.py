@@ -131,6 +131,7 @@ def send_telegram(msg):
 
 TRAILING_PEAKS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_trailing_peaks.json"
 NAV_HISTORY_FILE = Path(__file__).resolve().parent / "data" / "ibkr_nav_history.json"
+CAPITAL_FLOWS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_capital_flows.json"
 CLOSE_SNAPSHOT_FILE = Path(__file__).resolve().parent / "data" / "ibkr_close_snapshot.json"
 DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
 HANG_TIMEOUT_SECS = 360  # watchdog: if the main loop makes no progress this long (e.g. Error-1100 hang), force-restart
@@ -230,6 +231,23 @@ class IBKREngine:
             log.warning(f"Could not load NAV history: {e}")
         return []
 
+    def _load_flows(self):
+        """[[date, amount], ...] signed capital flows (deposit +, withdrawal -),
+        recorded via /deposit. NAV history stays RAW; consumers adjust."""
+        try:
+            if CAPITAL_FLOWS_FILE.exists():
+                import json
+                with open(CAPITAL_FLOWS_FILE) as f:
+                    return json.load(f)
+        except Exception as e:
+            log.warning(f"Could not load capital flows: {e}")
+        return []
+
+    def _flow_between(self, d0, d1):
+        """Net flow with d0 < date <= d1 (ISO strings) — catches flows recorded on
+        weekends/holidays between two NAV marks."""
+        return sum(a for d, a in self._load_flows() if d0 < d <= d1)
+
     def _is_trading_day(self, d=None):
         """True if d (ISO 'YYYY-MM-DD' str, or None=today ET) is an NYSE trading day.
         Uses pandas_market_calendars when available (handles holidays like Juneteenth);
@@ -264,6 +282,7 @@ class IBKREngine:
                 return
             today = datetime.now().date().isoformat()
             hist = self._load_nav_history()
+            prev = hist[-1] if (hist and hist[-1][0] != today) else (hist[-2] if len(hist) > 1 else None)
             if hist and hist[-1][0] == today:
                 if not at_close:
                     return               # today already recorded — never clobber the close mark
@@ -273,6 +292,15 @@ class IBKREngine:
             hist = hist[-70:]
             with open(NAV_HISTORY_FILE, "w") as f:
                 json.dump(hist, f)
+            # SAFETY NET: an unexplained NAV jump usually means an unrecorded
+            # deposit/withdrawal — which would poison vol-scaling and P&L. Nudge once.
+            if (at_close and prev and prev[1] and
+                    abs(nav / prev[1] - 1) > 0.05 and
+                    self._flow_between(prev[0], today) == 0):
+                send_telegram(
+                    f"⚠️ NAV moved {nav / prev[1] - 1:+.1%} today (${prev[1]:,.0f} → ${nav:,.0f}).\n"
+                    f"If you deposited or withdrew money, send /deposit &lt;amount&gt; "
+                    f"(negative for withdrawal) so vol-scaling and P&amp;L stay honest.")
         except Exception:
             pass
 
@@ -343,8 +371,17 @@ class IBKREngine:
         silent-hang case the watchdog exists to catch. 1102 = restored."""
         if errorCode == 1100:
             log.error("IBKR Error 1100: connectivity to IBKR lost (socket still open) — watchdog armed")
+            if not getattr(self, "_uplink_lost", False):
+                self._uplink_lost = True
+                send_telegram("🔴 IBKR uplink LOST (Error 1100) — Gateway socket is up but its "
+                              "login to IBKR dropped (usually: a phone/web login with the same "
+                              "user). Trading is blind until it's back.\n"
+                              "→ log out elsewhere, then send /reconnect (needs your 2FA).")
         elif errorCode in (1101, 1102):
             log.info(f"IBKR Error {errorCode}: connectivity restored")
+            if getattr(self, "_uplink_lost", False):
+                self._uplink_lost = False
+                send_telegram(f"🟢 IBKR uplink RESTORED (Error {errorCode}) — session live again.")
 
     def _start_watchdog(self):
         """Thread (not asyncio — survives a blocked loop): if the main loop makes no
@@ -374,11 +411,17 @@ class IBKREngine:
         vol_scale = clamp(VOL_TARGET / realized_vol, floor, 1.0)."""
         if not VOL_SCALING:
             return 1.0, None
-        navs = [h[1] for h in self._load_nav_history()
+        hist = [h for h in self._load_nav_history()
                 if self._is_trading_day(h[0])][-(VOL_LOOKBACK + 1):]
-        if len(navs) < 20:
+        if len(hist) < 20:
             return 1.0, None  # insufficient history — ramp-up, no scaling yet
-        rets = [navs[i] / navs[i - 1] - 1 for i in range(1, len(navs)) if navs[i - 1] > 0]
+        # FLOW-ADJUSTED returns: a deposit/withdrawal (/deposit ledger) is not a
+        # return — unadjusted, a $10K deposit on $33K NAV reads as a +30% day and
+        # slams vol_scale to the floor for the whole lookback window.
+        fl = self._load_flows()
+        rets = [(hist[i][1] - sum(a for d, a in fl if hist[i - 1][0] < d <= hist[i][0]))
+                / hist[i - 1][1] - 1
+                for i in range(1, len(hist)) if hist[i - 1][1] > 0]
         if len(rets) < 19:
             return 1.0, None
         mean = sum(rets) / len(rets)
@@ -410,6 +453,7 @@ class IBKREngine:
         self.ib.reqMarketDataType(1)
         accounts = self.ib.managedAccounts()
         self.account_id = accounts[0] if accounts else None
+        self._uplink_lost = False   # fresh session — clear any stale Error-1100 banner
         log.info(f"Connected. Account: {self.account_id}")
         send_telegram(f"🟢 IBKR Engine connected. Account: {self.account_id}")
 
@@ -1103,13 +1147,18 @@ class IBKREngine:
         "start", "help", "portfolio", "positions", "alpaca", "pnl", "daily",
         "status", "signals", "rebal", "data", "connection"})
 
-    @staticmethod
-    def _tg_header(title, mkt_open=None):
-        """Uniform one-line command header: bold title · time · market state."""
+    def _tg_header(self, title, mkt_open=None):
+        """Uniform one-line command header: bold title · time · market state.
+        Carries the uplink-lost banner so EVERY panel warns when IBKR figures
+        may be frozen (2026-07-12: /status said connected while the Gateway's
+        IBKR login was dead and all IBKR numbers were stale cache)."""
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("US/Eastern"))
         state = "" if mkt_open is None else (" · 🟢 open" if mkt_open else " · 🌙 closed")
-        return f"<b>{title}</b> · <i>{now.strftime('%b %d, %I:%M %p').replace(' 0', ' ')}{state}</i>\n"
+        head = f"<b>{title}</b> · <i>{now.strftime('%b %d, %I:%M %p').replace(' 0', ' ')}{state}</i>\n"
+        if getattr(self, "_uplink_lost", False):
+            head += "🔴 <b>IBKR uplink LOST — IBKR figures may be frozen · /reconnect</b>\n"
+        return head
 
     @staticmethod
     def _tg_table(rows):
@@ -1150,13 +1199,18 @@ class IBKREngine:
                     "/rebal — rebalance countdown\n"
                     "/data — data freshness check")
             if is_owner:
-                base += "\n\n<b>🔑 Owner</b>\n/reconnect — force a clean engine/Gateway reconnect"
+                base += ("\n\n<b>🔑 Owner</b>\n"
+                         "/reconnect — force a clean engine/Gateway reconnect\n"
+                         "/deposit &lt;amt&gt; — record a deposit (negative = withdrawal)")
             return base
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
                     "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "daily": self._cmd_daily,
                     "status": self._cmd_status,
                     "signals": self._cmd_signals, "rebal": self._cmd_rebal, "data": self._cmd_data,
                     "connection": self._cmd_connection, "reconnect": self._cmd_reconnect}
+        if cmd == "deposit":
+            arg = text.split(maxsplit=1)[1] if len(text.split()) > 1 else None
+            return self._cmd_deposit(arg)
         h = handlers.get(cmd)
         if not h:
             return f"Unknown command: /{cmd}. Try /help"
@@ -1244,17 +1298,21 @@ class IBKREngine:
             tag = "live" if mkt_open else ("4pm close" if have_close else "pre-mkt")
             rows = []
             if prev and prev[-1][1]:
-                d = session_nav - prev[-1][1]
+                flow = self._flow_between(prev[-1][0], today)   # deposits aren't gains
+                d = session_nav - prev[-1][1] - flow
                 lbl = "Today" if (mkt_open or have_close) else "Overnight"
                 rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/prev[-1][1]*100:>+6.2f}%")
+                if flow:
+                    rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
             else:
                 rows.append("Today      n/a (building history)")
             if not mkt_open and have_close:
                 ah = live_nav - snap["nav"]
                 rows.append(f"{self._chip(ah)} {'After-hrs':<10}│{ah:>+9,.0f} │{ah/snap['nav']*100:>+6.2f}%")
             rows.append(f"{self._chip(s['upl'])} {'Open P&L':<10}│{s['upl']:>+9,.0f} │")
-            since = live_nav - IBKR_INITIAL_CAPITAL
-            rows.append(f"{self._chip(since)} {'All-time':<10}│{since:>+9,.0f} │{since/IBKR_INITIAL_CAPITAL*100:>+6.1f}%")
+            invested = IBKR_INITIAL_CAPITAL + sum(a for _, a in self._load_flows())
+            since = live_nav - invested
+            rows.append(f"{self._chip(since)} {'All-time':<10}│{since:>+9,.0f} │{since/invested*100:>+6.1f}%")
             out.append(f"<b>🟢 IBKR · ${session_nav:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
         except Exception as e:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {_h.escape(str(e))}")
@@ -1349,6 +1407,14 @@ class IBKREngine:
                 al_nav = float(acct.get("cash", 0) or 0) + sum(
                     float(p["qty"]) * (bars.get(p["symbol"], {}).get("close")
                                        or float(p["current_price"])) for p in poss)
+            # WEEKEND/HOLIDAY HONESTY: with no session today, the bars (and this whole
+            # panel) describe the LAST session — title it so. /pnl meanwhile shows ~0
+            # "overnight since Friday": same moment, different (both correct) questions.
+            # Mislabeled, they looked like a bug (2026-07-12 user report).
+            sess = max((b.get("bar_date") for b in bars.values() if b.get("bar_date")),
+                       default=None)
+            if sess and sess != today:
+                out[0] = self._tg_header(f"📅 LAST SESSION ({sess}) BY POSITION", mkt_open)
 
         if ib_err:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {ib_err}")
@@ -1360,7 +1426,8 @@ class IBKREngine:
             out.append(f"\n<b>🔵 ALPACA · ${al_nav:,.0f} · {day}</b>\n{tbl}")
         elif not ib_entries and not ib_err:
             out.append("no positions in either book")
-        out.append(f"<i>{'live prices' if mkt_open else 'session close vs prev close'}</i>")
+        out.append(f"<i>{'live prices' if mkt_open else 'session close vs prev close'}"
+                   f" · price-move view; /pnl = NAV view (incl. cash/fees/flows)</i>")
         return "\n".join(out)
 
     async def _cmd_status(self):
@@ -1415,15 +1482,18 @@ class IBKREngine:
             return f"data check error: {e}"
 
     async def _real_connectivity(self):
-        """True data-path test: isConnected() can return True on an Error-1100
-        zombie (socket up, IBKR uplink dead). reqCurrentTime actually round-trips
-        to IBKR's servers, so a timeout means the data feed is really down."""
+        """True data-path test, TWO stages. reqCurrentTime only proves engine<->Gateway
+        — the Gateway answers it LOCALLY and it can pass while the Gateway's own login
+        to IBKR is dead (phone-login session steal, 2026-07-12 incident: /status said
+        connected while every data request hung). reqPositions must round-trip to
+        IBKR's servers, so it is the actual uplink proof."""
         socket_ok = self.ib.isConnected()
         data_ok = False
         if socket_ok:
             for attempt in range(2):  # retry once — a single transient timeout shouldn't read as "down"
                 try:
                     await asyncio.wait_for(self.ib.reqCurrentTimeAsync(), timeout=6)
+                    await asyncio.wait_for(self.ib.reqPositionsAsync(), timeout=8)
                     data_ok = True
                     break
                 except Exception:
@@ -1442,6 +1512,40 @@ class IBKREngine:
                     "→ Log out of IBKR on phone/web, then send /reconnect. If it persists, the\n"
                     "Gateway itself needs a restart (which needs your 2FA).")
         return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
+
+    def _cmd_deposit(self, arg=None):
+        """Owner-only (default-deny): record a capital flow so vol-scaling and P&L
+        treat it as a flow, not a return. Positive = deposit, negative = withdrawal.
+        Record it the day the money lands in the account."""
+        try:
+            amt = float(str(arg).replace(",", "").replace("$", "").strip())
+        except (TypeError, ValueError, AttributeError):
+            flows = self._load_flows()
+            total = sum(a for _, a in flows)
+            hist = "\n".join(f"  {d}  ${a:+,.0f}" for d, a in flows[-5:]) or "  (none)"
+            return ("Usage: <code>/deposit 10000</code> — record money added today\n"
+                    "<code>/deposit -5000</code> — record a withdrawal\n\n"
+                    f"<b>Recorded flows</b> (last 5):\n{hist}\n"
+                    f"<i>Total net: ${total:+,.0f} · initial capital ${IBKR_INITIAL_CAPITAL:,.0f}</i>")
+        if abs(amt) < 1 or abs(amt) > 10_000_000:
+            return f"⚠️ ${amt:,.0f} looks wrong — not recorded. Sanity range: $1 to $10M."
+        import json
+        from zoneinfo import ZoneInfo
+        flows = self._load_flows()
+        today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+        flows.append([today, amt])
+        CAPITAL_FLOWS_FILE.parent.mkdir(exist_ok=True)
+        with open(CAPITAL_FLOWS_FILE, "w") as f:
+            json.dump(flows, f)
+        if self.portfolio_peak > 0:
+            self.portfolio_peak += amt   # a flow is not a gain/drawdown (scaler currently inert)
+        kind = "Deposit" if amt >= 0 else "Withdrawal"
+        total = sum(a for _, a in flows)
+        return (f"✅ {kind} of ${abs(amt):,.0f} recorded for {today}.\n"
+                f"Vol-scaling and P&amp;L are flow-adjusted from here.\n"
+                f"The cash deploys automatically at the next rebalance "
+                f"(closed-loop sizing reads live NAV).\n"
+                f"<i>Total net flows: ${total:+,.0f} · initial ${IBKR_INITIAL_CAPITAL:,.0f}</i>")
 
     def _gateway_port_open(self):
         """True if the IB Gateway API port accepts a TCP connection (Gateway logged
