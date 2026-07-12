@@ -69,10 +69,12 @@ def main():
         if spec_ni is None or spec_seq is None:
             continue
         covered += 1
-        # extract every Compustat quarter with real filed dates
+        # extract every Compustat quarter AS-FIRST-REPORTED with ORIGINAL filed dates
+        # (pit=True: earliest-filed instance; latest-filed would serve restated
+        # comparatives with ~16-month availability lag — the v1/v2 A/B bug)
         for _, r in g.iterrows():
-            ni, f1 = spec_value(facts, spec_ni, r["datadate"], True)
-            se, f2 = spec_value(facts, spec_seq, r["datadate"], False)
+            ni, f1 = spec_value(facts, spec_ni, r["datadate"], True, pit=True)
+            se, f2 = spec_value(facts, spec_seq, r["datadate"], False, pit=True)
             if ni is None or se is None or not se:
                 continue
             filed = max(f1 or "1900-01-01", f2 or "1900-01-01")
@@ -81,8 +83,11 @@ def main():
     df = pd.DataFrame(rows)
     out = DATA / "edgar_pit_roe.parquet"
     df.to_parquet(out)
+    lag = (df.filed - df.period_end).dt.days
     print(f"\ncovered symbols: {covered} | rows: {len(df)} | "
           f"period range {df.period_end.min().date()} -> {df.period_end.max().date()}")
+    print(f"filed-lag days: median {lag.median():.0f} p10 {lag.quantile(.1):.0f} "
+          f"p90 {lag.quantile(.9):.0f}  (sane PIT ~30-45d median; ~488d = restatement bug)")
     print(f"-> {out}")
 
 

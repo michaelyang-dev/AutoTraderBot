@@ -119,8 +119,14 @@ def fetch_facts(cik):
     return None
 
 
-def series_for_concept(facts, concept):
-    """{period_end: (value_$MM, filed)} quarterly + annual buckets; latest-filed wins."""
+def series_for_concept(facts, concept, pit=False):
+    """{period_end: (value_$MM, filed)} quarterly + annual buckets; latest-filed wins.
+
+    pit=True: EARLIEST-filed wins (as-first-reported). Production wants the freshest
+    restated value (pit=False); historical point-in-time research needs the value and
+    filed date of the ORIGINAL filing — later 10-K/10-Q comparatives re-report old
+    quarters and inflate availability by ~16 months (bug found 2026-07-12).
+    """
     node = facts.get("facts", {}).get("us-gaap", {}).get(concept)
     if not node:
         return None, None
@@ -143,7 +149,7 @@ def series_for_concept(facts, concept):
         else:
             bucket = quarters
         prev = bucket.get(end)
-        if prev is None or filed >= prev[1]:
+        if prev is None or (filed < prev[1] if pit else filed >= prev[1]):
             bucket[end] = (val, filed)
     return quarters, annuals
 
@@ -163,9 +169,9 @@ def value_at(quarters, annuals, end, is_flow):
     return None, None
 
 
-def spec_value(facts, spec, end, is_flow):
+def spec_value(facts, spec, end, is_flow, pit=False):
     base, adds, subs = spec
-    q, a = series_for_concept(facts, base)
+    q, a = series_for_concept(facts, base, pit)
     if q is None:
         return None, None
     v, filed = value_at(q, a, end, is_flow)
@@ -175,12 +181,14 @@ def spec_value(facts, spec, end, is_flow):
     for sign, groups in ((1, adds), (-1, subs)):
         for alt_list in groups:
             for tag in alt_list:
-                q2, a2 = series_for_concept(facts, tag)
+                q2, a2 = series_for_concept(facts, tag, pit)
                 if q2 is None:
                     continue
-                v2, _ = value_at(q2, a2, end, is_flow)
+                v2, f2 = value_at(q2, a2, end, is_flow)
                 if v2 is not None:
                     total += sign * v2
+                    if pit and f2 is not None and (filed is None or f2 > filed):
+                        filed = f2   # PIT availability = when ALL components existed
                     break
     return total, filed
 
