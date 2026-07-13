@@ -462,7 +462,7 @@ class IBKREngine:
         summary = {}
         items = await self.ib.accountSummaryAsync()
         for item in items:
-            if item.tag in ["NetLiquidation", "TotalCashValue", "BuyingPower"]:
+            if item.tag in ["NetLiquidation", "TotalCashValue", "BuyingPower", "AvailableFunds"]:
                 summary[item.tag] = float(item.value)
         return summary
 
@@ -1657,7 +1657,8 @@ class IBKREngine:
         # this?" answered by IBKR itself, before /deploy go exists as an option.
         def _f(x):
             try:
-                return float(str(x).split()[0].replace(",", ""))
+                v = float(str(x).split()[0].replace(",", ""))
+                return v if abs(v) < 1e6 else 0.0   # IBKR "unset" sentinel = DBL_MAX
             except (ValueError, IndexError):
                 return 0.0
         ok, rejected, commissions, margin_chg = 0, [], 0.0, 0.0
@@ -1672,7 +1673,8 @@ class IBKREngine:
                     st = await asyncio.wait_for(self.ib.whatIfOrderAsync(c, o), timeout=10)
                     if st and (st.initMarginChange or st.maintMarginChange):
                         ok += 1
-                        commissions += _f(getattr(st, "commission", 0))
+                        comm = _f(getattr(st, "commission", 0)) or _f(getattr(st, "maxCommission", 0))
+                        commissions += comm
                         margin_chg += _f(st.initMarginChange)
                     else:
                         rejected.append(sym)
