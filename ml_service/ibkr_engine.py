@@ -1651,10 +1651,51 @@ class IBKREngine:
         tot = sum(d for _, _, d in plan)
         rows.append("─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 8)
         rows.append(f"{'ALL':<6}│{sum(q for _, q, _ in plan):>5} │{tot:>7,.0f}")
+
+        # IBKR PRE-VALIDATION: run every order through the real margin engine as a
+        # what-if (no execution, works with the market closed) — "will IBKR block
+        # this?" answered by IBKR itself, before /deploy go exists as an option.
+        def _f(x):
+            try:
+                return float(str(x).split()[0].replace(",", ""))
+            except (ValueError, IndexError):
+                return 0.0
+        ok, rejected, commissions, margin_chg = 0, [], 0.0, 0.0
+        try:
+            for sym, qty, _ in plan:
+                try:
+                    c = Stock(sym, "SMART", "USD")
+                    await self.ib.qualifyContractsAsync(c)
+                    st = await asyncio.wait_for(
+                        self.ib.whatIfOrderAsync(c, MarketOrder("BUY", qty)), timeout=10)
+                    if st and (st.initMarginChange or st.maintMarginChange):
+                        ok += 1
+                        commissions += _f(getattr(st, "commission", 0))
+                        margin_chg += _f(st.initMarginChange)
+                    else:
+                        rejected.append(sym)
+                except Exception:
+                    rejected.append(sym)
+            avail = 0.0
+            try:
+                summ = await self.get_account_summary()
+                avail = float(summ.get("AvailableFunds", 0) or 0)
+            except Exception:
+                pass
+            if rejected:
+                pre = (f"⚠️ IBKR pre-check: {ok}/{len(plan)} orders validated; "
+                       f"NOT validated: {', '.join(rejected[:6])} — investigate before go")
+            else:
+                pre = (f"✅ IBKR margin engine pre-validated all {ok} orders "
+                       f"(est. commissions ${commissions:,.2f}; margin impact "
+                       f"${margin_chg:,.0f} vs ${avail:,.0f} available)")
+        except Exception as e:
+            pre = f"⚠️ pre-check unavailable: {self._ib_err_text(e)}"
+
         return (head + f"Top-up ${deficit:,.0f} pro-rata into {len(plan)} of "
                 f"{len(s['items'])} held names (same weights, no new names):\n\n"
-                + self._tg_table(rows) +
-                "\n\n➡️ <b>send /deploy go</b> to execute (valid 10 min)"
+                + self._tg_table(rows) + f"\n\n{pre}"
+                + "\n\n➡️ <b>send /deploy go</b> to execute (valid 10 min)"
                 + ("" if self.is_market_open() else "\n<i>market closed — you can "
                    "preview now, execute during regular hours</i>"))
 
