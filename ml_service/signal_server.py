@@ -1,15 +1,18 @@
 """
-Signal Server (v9.6 — Multi-Strategy Factor Framework)
-======================================================
-FastAPI service that runs the v9.6 multi-strategy factor framework
-and serves trading signals to the JS trading bot.
+Signal Server (v12 — SP1500 Multi-Sleeve)
+=========================================
+FastAPI service that runs the v12 strategy and serves trading signals to BOTH
+live engines (IBKR Python + Alpaca JS), which fetch from here — so they never
+recompute signals and cannot disagree on what to hold.
 
-Strategies:
-  - S1 Adaptive Momentum (90% bull / 10% bear): consistency-weighted multi-timeframe
-  - S3 Sector Rotation (5% bull / 20% bear): relative-strength sector ETFs
-  - S5 Low-Vol Quality (5% bull / 70% bear): defensive quality stocks
-  - Dynamic regime blending via market breadth (% above 50d SMA)
-  - -15% stop-loss, 15% single-name cap, 35% sector cap
+Sleeves (bull-regime weights; PROD_WEIGHTS_BULL in multi_strategy_engine):
+  - S1 Momentum        50%: cross-sectional 12-1 momentum, top-5
+  - S7 Value           35%: quality-value composite, top-5
+  - S5 Low-Vol Quality 15%: defensive low-vol quality, top-5
+  - S3 Sector Rotation  0% bull / active in bear regime
+  - Dynamic regime blend via market breadth + the price-UMD crash detector
+    (shifts to PROD_WEIGHTS_BEAR / _CRASH). 15% single-name cap. NO sector cap.
+    Stops (40% trailing) live in the engines, not here.
 
 Endpoints
 ---------
@@ -213,7 +216,7 @@ def _is_market_hours() -> bool:
 
 async def _refresh() -> bool:
     try:
-        log.info("Refreshing v9.6 signals ...")
+        log.info("Refreshing v12 signals ...")
         t0 = time.perf_counter()
         raw = await asyncio.get_event_loop().run_in_executor(None, _fetch_bars_batch)
         # v12: pass None for enhanced_data — PIT backtest proved enhanced data
@@ -258,7 +261,7 @@ async def _refresh() -> bool:
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
         log.info(
-            "v9.6 signals refreshed in %.1fs — %d BUY, %d HOLD",
+            "v12 signals refreshed in %.1fs — %d BUY, %d HOLD",
             elapsed, len(buys), len(new_signals) - len(buys),
         )
         top8 = new_signals[:8]
@@ -287,9 +290,9 @@ async def _background_refresh_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — load enhanced data for v9.6 strategy
+    # Startup — load enhanced data for v12 strategy
     log.info("=" * 60)
-    log.info("  Signal Server v9.6 — Multi-Strategy Factor Framework")
+    log.info("  Signal Server v12 — SP1500 Multi-Sleeve")
     log.info("=" * 60)
 
     # Load enhanced data (price targets, DCF, financial growth, etc.)
@@ -361,8 +364,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title       = "Trading Signal Server",
-    description = "v9.6 Multi-Strategy Factor Framework signals for the auto-trader bot",
-    version     = "9.6.0",
+    description = "v12 SP1500 multi-sleeve signals for the auto-trader bot",
+    version     = "12.0.0",
     lifespan    = lifespan,
 )
 

@@ -2,24 +2,25 @@
 """
 IBKR Trading Engine
 =====================
-Executes the momentum long strategy via Interactive Brokers TWS API.
-Consumes signals from signal_server.py and manages positions on IBKR.
+Executes the v12 long strategy (combined momentum/value/low-vol sleeves) via the
+Interactive Brokers TWS API. Consumes signals from signal_server.py (which owns all
+selection AND regime logic) and manages positions on IBKR — this file is execution
+only, no signal/regime computation lives here.
 
 Architecture:
     signal_server.py (port 5001) → /signals endpoint
         ↓
     ibkr_engine.py (this file) → reads signals, executes trades
         ↓
-    IB Gateway (port 4002) → TWS API socket → IBKR servers
+    IB Gateway (port 4001) → TWS API socket → IBKR servers
 
 Features:
-    - Fetches top-8 BUY signals from signal server
-    - Rebalances portfolio to match signals
-    - 15% position cap
-    - 40% trailing stop per position (v12)
-    - Regime detection (SPY vs SMA200)
+    - Fetches all BUY signals (up to MAX_POSITIONS=30; ~22-25 held)
+    - Rebalances to match signals every REBAL_DAYS (20) trading days
+    - Closed-loop sizing to EFFECTIVE_LEVERAGE (1.49) × vol_scale; 15% position cap
+    - 40% trailing stop per position
     - Runs continuously during market hours
-    - Telegram alerts for trades
+    - Telegram command bot + trade alerts
 
 Usage:
     cd ml_service && python3 ibkr_engine.py
@@ -1052,7 +1053,10 @@ class IBKREngine:
             self.short_recent[ticker] = datetime.now()
 
     # ═══════════════════════════════════════════════════════════════
-    # TELEGRAM COMMAND BOT  (read-only — cannot place trades)
+    # TELEGRAM COMMAND BOT
+    #   reads: open to the allowlist (READONLY_COMMANDS)
+    #   actions (/deploy places live BUY orders, /reconnect, /deposit): OWNER-ONLY,
+    #   default-deny — anything not in READONLY_COMMANDS requires the owner chat id.
     # ═══════════════════════════════════════════════════════════════
     def _tg_send_raw(self, text, chat_id=None):
         """Send a reply to a Telegram chat (defaults to the primary chat). Tries HTML

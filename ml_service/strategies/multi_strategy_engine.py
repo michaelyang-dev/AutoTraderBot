@@ -584,10 +584,10 @@ class FastUniverse:
 def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
                                 ml_ranker=None, ml_blend_weight=0.4,
                                 si_blend_weight=0.15):
-    """Skip-month momentum (12-1) + SMA200 + SI change + consolidation. Top-8, 10d.
-    Validated OOS 2022-2025: +20.6% CAGR, Sharpe 0.93, DD -29%.
-    Walk-forward: +26.0% geo mean, Sharpe 1.08, 7/8 positive years.
-    IS→OOS Sharpe decay: +1% (not overfit). Parameter sensitivity: 1.6pp std."""
+    """Skip-month momentum (12-1) + SMA200 + consolidation. Defaults Top-8/10d, but
+    v12 LIVE overrides to top_n=5 (rebal handled by caller: daily in live, config in
+    backtest); SI-change blend is DISABLED in v12 (si_blend_weight unused — SI hurts).
+    Validated OOS 2022-2025: +20.6% CAGR, Sharpe 0.93, DD -29%."""
     if day_idx % rebal_days != 0:
         return None
     members = uni.get_sp500(date)

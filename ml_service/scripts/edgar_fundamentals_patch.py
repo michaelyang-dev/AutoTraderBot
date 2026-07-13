@@ -3,18 +3,25 @@ EDGAR XBRL FRESHNESS OVERLAY — per-FEATURE validation gate, Compustat-quality 
 
 v3 redesign (2026-07-11): instead of synthesizing whole Compustat rows (all-or-nothing on
 6 items -> 8% pass rate, blocked by COGS/debt conventions), validate and patch PER FEATURE.
-Each sleeve-consumed feature has its own input set and its own gate:
+Each feature has its own input set and its own gate:
 
-    roe            = 4*niq/seqq          inputs: niq, seqq            (~96% provable)
-    gross_margin   = (saleq-cogsq)/saleq inputs: saleq, cogsq
-    debt_to_equity = (dlttq+dlcq)/seqq   inputs: dlttq, dlcq, seqq
+    roe            = 4*niq/seqq          inputs: niq, seqq            (~95% provable, LIVE-eligible)
+    gross_margin   = (saleq-cogsq)/saleq inputs: saleq, cogsq         (research-only, excluded)
+    debt_to_equity = (dlttq+dlcq)/seqq   inputs: dlttq, dlcq, seqq    (research-only, excluded)
 
-GATE (unchanged in spirit): a feature for a symbol is patched ONLY if every one of ITS
-inputs, extracted from EDGAR companyfacts with a candidate tag-spec, REPRODUCES Compustat's
-own last overlapping quarter within 2% / $2M. All inputs of a feature must come from the
-SAME (newer) period end — no mixed-quarter features. Anything unproven stays stale-clean.
+LIVE-ELIGIBLE = ROE ONLY. gm/d2e are generated but the signal_builder loader EXCLUDES them
+from the live overlay: reconstruction only reaches ~35-40% coverage, and partial-coverage
+freshness injects cross-sectional rank inconsistency that HURTS (proven by 3 A/B tests
+2026-07-12). Only Compustat's full-coverage gm/d2e help; the assistant can't match that.
 
-Output: data/edgar_feature_overlay.json — INERT until signal_builder integration (flagged,
+GATE: a feature is patched ONLY if every one of ITS inputs, extracted from EDGAR
+companyfacts with a candidate tag-spec, reproduces Compustat within 2%/$2M on the
+most-recent NON-NULL-truth quarter(s) for that item (item_anchors — skips preliminary NaN
+latest quarters). GATE_DEPTH per item: roe inputs (niq/seqq) validate 1 quarter; cogs/debt
+validate 2 consecutive quarters. Period matching is NEAREST-within-20d (retail 4-4-5 fiscal
+ends). All inputs of a feature come from the SAME (newer) period end. Unproven stays stale.
+
+Output: data/edgar_feature_overlay.json — INERT until the signal_builder flip (flagged,
 shadow-tested). Formulas mirror signal_builder._fill_fundamentals verbatim, including
 dlcq/dlttq NaN->0. `rdq` = SEC filed date (point-in-time honest).
 
@@ -75,7 +82,8 @@ GATE_DEPTH = {"niq": 1, "seqq": 1, "saleq": 1, "cogsq": 2, "dlttq": 2, "dlcq": 2
 ZERO_OK = {"dlttq", "dlcq"}            # legitimately 0/absent (debt-free firms)
 REL_TOL, ABS_TOL = 0.02, 2.0           # 2% relative or $2M absolute ($MM units)
 
-# The sleeve-consumed features and EXACT live formulas (signal_builder._fill_fundamentals)
+# Candidate features + EXACT live formulas (signal_builder._fill_fundamentals). Only
+# `roe` is live-consumed; gm/d2e are generated for research and excluded by the loader.
 FEATURES = {
     "roe":            (["niq", "seqq"],
                        lambda v: 4 * v["niq"] / v["seqq"] if v.get("seqq") else None),
@@ -254,11 +262,12 @@ def main():
         overlap_end = row["datadate"]
         g = by_tic[sym]
 
-        # resolve each ITEM once. TWO-QUARTER GATE (2026-07-11 hardening): the spec must
-        # reproduce Compustat on the last two overlapping quarters (where a second
-        # exists) — protects against unstable/fluke tag mappings and mid-stream
-        # reclassifications. Anchors are the most recent NON-NULL-truth quarters per
-        # item (skips preliminary NaN latest quarters during the summer stale window).
+        # resolve each ITEM once. PER-ITEM GATE DEPTH (GATE_DEPTH): depth-2 items
+        # (cogs/debt) must reproduce Compustat on the last TWO quarters — protects
+        # against fluke tag mappings and mid-stream reclassifications; depth-1 items
+        # (roe inputs niq/seqq — the only live feature) use ONE quarter (2 adds nothing,
+        # measured). Anchors are the most recent NON-NULL-truth quarters per item
+        # (skips preliminary NaN latest quarters during the summer stale window).
         resolved = {}
         for item, candidates in CONCEPTS.items():
             depth = GATE_DEPTH.get(item, 1)

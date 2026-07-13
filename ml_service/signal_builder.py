@@ -1,8 +1,10 @@
 """
-V9.6 Signal Adapter
-===================
-Bridges the v9.6 multi-strategy factor framework with signal_server.
-Outputs signals in the same JSON format the trading bot expects.
+v12 Signal Adapter
+==================
+Live wrapper around the shared v12 selection core (strategies.multi_strategy_engine,
+also imported by main_production_backtest — so selection logic can't diverge). Blends
+the sleeves, applies the breadth/UMD regime, loads fundamentals, and outputs signals
+in the JSON format the engines expect.
 
 This module is imported by signal_server.py.
 """
@@ -42,12 +44,11 @@ _uni_cache_date = None
 
 
 def _load_si_change_data(uni):
-    """Load short interest change data and attach to universe for momentum scoring.
-    SI change (shorts covering) adds +3.5% OOS CAGR — structural mechanical edge.
-
-    Uses WRDS Compustat short interest (22K+ tickers, full SP1500 coverage).
-    Re-upload from WRDS quarterly. Data stays valid for months because the signal
-    uses cross-sectional RANKING which changes slowly.
+    """DEAD in v12 — NOT called (the only call site, ~line 556, is commented out; the
+    live path sets _si_change_rank = {}). The SI-change sleeve was DISABLED because it
+    HURTS returns by ~3pp (verified May 2026) — the opposite of the "+3.5% edge" this
+    once claimed. Kept only for research/backtest experimentation. Do NOT re-enable
+    without re-validating; see the v11->v12 note above (SI DISABLED).
     """
     DATA_DIR = Path(__file__).resolve().parent / "data"
     si_file = DATA_DIR / "wrds" / "compustat_short_interest.parquet"
@@ -503,9 +504,11 @@ def _load_edgar_overlay(data_dir):
 
 
 class _EdgarOverlayUniverse:
-    """Read-only proxy over the cached FastUniverse: overrides ONLY the three
-    fundamentals in get_feature_map with gate-validated EDGAR values; everything
-    else delegates. The cached universe itself is never mutated."""
+    """Read-only proxy over the cached FastUniverse: overrides the live-eligible
+    overlay feature(s) in get_feature_map with gate-validated EDGAR values (currently
+    ROE ONLY — gm/d2e are generated for research but EXCLUDED from live, proven to
+    hurt via partial-coverage rank inconsistency; see _load_edgar_overlay). Everything
+    else delegates; the cached universe itself is never mutated."""
 
     def __init__(self, uni, overlay):
         object.__setattr__(self, "_uni", uni)
@@ -526,12 +529,12 @@ class _EdgarOverlayUniverse:
 
 def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     """
-    Build signals using v9.6 multi-strategy framework.
+    Build signals using the v12 multi-sleeve strategy.
 
-    edgar_overlay=True applies the gate-validated EDGAR freshness overlay to the three
-    fundamentals (roe / gross_margin / debt_to_equity) via a non-mutating universe proxy.
-    Used by the signal server's SHADOW build; the live default stays False until the
-    shadow diff has been reviewed and the user flips it.
+    edgar_overlay=True applies the gate-validated EDGAR freshness overlay to the
+    live-eligible fundamental (ROE only; gm/d2e are research-only, excluded — proven
+    to hurt) via a non-mutating universe proxy. Used by the signal server's SHADOW
+    build; the live default stays False until the shadow diff is reviewed and flipped.
 
     Returns list of signal dicts in the same format as build_signals():
     [{symbol, probability, confidence, ml_mode, rank, is_top_5, signal}, ...]
