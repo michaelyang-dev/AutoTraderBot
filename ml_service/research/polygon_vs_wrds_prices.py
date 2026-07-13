@@ -47,17 +47,29 @@ def last_le(panel, date, s):
     return px.iloc[-1] if len(px) else None
 
 
-def main():
-    d = pickle.load(open(ML / "data/wrds/complete_sp1500_universe.pkl", "rb"))
-    wp = d["prices_df"]                       # WRDS/CRSP close, dates x symbols
+PANEL = ML / "data/polygon_close_panel.parquet"
+
+
+def fetch_mode():
+    """AWS (reliable Polygon connection): fetch current members, save close panel."""
     members = json.load(open(ML / "data/sp1500_members.json"))
     syms = sorted(set(members["sp500"] + members["sp400"] + members["sp600"]))
-    syms = [s for s in syms if s in wp.columns]
-    print(f"current members present in WRDS: {len(syms)}", flush=True)
-
+    print(f"fetching {len(syms)} current members from Polygon...", flush=True)
     bars = fetch_bars_batch_massive(syms, warmup_days=900)
     poly = {s: bars[s]["close"] for s in syms if bars.get(s) is not None and len(bars[s])}
     pp = pd.DataFrame(poly)
+    pp.to_parquet(PANEL)
+    print(f"saved Polygon panel: {pp.shape[1]} symbols, {pp.shape[0]} days "
+          f"({pp.index.min().date()} -> {pp.index.max().date()}) -> {PANEL}", flush=True)
+
+
+def main():
+    d = pickle.load(open(ML / "data/wrds/complete_sp1500_universe.pkl", "rb"))
+    wp = d["prices_df"]                       # WRDS/CRSP close, dates x symbols
+    pp = pd.read_parquet(PANEL)               # Polygon close, fetched on AWS
+    pp.index = pd.to_datetime(pp.index)
+    syms = [s for s in pp.columns if s in wp.columns]
+    print(f"current members in BOTH WRDS + Polygon: {len(syms)}", flush=True)
     print(f"Polygon panel: {pp.shape[1]} symbols, {pp.shape[0]} days "
           f"({pp.index.min().date()} -> {pp.index.max().date()})", flush=True)
 
@@ -96,4 +108,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "fetch":
+        fetch_mode()
+    else:
+        main()
