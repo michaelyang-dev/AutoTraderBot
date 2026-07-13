@@ -1535,16 +1535,17 @@ class IBKREngine:
                 net += side * f.execution.shares * f.execution.price
                 if getattr(f, "commissionReport", None) and f.commissionReport.commission:
                     net -= f.commissionReport.commission
-            flow = (s["cash"] - prevsnap["cash"]) - net
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+            # subtract flows ALREADY recorded since the snapshot (manual /deposit,
+            # weekend detection, prior restart) — only the UNEXPLAINED residue is new
+            already = self._flow_between(prevsnap.get("date", ""), today)
+            flow = (s["cash"] - prevsnap["cash"]) - net - already
             nav_ref = nav or s.get("nav") or 1
             if abs(flow) < max(400.0, 0.012 * nav_ref):
                 return
             import json
-            from zoneinfo import ZoneInfo
-            today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
             flows = self._load_flows()
-            if any(d == today for d, _ in flows):
-                return   # already recorded today (manual /deposit) — don't double-count
             flows.append([today, round(flow, 2)])
             CAPITAL_FLOWS_FILE.parent.mkdir(exist_ok=True)
             with open(CAPITAL_FLOWS_FILE, "w") as fh:
@@ -1782,10 +1783,17 @@ class IBKREngine:
         log.info(f"NAV: ${summary.get('NetLiquidation', 0):,.0f}")
         log.info(f"Cash: ${summary.get('TotalCashValue', 0):,.0f}")
         self.record_nav(summary.get("NetLiquidation", 0))  # seed NAV history for vol-scaling
-        # If the market is already closed and today's close snapshot isn't captured yet,
-        # seed it now so /portfolio and /pnl show it immediately (refreshed exactly at 4pm).
+        # If today's close already happened and its snapshot isn't captured, seed it so
+        # /portfolio and /pnl show it immediately (refreshed exactly at 4pm). ONLY on a
+        # trading day after 16:00 — a weekend/pre-market restart must NOT replace the
+        # last real close: a Sunday restart once clobbered Friday's snapshot with
+        # deposit-inflated values, which would have broken flow detection AND let the
+        # deposit read as a +7% return (2026-07-12).
         try:
-            if not self.is_market_open():
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("US/Eastern"))
+            if (not self.is_market_open() and self._is_trading_day()
+                    and now_et.hour >= 16):
                 snap = self._load_close_snapshot()
                 if not snap or snap.get("date") != datetime.now().date().isoformat():
                     await self._record_close_snapshot()
