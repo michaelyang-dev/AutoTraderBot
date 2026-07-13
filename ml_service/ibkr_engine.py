@@ -1666,16 +1666,20 @@ class IBKREngine:
                 try:
                     c = Stock(sym, "SMART", "USD")
                     await self.ib.qualifyContractsAsync(c)
-                    st = await asyncio.wait_for(
-                        self.ib.whatIfOrderAsync(c, MarketOrder("BUY", qty)), timeout=10)
+                    o = MarketOrder("BUY", qty)
+                    o.tif = "DAY"   # match buy_position exactly — without it IBKR emits
+                                    # 10349 ("TIF set to DAY by preset") and the whatIf dies
+                    st = await asyncio.wait_for(self.ib.whatIfOrderAsync(c, o), timeout=10)
                     if st and (st.initMarginChange or st.maintMarginChange):
                         ok += 1
                         commissions += _f(getattr(st, "commission", 0))
                         margin_chg += _f(st.initMarginChange)
                     else:
                         rejected.append(sym)
-                except Exception:
+                        log.warning(f"deploy whatIf {sym}: empty OrderState {st}")
+                except Exception as e:
                     rejected.append(sym)
+                    log.warning(f"deploy whatIf {sym} failed: {e}")
             avail = 0.0
             try:
                 summ = await self.get_account_summary()
