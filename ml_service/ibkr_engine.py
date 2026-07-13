@@ -455,6 +455,14 @@ class IBKREngine:
         accounts = self.ib.managedAccounts()
         self.account_id = accounts[0] if accounts else None
         self._uplink_lost = False   # fresh session — clear any stale Error-1100 banner
+        # Subscribe to IBKR's OWN daily P&L — the broker's authoritative number that
+        # ALREADY excludes deposits/withdrawals. This is what /pnl and /daily use, so
+        # deposits are handled automatically (no manual /deposit, no fragile detection).
+        try:
+            self._pnl_obj = self.ib.reqPnL(self.account_id)
+        except Exception as e:
+            self._pnl_obj = None
+            log.warning(f"reqPnL subscription failed: {e}")
         log.info(f"Connected. Account: {self.account_id}")
         send_telegram(f"🟢 IBKR Engine connected. Account: {self.account_id}")
 
@@ -1296,12 +1304,20 @@ class IBKREngine:
                 + self._tg_table(rows))
 
     def _ibkr_today_pnl(self, live_nav):
-        """CANONICAL IBKR 'today' P&L — used by BOTH /pnl and /daily so their headline
-        numbers agree. live_nav minus the last TRADING-day close (NAV history) minus
-        capital flows since then. On a Mon/holiday the last close is Fri, so it's
-        labeled 'Since Jul 10' rather than the misleading 'Today'. Returns
-        (pnl, label, base_nav, base_date) or (None, 'Today', None, None) if no history."""
+        """CANONICAL IBKR 'today' P&L — used by BOTH /pnl and /daily so they agree.
+        PREFERS IBKR's OWN dailyPnL (the reqPnL subscription) — the broker's
+        authoritative daily number that ALREADY EXCLUDES deposits/withdrawals, so
+        deposits are handled AUTOMATICALLY with no manual /deposit and no fragile
+        detection. Falls back to the NAV-history baseline only if the subscription
+        isn't populated yet. Returns (pnl, label, pct_base, base_date)."""
         from datetime import date as _date
+        dp = getattr(self, "_pnl_obj", None)
+        if dp is not None and dp.dailyPnL is not None and dp.dailyPnL == dp.dailyPnL \
+                and abs(dp.dailyPnL) < 1e8:
+            pnl = float(dp.dailyPnL)
+            pct_base = (live_nav - pnl) or live_nav   # start-of-session value (deposit-clean)
+            return pnl, "Today", pct_base, None
+        # ── fallback (reqPnL not ready): NAV-history baseline, flow-adjusted ──
         hist = self._load_nav_history()
         today = datetime.now().date().isoformat()
         prev = [p for p in hist if p[0] != today and p[1]]
