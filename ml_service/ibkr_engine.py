@@ -2092,8 +2092,35 @@ class IBKREngine:
                         summary = await self.get_account_summary()
                         nav = summary.get("NetLiquidation", 0)
                         hist = self._load_nav_history()
-                        prev = [p for p in hist if p[0] != today_str]      # yesterday's close BEFORE recording today
-                        await self._detect_capital_flow(nav)   # ledger current BEFORE marks are written
+                        prev = [p for p in hist if p[0] != today_str and p[1]]  # yesterday's close BEFORE recording today
+                        # ROBUST deposit auto-detect (dailyPnL residual): a deposit is the
+                        # NAV change NOT explained by IBKR's own market P&L. Trades are
+                        # NAV-neutral and captured in dailyPnL, so they leave ZERO residual
+                        # — immune to the misfire that broke the old fill-based detector.
+                        # Feeds the flow ledger so VOL-SCALING excludes deposits (P&L
+                        # display already uses dailyPnL directly). No manual /deposit needed.
+                        try:
+                            dp = getattr(self, "_pnl_obj", None)
+                            if dp is not None and dp.dailyPnL is not None and dp.dailyPnL == dp.dailyPnL and prev:
+                                from datetime import date as _date
+                                gap = (_date.fromisoformat(today_str) - _date.fromisoformat(prev[-1][0])).days
+                                # subtract flows ALREADY recorded since the last close (e.g. a
+                                # weekend deposit already on the ledger) so it isn't re-counted
+                                deposit = (nav - prev[-1][1]) - float(dp.dailyPnL) \
+                                    - self._flow_between(prev[-1][0], today_str)
+                                already = any(d == today_str for d, _ in self._load_flows())
+                                if gap <= 4 and not already and abs(deposit) >= max(400.0, 0.01 * nav):
+                                    import json as _json
+                                    fl = self._load_flows(); fl.append([today_str, round(deposit, 2)])
+                                    CAPITAL_FLOWS_FILE.parent.mkdir(exist_ok=True)
+                                    _json.dump(fl, open(CAPITAL_FLOWS_FILE, "w"))
+                                    _k = "deposit" if deposit > 0 else "withdrawal"
+                                    send_telegram(f"💵 Auto-detected a {_k} of ${abs(deposit):,.0f} "
+                                                  f"(NAV change minus IBKR market P&amp;L) — recorded for "
+                                                  f"vol-scaling. Wrong? /deposit {-round(deposit)}")
+                                    log.info(f"EOD deposit auto-detected: {deposit:+,.0f}")
+                        except Exception as _e:
+                            log.warning(f"deposit auto-detect skipped: {_e}")
                         self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
                         await self._record_close_snapshot()  # close mark for /portfolio + /pnl
                         n_pos = len(self.positions)
