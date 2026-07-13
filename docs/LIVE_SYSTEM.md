@@ -96,7 +96,13 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
   otherwise read +30% day and floor the scale for 40d), /pnl Today excludes flows and
   shows them on a 💵 row, All-time P&L measures vs initial+flows.
 - Deploy policy: new cash deploys automatically at the next scheduled rebalance
-  (closed-loop sizing reads live NAV). No mid-cycle auto-buys.
+  (closed-loop sizing reads live NAV). No mid-cycle AUTO-buys — but **/deploy**
+  (owner-only, preview then `/deploy go`, market-hours + healthy-uplink rails,
+  10-min plan expiry) tops up CURRENT holdings pro-rata to the SAME
+  EFFECTIVE_LEVERAGE x vol_scale x NAV target the rebalance uses: same names, same
+  relative weights (caps respected by construction), deploy-only (never sells),
+  rebalance schedule untouched. Validated on the live book 2026-07-12: deficit
+  $1,949 -> plan $1,935 (99%), projected exactly 1.490x, max position 14.6% < 15%.
 - Snapshot seed guard: startup seeds the close snapshot ONLY on a trading day after
   16:00 ET — a Sunday restart once replaced Friday's close with deposit-inflated
   values, which would have broken detection and faked a +7% return.
