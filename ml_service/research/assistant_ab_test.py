@@ -62,6 +62,17 @@ def main():
             pitwf_pe.setdefault(feat, {})[sym] = list(g.period_end)
         print("walk-forward PIT coverage:",
               {f: len(v) for f, v in pitwf_map.items()})
+    # ORACLE-CONSENSUS set (walk-forward gm/d2e kept only where it matches Compustat —
+    # the accurate subset a perfect second-source consensus would certify)
+    pitcons_path = os.path.join(ML, "data/edgar_consensus_features.parquet")
+    pitcons_map, pitcons_pe = {}, {}
+    if os.path.exists(pitcons_path):
+        pc = pd.read_parquet(pitcons_path).sort_values("filed")
+        for (feat, sym), g in pc.groupby(["feature", "symbol"]):
+            pitcons_map.setdefault(feat, {})[sym] = (list(g.filed), list(g.value))
+            pitcons_pe.setdefault(feat, {})[sym] = list(g.period_end)
+        print("oracle-consensus PIT coverage:",
+              {f: len(v) for f, v in pitcons_map.items()})
 
     bt = FastBacktester()
     bt.uni._fin_growth = {}; bt.uni._ev = {}; bt.uni._estimates = {}
@@ -191,6 +202,7 @@ def main():
 
     arm_bpp = make_bpp(pitf_map, pitf_pe)                       # anchor-once (drift-contaminated)
     arm_bwf = make_bpp(pitwf_map, pitwf_pe) if pitwf_map else None   # walk-forward (drift-fair)
+    arm_bcons = make_bpp(pitcons_map, pitcons_pe) if pitcons_map else None  # oracle-consensus
 
     arms = [("CEILING (ideal fresh)", orig),
             ("A: no assistant (uploads)", arm_a),
@@ -199,6 +211,8 @@ def main():
             ("B++: anchor-once gm/d2e", arm_bpp)]
     if arm_bwf is not None:
         arms.append(("B-WF: walkfwd gm/d2e", arm_bwf))
+    if arm_bcons is not None:
+        arms.append(("B-CONS: accurate gm/d2e", arm_bcons))
     print(f"{'arm':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
     for label, fn in arms:
         bt.uni.get_feature_map = fn
