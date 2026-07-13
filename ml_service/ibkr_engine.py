@@ -1229,7 +1229,7 @@ class IBKREngine:
                 f"{'Positions':<10}│ {len(s['items']):>11}",
                 f"{'Leverage':<10}│ {s['lev']:>10.2f}x"]))
         except Exception as e:
-            out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {_h.escape(str(e))}")
+            out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {self._ib_err_text(e)}")
         snap = self._load_close_snapshot()
         if snap:
             out.append(f"<i>at close {snap['date']}: ${snap['nav']:,.0f} · "
@@ -1315,7 +1315,7 @@ class IBKREngine:
             rows.append(f"{self._chip(since)} {'All-time':<10}│{since:>+9,.0f} │{since/invested*100:>+6.1f}%")
             out.append(f"<b>🟢 IBKR · ${session_nav:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
         except Exception as e:
-            out.append(f"<b>🟢 IBKR</b> — ⚠️ {_h.escape(str(e))}")
+            out.append(f"<b>🟢 IBKR</b> — ⚠️ {self._ib_err_text(e)}")
         # ── ALPACA: same regular-hours discipline. equity drifts after hours, so when the
         # market is closed we rebuild the 4pm close as cash + Σ qty×dailyBar.close from the
         # data API (positions' intraday fields reset in the evening and can't be trusted).
@@ -1389,7 +1389,7 @@ class IBKREngine:
             ib_entries = [(it.contract.symbol, it.position) for it in s["items"]]
             ib_nav = s["nav"]
         except Exception as e:
-            ib_err = _h.escape(str(e))
+            ib_err = self._ib_err_text(e)
         poss = self._alpaca_get("/v2/positions") or []
         al_entries = [(p["symbol"], float(p["qty"])) for p in poss]
         acct = self._alpaca_get("/v2/account") or {}
@@ -1513,27 +1513,93 @@ class IBKREngine:
                     "Gateway itself needs a restart (which needs your 2FA).")
         return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
 
+    async def _detect_capital_flow(self, nav=None):
+        """EOD cash reconciliation: today's cash minus yesterday's close cash, minus the
+        cash effect of EVERY fill today (incl. stops and manual trades — reqExecutions
+        is server-side, restart-proof), is a deposit/withdrawal. Auto-record it so
+        vol-scaling and P&L never mistake a flow for a return (deposits arrive in
+        tranches: $2.7K landed ~7/12, ~$17.3K due 7/20, possibly $8.7K Schwab later).
+        Threshold max($400, 1.2% NAV) sits above monthly margin interest (~$95) and
+        dividend postings, far below any real transfer. Errors -> skip silently; the
+        >5% NAV nudge in record_nav is the backstop."""
+        try:
+            prevsnap = self._load_close_snapshot()
+            if not prevsnap or prevsnap.get("cash") is None:
+                return
+            s = await self._ibkr_snapshot()
+            from ib_insync import ExecutionFilter
+            fills = await self.ib.reqExecutionsAsync(ExecutionFilter())  # today's, server-side
+            net = 0.0
+            for f in fills:
+                side = 1 if f.execution.side == "SLD" else -1
+                net += side * f.execution.shares * f.execution.price
+                if getattr(f, "commissionReport", None) and f.commissionReport.commission:
+                    net -= f.commissionReport.commission
+            flow = (s["cash"] - prevsnap["cash"]) - net
+            nav_ref = nav or s.get("nav") or 1
+            if abs(flow) < max(400.0, 0.012 * nav_ref):
+                return
+            import json
+            from zoneinfo import ZoneInfo
+            today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+            flows = self._load_flows()
+            if any(d == today for d, _ in flows):
+                return   # already recorded today (manual /deposit) — don't double-count
+            flows.append([today, round(flow, 2)])
+            CAPITAL_FLOWS_FILE.parent.mkdir(exist_ok=True)
+            with open(CAPITAL_FLOWS_FILE, "w") as fh:
+                json.dump(flows, fh)
+            kind = "deposit" if flow > 0 else "withdrawal"
+            send_telegram(f"💵 Detected a {kind} of ${abs(flow):,.0f} today (cash reconciliation "
+                          f"vs yesterday's close; all fills accounted). Auto-recorded — "
+                          f"vol-scaling and P&amp;L stay flow-adjusted.\n"
+                          f"Wrong? undo with /deposit {-round(flow)}")
+            log.info(f"Capital flow auto-detected and recorded: {flow:+,.0f}")
+        except Exception as e:
+            log.warning(f"capital-flow detection skipped: {e}")
+
+    def _ib_err_text(self, e):
+        """Friendly error for IBKR panels: right after /reconnect (or any Gateway blip)
+        the socket is briefly down while the engine re-handshakes — say so instead of a
+        raw exception. (2026-07-12: /daily said 'not connected' 30s after a successful
+        /reconnect and read as a hidden bug; it was the normal ~30s re-sync window.)"""
+        import html as _h
+        msg = _h.escape(str(e) or type(e).__name__)
+        if not (self.ib and self.ib.isConnected()):
+            return f"{msg} <i>(engine reconnecting — normal for ~30s after /reconnect; retry shortly)</i>"
+        return msg
+
     def _cmd_deposit(self, arg=None):
         """Owner-only (default-deny): record a capital flow so vol-scaling and P&L
         treat it as a flow, not a return. Positive = deposit, negative = withdrawal.
         Record it the day the money lands in the account."""
+        from zoneinfo import ZoneInfo
+        parts = str(arg).split() if arg else []
         try:
-            amt = float(str(arg).replace(",", "").replace("$", "").strip())
-        except (TypeError, ValueError, AttributeError):
+            amt = float(parts[0].replace(",", "").replace("$", "").strip())
+        except (IndexError, ValueError):
             flows = self._load_flows()
             total = sum(a for _, a in flows)
             hist = "\n".join(f"  {d}  ${a:+,.0f}" for d, a in flows[-5:]) or "  (none)"
             return ("Usage: <code>/deposit 10000</code> — record money added today\n"
-                    "<code>/deposit -5000</code> — record a withdrawal\n\n"
+                    "<code>/deposit -5000</code> — record a withdrawal\n"
+                    "<code>/deposit 2700 2026-07-10</code> — backdate to landing day\n\n"
                     f"<b>Recorded flows</b> (last 5):\n{hist}\n"
-                    f"<i>Total net: ${total:+,.0f} · initial capital ${IBKR_INITIAL_CAPITAL:,.0f}</i>")
+                    f"<i>Total net: ${total:+,.0f} · initial capital ${IBKR_INITIAL_CAPITAL:,.0f}</i>\n"
+                    f"<i>EOD auto-detection is on — manual entries are for corrections.</i>")
         if abs(amt) < 1 or abs(amt) > 10_000_000:
             return f"⚠️ ${amt:,.0f} looks wrong — not recorded. Sanity range: $1 to $10M."
         import json
-        from zoneinfo import ZoneInfo
-        flows = self._load_flows()
         today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+        if len(parts) > 1:
+            try:
+                from datetime import date as _date
+                today = _date.fromisoformat(parts[1]).isoformat()
+            except ValueError:
+                return f"⚠️ bad date '{parts[1]}' — use YYYY-MM-DD. Not recorded."
+        flows = self._load_flows()
         flows.append([today, amt])
+        flows.sort(key=lambda x: x[0])   # keep chronological for _flow_between windows
         CAPITAL_FLOWS_FILE.parent.mkdir(exist_ok=True)
         with open(CAPITAL_FLOWS_FILE, "w") as f:
             json.dump(flows, f)
@@ -1799,6 +1865,7 @@ class IBKREngine:
                         nav = summary.get("NetLiquidation", 0)
                         hist = self._load_nav_history()
                         prev = [p for p in hist if p[0] != today_str]      # yesterday's close BEFORE recording today
+                        await self._detect_capital_flow(nav)   # ledger current BEFORE marks are written
                         self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
                         await self._record_close_snapshot()  # close mark for /portfolio + /pnl
                         n_pos = len(self.positions)
