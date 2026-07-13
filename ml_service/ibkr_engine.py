@@ -1223,6 +1223,7 @@ class IBKREngine:
 
     async def _cmd_portfolio(self):
         import html as _h
+        await self._detect_capital_flow()   # keep the flows ledger current on any look
         mkt_open = self.is_market_open()
         out = [self._tg_header("📊 PORTFOLIO", mkt_open)]
         try:
@@ -1286,6 +1287,7 @@ class IBKREngine:
 
     async def _cmd_pnl(self):
         import html as _h
+        await self._detect_capital_flow()   # ledger a fresh deposit BEFORE the math
         mkt_open = self.is_market_open()
         out = [self._tg_header("💰 P&L", mkt_open)]
         today = datetime.now().date().isoformat()
@@ -1360,6 +1362,7 @@ class IBKREngine:
         Alpaca data API daily bars (correct during market hours AND after the close;
         also prices the IBKR book, which has no cheap per-symbol daily-change source)."""
         import html as _h
+        await self._detect_capital_flow()   # ledger a fresh deposit BEFORE the math
         mkt_open = self.is_market_open()
         out = [self._tg_header("📅 TODAY BY POSITION", mkt_open)]
 
@@ -1518,14 +1521,19 @@ class IBKREngine:
         return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
 
     async def _detect_capital_flow(self, nav=None):
-        """EOD cash reconciliation: today's cash minus yesterday's close cash, minus the
+        """Cash reconciliation: cash now minus the last close-snapshot cash, minus the
         cash effect of EVERY fill today (incl. stops and manual trades — reqExecutions
-        is server-side, restart-proof), is a deposit/withdrawal. Auto-record it so
-        vol-scaling and P&L never mistake a flow for a return (deposits arrive in
-        tranches: $2.7K landed ~7/12, ~$17.3K due 7/20, possibly $8.7K Schwab later).
-        Threshold max($400, 1.2% NAV) sits above monthly margin interest (~$95) and
-        dividend postings, far below any real transfer. Errors -> skip silently; the
-        >5% NAV nudge in record_nav is the backstop."""
+        is server-side, restart-proof), minus flows already recorded since that
+        snapshot. The unexplained residue is a deposit/withdrawal — recorded so
+        vol-scaling and P&L never mistake a flow for a return (tranches: $2.5K landed
+        7/12, ~$17.3K due 7/20, possibly $8.7K Schwab later).
+
+        Called from the 16:05 EOD path (authoritative) AND on demand by /pnl, /daily,
+        /portfolio and /deploy — a 9am deposit is ledgered the FIRST time anything
+        looks, not at 16:05. IDEMPOTENT by construction: the already-recorded netting
+        makes repeat calls a no-op. Threshold max($400, 1.2% NAV) sits above monthly
+        margin interest (~$95) and dividend postings, far below any real transfer.
+        Errors -> skip silently; the >5% NAV nudge in record_nav is the backstop."""
         try:
             prevsnap = self._load_close_snapshot()
             if not prevsnap or prevsnap.get("cash") is None:
@@ -1623,6 +1631,7 @@ class IBKREngine:
                     f"schedule are untouched; EOD reconciliation accounts the fills.")
         # preview
         try:
+            await self._detect_capital_flow()   # ledger any fresh deposit first
             s, vs, target_gross, deficit, plan = await self._deploy_plan()
         except Exception as e:
             return f"⚠️ can't build plan: {self._ib_err_text(e)}"
