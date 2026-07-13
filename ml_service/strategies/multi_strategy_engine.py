@@ -1,9 +1,15 @@
 """
-Multi-Strategy Engine v9.6 (SP500)
+Multi-Strategy Engine v12 (SP1500)
 ==================================
-Core strategy engine for the SP500 portfolio.
-Runs momentum (S1), sector rotation (S3), and low-vol quality (S5)
-with breadth-based regime blending. Pre-indexes all data for O(1) lookups.
+Core stock-SELECTION engine and the single source of truth for how stocks are
+ranked. Imported by BOTH the live signal builder (signal_builder.build_signals_v9)
+and the backtest (main_production_backtest), so selection logic is shared code and
+cannot diverge between them (the wrappers around it differ — see those files).
+
+Bull regime blends momentum (S1, 50%), value (S7, 35%), and low-vol quality
+(S5, 15%). Breadth + the price-UMD crash detector shift the blend toward the
+bear/crash weights (defensive tilt + sector rotation S3). Universe is the SP1500
+(sp1500_members.json); data is pre-indexed for O(1) lookups.
 
 Usage:
     cd ml_service && python3 -m strategies.multi_strategy_engine
