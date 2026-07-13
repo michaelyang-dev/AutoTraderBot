@@ -1201,7 +1201,8 @@ class IBKREngine:
             if is_owner:
                 base += ("\n\n<b>🔑 Owner</b>\n"
                          "/reconnect — force a clean engine/Gateway reconnect\n"
-                         "/deposit &lt;amt&gt; — record a deposit (negative = withdrawal)")
+                         "/deposit &lt;amt&gt; — record a deposit (negative = withdrawal)\n"
+                         "/deploy — put idle cash to work now (preview, then /deploy go)")
             return base
         handlers = {"portfolio": self._cmd_portfolio, "positions": self._cmd_positions,
                     "alpaca": self._cmd_alpaca, "pnl": self._cmd_pnl, "daily": self._cmd_daily,
@@ -1211,6 +1212,9 @@ class IBKREngine:
         if cmd == "deposit":
             arg = text.split(maxsplit=1)[1] if len(text.split()) > 1 else None
             return self._cmd_deposit(arg)
+        if cmd == "deploy":
+            arg = text.split(maxsplit=1)[1].strip().lower() if len(text.split()) > 1 else None
+            return await self._cmd_deploy(arg)
         h = handlers.get(cmd)
         if not h:
             return f"Unknown command: /{cmd}. Try /help"
@@ -1554,10 +1558,96 @@ class IBKREngine:
             send_telegram(f"💵 Detected a {kind} of ${abs(flow):,.0f} today (cash reconciliation "
                           f"vs yesterday's close; all fills accounted). Auto-recorded — "
                           f"vol-scaling and P&amp;L stay flow-adjusted.\n"
-                          f"Wrong? undo with /deposit {-round(flow)}")
+                          f"Wrong? undo with /deposit {-round(flow)}"
+                          + ("\n🚀 /deploy puts it to work now (else next rebalance)."
+                             if flow > 0 else ""))
             log.info(f"Capital flow auto-detected and recorded: {flow:+,.0f}")
         except Exception as e:
             log.warning(f"capital-flow detection skipped: {e}")
+
+    async def _deploy_plan(self):
+        """Pro-rata top-up plan: bring CURRENT holdings to the SAME closed-loop target
+        the rebalance uses (EFFECTIVE_LEVERAGE x vol_scale x NAV) without changing
+        names or relative weights — weights already respect every cap, and scaling
+        with NAV keeps them identical, so caps stay respected by construction.
+        DEPLOY-ONLY: never sells (derisking belongs to stops/rebalance/vol-scale).
+        Exists so deposited cash doesn't idle until the next rebalance (up to 20td)."""
+        s = await self._ibkr_snapshot()
+        nav, gross = s["nav"], s["gross"]
+        items = [it for it in s["items"] if it.position > 0 and it.marketValue > 0]
+        vs, _ = self.compute_vol_scale()
+        target_gross = nav * EFFECTIVE_LEVERAGE * vs
+        deficit = target_gross - gross
+        plan = []
+        if items and deficit > max(500.0, 0.02 * nav):
+            allocs = []
+            for it in items:
+                px = it.marketValue / it.position
+                want = deficit * (it.marketValue / gross)
+                q = int(want // px)
+                allocs.append([it.contract.symbol, q, px, want - q * px])
+            spent = sum(q * px for _, q, px, _ in allocs)
+            allocs.sort(key=lambda a: -a[3])   # largest rounding remainder first
+            for a in allocs:                   # spend the integer-share residue
+                if spent + a[2] <= deficit:
+                    a[1] += 1
+                    spent += a[2]
+            plan = [(sym, q, q * px) for sym, q, px, _ in allocs if q > 0]
+        return s, vs, target_gross, deficit, plan
+
+    async def _cmd_deploy(self, arg=None):
+        """Owner-only (default-deny). /deploy = preview the top-up; /deploy go =
+        execute it (market hours + healthy uplink only; plan expires in 10 min)."""
+        if arg == "go":
+            pend = getattr(self, "_pending_deploy", None)
+            if not pend or time.time() - pend[0] > 600:
+                return ("⚠️ No fresh deploy plan. Send /deploy first (plans expire "
+                        "after 10 min so you never execute stale prices).")
+            if not self.is_market_open():
+                return "⚠️ Market is closed — /deploy go only works during regular hours."
+            socket_ok, data_ok = await self._real_connectivity()
+            if not (socket_ok and data_ok):
+                return "🔴 IBKR uplink not healthy — fix the connection first (/connection)."
+            plan = pend[1]
+            self._pending_deploy = None
+            placed, est = 0, 0.0
+            for sym, qty, dollars in plan:
+                try:
+                    await self.buy_position(sym, qty, reason="deploy idle cash")
+                    placed += 1
+                    est += dollars
+                except Exception as e:
+                    log.error(f"deploy: BUY {qty} {sym} failed: {e}")
+            return (f"✅ Deploy executed: {placed}/{len(plan)} orders placed, "
+                    f"~${est:,.0f} put to work. Stops, vol-scaling and the rebalance "
+                    f"schedule are untouched; EOD reconciliation accounts the fills.")
+        # preview
+        try:
+            s, vs, target_gross, deficit, plan = await self._deploy_plan()
+        except Exception as e:
+            return f"⚠️ can't build plan: {self._ib_err_text(e)}"
+        lev_now = s["gross"] / s["nav"] if s["nav"] else 0
+        head = (self._tg_header("🚀 DEPLOY IDLE CASH", self.is_market_open()) +
+                f"Book {lev_now:.2f}x vs target {EFFECTIVE_LEVERAGE * vs:.2f}x "
+                f"<i>(vol-scale {vs:.2f})</i>\n")
+        if not plan:
+            left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+            why = ("gap under the $500 / 2% NAV floor" if deficit > 0
+                   else "book is at/above target")
+            return head + (f"Nothing to deploy — {why}.\n"
+                           f"<i>Next rebalance sizes everything in {left} trading days.</i>")
+        self._pending_deploy = (time.time(), plan)
+        rows = [f"{'SYM':<6}│{'+QTY':>5} │{'≈$':>7}", "─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 8]
+        rows += [f"{sym:<6}│{q:>5} │{d:>7,.0f}" for sym, q, d in plan[:25]]
+        tot = sum(d for _, _, d in plan)
+        rows.append("─" * 6 + "┼" + "─" * 6 + "┼" + "─" * 8)
+        rows.append(f"{'ALL':<6}│{sum(q for _, q, _ in plan):>5} │{tot:>7,.0f}")
+        return (head + f"Top-up ${deficit:,.0f} pro-rata into {len(plan)} of "
+                f"{len(s['items'])} held names (same weights, no new names):\n\n"
+                + self._tg_table(rows) +
+                "\n\n➡️ <b>send /deploy go</b> to execute (valid 10 min)"
+                + ("" if self.is_market_open() else "\n<i>market closed — you can "
+                   "preview now, execute during regular hours</i>"))
 
     def _ib_err_text(self, e):
         """Friendly error for IBKR panels: right after /reconnect (or any Gateway blip)
@@ -1610,8 +1700,8 @@ class IBKREngine:
         total = sum(a for _, a in flows)
         return (f"✅ {kind} of ${abs(amt):,.0f} recorded for {today}.\n"
                 f"Vol-scaling and P&amp;L are flow-adjusted from here.\n"
-                f"The cash deploys automatically at the next rebalance "
-                f"(closed-loop sizing reads live NAV).\n"
+                f"The cash deploys at the next rebalance automatically — "
+                f"or send /deploy to put it to work now.\n"
                 f"<i>Total net flows: ${total:+,.0f} · initial ${IBKR_INITIAL_CAPITAL:,.0f}</i>")
 
     def _gateway_port_open(self):
