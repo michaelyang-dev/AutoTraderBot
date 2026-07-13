@@ -91,16 +91,23 @@ def main():
             continue
         rows_list = [r for _, r in g.iterrows()]
         covered_feat = set()
+        # WALK-FORWARD but resolved PER YEAR (specs are stable within a year; drift is
+        # a multi-year phenomenon). For each quarter, use the spec resolved from the
+        # most recent prior quarter of a DIFFERENT year -> ~10 resolutions not ~40.
+        spec_cache = {}   # (item, year) -> spec
         for qi, r in enumerate(rows_list):
             if qi < 4:
-                continue  # need history to resolve a walk-forward spec
-            # anchor = quarters strictly BEFORE this one (what we'd have known)
+                continue
             prior = rows_list[:qi]
+            yr = r["datadate"].year
             for feat, (items, formula) in FEATURES.items():
                 vals, fileds, bad = {}, [], False
                 for item in items:
                     is_flow = item in ("niq", "saleq", "cogsq")
-                    spec = resolve_spec(facts, item, is_flow, prior)
+                    key = (item, yr)
+                    if key not in spec_cache:
+                        spec_cache[key] = resolve_spec(facts, item, is_flow, prior)
+                    spec = spec_cache[key]
                     if spec is None:
                         bad = True
                         break

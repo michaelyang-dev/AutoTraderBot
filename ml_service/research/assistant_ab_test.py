@@ -52,6 +52,16 @@ def main():
             pitf_pe.setdefault(feat, {})[sym] = list(g.period_end)
         print("full-feature PIT coverage:",
               {f: len(v) for f, v in pitf_map.items()})
+    # WALK-FORWARD set (per-year re-resolved specs — the drift-fair rebuild)
+    pitwf_path = os.path.join(ML, "data/edgar_walkforward_features.parquet")
+    pitwf_map, pitwf_pe = {}, {}
+    if os.path.exists(pitwf_path):
+        pw = pd.read_parquet(pitwf_path).sort_values("filed")
+        for (feat, sym), g in pw.groupby(["feature", "symbol"]):
+            pitwf_map.setdefault(feat, {})[sym] = (list(g.filed), list(g.value))
+            pitwf_pe.setdefault(feat, {})[sym] = list(g.period_end)
+        print("walk-forward PIT coverage:",
+              {f: len(v) for f, v in pitwf_map.items()})
 
     bt = FastBacktester()
     bt.uni._fin_growth = {}; bt.uni._ev = {}; bt.uni._estimates = {}
@@ -146,42 +156,51 @@ def main():
     # B++: ALL THREE features from REAL extractions (with their real 92-96% gm/d2e
     # accuracy), real filed dates, vintage guard — tests whether fresh-but-imperfect
     # beats stale-but-exact under the real upload calendar (the 99%-bar assumption).
-    def arm_bpp(date, feature, members=None):
-        if feature not in STALE_FEATS or feature not in pitf_map:
-            return arm_a(date, feature, members) if feature in STALE_FEATS \
-                else orig(date, feature, members)
-        base = arm_a(date, feature, members)
-        fm, fpe = pitf_map[feature], pitf_pe[feature]
-        d = pd.Timestamp(date)
-        i_u = bisect.bisect_right(uploads, d) - 1
-        u = uploads[max(i_u, 0)]
-        cutoff = d - pd.Timedelta(days=1)
-        syms = members if members is not None else list(base.keys())
-        for s in syms:
-            e = fm.get(s)
-            if not e:
-                continue
-            i = bisect.bisect_right(e[0], cutoff) - 1
-            if i < 0:
-                continue
-            uq = upload_q.get(s)
-            q_upload = None
-            if uq:
-                j = bisect.bisect_right(uq[0], u) - 1
-                if j >= 0:
-                    q_upload = uq[1][j]
-            if q_upload is None or fpe[s][i] > q_upload:
-                base[s] = e[1][i]
-        return base
+    def make_bpp(src_map, src_pe):
+        """Overlay ALL three features from a source (pitf=anchor-once, pitwf=walk-
+        forward) under the production vintage guard: use extraction only for quarters
+        newer than the last upload holds."""
+        def arm(date, feature, members=None):
+            if feature not in STALE_FEATS or feature not in src_map:
+                return arm_a(date, feature, members) if feature in STALE_FEATS \
+                    else orig(date, feature, members)
+            base = arm_a(date, feature, members)
+            fm, fpe = src_map[feature], src_pe[feature]
+            d = pd.Timestamp(date)
+            i_u = bisect.bisect_right(uploads, d) - 1
+            u = uploads[max(i_u, 0)]
+            cutoff = d - pd.Timedelta(days=1)
+            syms = members if members is not None else list(base.keys())
+            for s in syms:
+                e = fm.get(s)
+                if not e:
+                    continue
+                i = bisect.bisect_right(e[0], cutoff) - 1
+                if i < 0:
+                    continue
+                uq = upload_q.get(s)
+                q_upload = None
+                if uq:
+                    j = bisect.bisect_right(uq[0], u) - 1
+                    if j >= 0:
+                        q_upload = uq[1][j]
+                if q_upload is None or fpe[s][i] > q_upload:
+                    base[s] = e[1][i]
+            return base
+        return arm
 
+    arm_bpp = make_bpp(pitf_map, pitf_pe)                       # anchor-once (drift-contaminated)
+    arm_bwf = make_bpp(pitwf_map, pitwf_pe) if pitwf_map else None   # walk-forward (drift-fair)
+
+    arms = [("CEILING (ideal fresh)", orig),
+            ("A: no assistant (uploads)", arm_a),
+            ("B: assistant roe only", arm_b),
+            ("DIAG: B + fresh gm/d2e", arm_b_plus),
+            ("B++: anchor-once gm/d2e", arm_bpp)]
+    if arm_bwf is not None:
+        arms.append(("B-WF: walkfwd gm/d2e", arm_bwf))
     print(f"{'arm':<30}{'start':<13}{'CAGR':>8}{'Sharpe':>8}{'MaxDD':>8}", flush=True)
-    for label, fn in [("CEILING (ideal fresh)", orig),
-                      ("A: no assistant (uploads)", arm_a),
-                      ("B: assistant+guard", arm_b),
-                      ("A-summer: gap, no assist", arm_a_summer),
-                      ("B-summer: gap + assistant", arm_b_summer),
-                      ("DIAG: B + fresh gm/d2e", arm_b_plus),
-                      ("B++: real gm/d2e extracts", arm_bpp)]:
+    for label, fn in arms:
         bt.uni.get_feature_map = fn
         for st in STARTS:
             m = bt.run(st, END, cfg)
