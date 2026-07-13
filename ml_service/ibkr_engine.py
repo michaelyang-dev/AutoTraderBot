@@ -1366,17 +1366,21 @@ class IBKREngine:
             return dp, None, "Today", pct_base
         if close_pnl is not None:
             return close_pnl, dp - close_pnl, "Today", pct_base
-        # No frozen close for today: pre-market (morning) vs after-close-without-a-recorded
-        # -close_pnl (only until the 4pm EOD starts recording it) vs weekend.
+        # No frozen close_pnl for today (only until the 4pm EOD starts recording it).
         from zoneinfo import ZoneInfo
         hr = datetime.now(ZoneInfo("US/Eastern")).hour
+        today_snap = snap.get("nav") if (snap and snap.get("date") == today) else None
         if not self._is_trading_day():
-            lbl = "Overnight"
-        elif hr < 12:
-            lbl = "Pre-mkt"       # trading day, before the open
-        else:
-            lbl = "Today"         # trading day, after the close (whole-day dailyPnL, no split yet)
-        return dp, None, lbl, pct_base
+            return dp, None, "Overnight", pct_base
+        if hr < 12:
+            return dp, None, "Pre-mkt", pct_base        # morning, before the open
+        if today_snap:
+            # evening after close: derive after-hrs from the NAV drift since the 4pm
+            # close snapshot (same method Alpaca uses); regular = dp - after_hrs so
+            # regular + after_hrs == dailyPnL. Clean frozen split takes over tomorrow.
+            ah = nav - today_snap
+            return dp - ah, ah, "Today", pct_base
+        return dp, None, "Today", pct_base              # no snapshot -> whole-day, no split
 
     async def _cmd_pnl(self):
         import html as _h
