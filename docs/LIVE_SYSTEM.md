@@ -83,6 +83,28 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
   PIT trap for future research: historical EDGAR reconstruction MUST use earliest-filed
   instances (`spec_value(..., pit=True)`) — latest-filed serves restated comparatives
   with ~16-month availability lag and fakes a negative A/B (v1 bug, fixed).
+  **B++ outcome test (v4): real gm/d2e extractions at achievable accuracy (92-96%,
+  334/50 symbols) = same CAGR as roe-only but MaxDD -37.6% vs -30.4% — the 99% bar is
+  PROVEN by outcomes, not assumed. gm/d2e stay excluded.**
+
+## Capital flows (deposits/withdrawals) — 2026-07-12
+- `data/ibkr_capital_flows.json` ledger; **/deposit <amt> [date]** (owner-only) records
+  manually; **EOD auto-detect** reconciles cash vs yesterday's close snapshot with every
+  fill accounted (reqExecutions, restart-proof) and auto-records any unexplained
+  residue >= max($400, 1.2% NAV) with a Telegram announcement (+undo hint).
+- Consumers: vol-scaling returns are FLOW-ADJUSTED (a $10K deposit on $33K NAV would
+  otherwise read +30% day and floor the scale for 40d), /pnl Today excludes flows and
+  shows them on a 💵 row, All-time P&L measures vs initial+flows.
+- Deploy policy: new cash deploys automatically at the next scheduled rebalance
+  (closed-loop sizing reads live NAV). No mid-cycle auto-buys.
+- Snapshot seed guard: startup seeds the close snapshot ONLY on a trading day after
+  16:00 ET — a Sunday restart once replaced Friday's close with deposit-inflated
+  values, which would have broken detection and faked a +7% return.
+- First real flow: $2,458 credited ~2026-07-12 (IBKR partial fill of a $20K request),
+  measured via cash reconciliation, ledgered. Uplink honesty (same session): Error
+  1100/1102 now push Telegram alerts; connectivity probe requires a positions
+  round-trip (reqCurrentTime is answered locally by the Gateway and can lie); all
+  panels carry a red banner while the uplink is down.
 
 ## Canonical expectation numbers (2026-07-10 re-baseline)
 
