@@ -32,7 +32,7 @@ const RISK = {
   STOP_LOSS_PCT: -0.40,               // v12: -40% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // UNUSED — take-profit DELETED for parity (see `else if (false)` below). Backtest & IBKR have none.
   MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
-  MAX_CASH_DEPLOY_PCT: 1.60,          // ~1.49x effective — tuned to match IBKR. This $1.3M account has negligible integer-share rounding, so 1.6 deploys ~1.47-1.49x, matching IBKR's 1.8-setting/1.49x on its $30K account. Different config number, same effective leverage (account-size difference). Do NOT raise to 1.8 (would over-leverage to ~1.76x).
+  MAX_CASH_DEPLOY_PCT: 1.49,          // = IBKR EFFECTIVE_LEVERAGE. Each position gets (prob/ΣProb)*this*volScale, so ΣtargetPct = this*volScale when the 15% cap isn't binding (it rarely is — top pos ~14%). With fractional shares there is ~no rounding drag, so this constant IS the deployed leverage. FIXED 2026-07-12: was 1.60 on a false "caps drag it to 1.49" premise — live proof was gross/equity=1.55x with top pos 13.8% (cap NOT binding), i.e. it deployed ~1.60x, over-levering the paper mirror ~7% vs IBKR's closed-loop 1.49x.
   TRAILING_STOP_PCT: 0.40,            // v12: -40% trailing stop (wider = fewer whipsaws, better CAGR)
   USE_TRAILING_STOP: true,            // v12: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
@@ -224,7 +224,7 @@ const TRADE_CYCLE_MS = 60000;
 // ── Volatility Targeting ──
 // Vol-scaling overlay (Phase 1) — mirrors the IBKR engine. Scales effective
 // leverage DOWN when realized account-NAV vol exceeds the target (de-risk only).
-// Target is the LEVERAGED account vol = 1.46x (effective) * 0.15 (1x target) = ~0.22.
+// Target is the LEVERAGED account vol = 1.49x (effective) * 0.15 (1x target) = 0.2235.
 // currentVolScale is applied to MAX_CASH_DEPLOY_PCT in the buy sizing below.
 // Vol computed from DAILY equity closes (Alpaca portfolio history), once per ET day.
 const VOL_TARGET = 0.2235;  // annualized account-NAV vol target (= 1.49 x 15% 1x — matches IBKR exactly)
@@ -2040,7 +2040,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
       let cycleCash = account.cash;
       let cyclePortfolioValue = account.portfolio_value;
 
-      // Multi-layer circuit breaker (daily 4%, weekly 8%, peak 20%)
+      // Circuit breakers DELETED 2026-07-11 (parity: IBKR/backtest have none).
+      // checkCircuitBreakers only updates peak tracking now and always returns safe,
+      // so this halt branch is dead — kept only so peak state stays maintained.
       const cbResult = checkCircuitBreakers(cyclePortfolioValue);
       if (!cbResult.safe) {
         skipNewBuys = true;
