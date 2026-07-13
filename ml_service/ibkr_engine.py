@@ -246,7 +246,10 @@ class IBKREngine:
 
     def _flow_between(self, d0, d1):
         """Net flow with d0 < date <= d1 (ISO strings) — catches flows recorded on
-        weekends/holidays between two NAV marks."""
+        weekends/holidays between two NAV marks. d0=None (dailyPnL path has no base
+        date) -> 0.0, defensively (None < str would TypeError)."""
+        if d0 is None or d1 is None:
+            return 0.0
         return sum(a for d, a in self._load_flows() if d0 < d <= d1)
 
     def _is_trading_day(self, d=None):
@@ -1339,36 +1342,30 @@ class IBKREngine:
         mkt_open = self.is_market_open()
         out = [self._tg_header("💰 P&L", mkt_open)]
         today = datetime.now().date().isoformat()
-        # ── IBKR: "Today" counts REGULAR HOURS only. Live NAV while the market is open;
-        # frozen 4pm close after the bell (after-hours drift shown on its own line).
+        # ── IBKR: "Today" = IBKR's OWN dailyPnL (authoritative, deposit-excluded).
+        # Market open -> today's P&L; closed -> includes after-hours (dailyPnL marks
+        # continuously, so NO separate after-hours line — it's already in the number).
         try:
             s = await self._ibkr_snapshot()
             live_nav = s["nav"]
-            snap = self._load_close_snapshot()
-            hist = self._load_nav_history()
-            prev = [p for p in hist if p[0] != today]
-            have_close = bool(snap and snap.get("date") == today and snap.get("nav"))
-            session_nav = live_nav if (mkt_open or not have_close) else snap["nav"]
-            tag = "live" if mkt_open else ("4pm close" if have_close else "pre-mkt")
             rows = []
-            d, lbl, pct_base, base_date = self._ibkr_today_pnl(session_nav)
+            d, lbl, pct_base, base_date = self._ibkr_today_pnl(live_nav)
+            tag = "live" if mkt_open else "incl. after-hrs"
             if d is not None:
-                if not mkt_open and not have_close:
-                    lbl = "Overnight"
                 rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/pct_base*100:>+6.2f}%")
-                flow = self._flow_between(base_date, today)
-                if flow:
-                    rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
+                # Flow line only on the NAV-history fallback path; the dailyPnL path
+                # (base_date is None) already excludes deposits, so none is shown.
+                if base_date is not None:
+                    flow = self._flow_between(base_date, today)
+                    if flow:
+                        rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
             else:
                 rows.append("Today      n/a (building history)")
-            if not mkt_open and have_close:
-                ah = live_nav - snap["nav"]
-                rows.append(f"{self._chip(ah)} {'After-hrs':<10}│{ah:>+9,.0f} │{ah/snap['nav']*100:>+6.2f}%")
             rows.append(f"{self._chip(s['upl'])} {'Open P&L':<10}│{s['upl']:>+9,.0f} │")
             invested = IBKR_INITIAL_CAPITAL + sum(a for _, a in self._load_flows())
             since = live_nav - invested
             rows.append(f"{self._chip(since)} {'All-time':<10}│{since:>+9,.0f} │{since/invested*100:>+6.1f}%")
-            out.append(f"<b>🟢 IBKR · ${session_nav:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
+            out.append(f"<b>🟢 IBKR · ${live_nav:,.0f}</b> <i>{tag}</i>\n" + self._tg_table(rows))
         except Exception as e:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {self._ib_err_text(e)}")
         # ── ALPACA: same regular-hours discipline. equity drifts after hours, so when the
