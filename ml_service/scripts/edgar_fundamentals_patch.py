@@ -155,13 +155,22 @@ def series_for_concept(facts, concept, pit=False):
 
 
 def value_at(quarters, annuals, end, is_flow):
-    """Quarter value at `end` (±5d); fiscal-Q4 flows derived as FY - 3 sibling quarters."""
+    """Quarter value NEAREST `end` within 20d; fiscal-Q4 flows derived as FY - 3
+    sibling quarters. Retail 4-4-5 fiscal ends sit up to ~2 weeks off Compustat's
+    month-end datadate (e.g. AZO quarter ends 2/14 vs Compustat 2/28) — the old ±5d
+    window silently dropped them. Duration was already validated to 80-100d in
+    series_for_concept, so nearest-within-20 cannot match a wrong-length period, and
+    the caller still gates every value against Compustat."""
+    best = None
     for d, (v, filed) in (quarters or {}).items():
-        if abs((d - end).days) <= 5:
-            return v, filed
+        dd = abs((d - end).days)
+        if dd <= 20 and (best is None or dd < best[0]):
+            best = (dd, v, filed)
+    if best is not None:
+        return best[1], best[2]
     if is_flow and annuals:
         for d, (fy_val, filed) in annuals.items():
-            if abs((d - end).days) <= 5:
+            if abs((d - end).days) <= 20:
                 sibs = [v for q, (v, _) in quarters.items()
                         if pd.Timedelta(days=50) < (d - q) < pd.Timedelta(days=330)]
                 if len(sibs) == 3:
@@ -201,13 +210,28 @@ def close_enough(edgar, compustat):
     return abs(edgar - compustat) <= max(ABS_TOL, REL_TOL * abs(compustat))
 
 
+def item_anchors(g, item, depth):
+    """Most recent `depth` quarters with NON-NULL Compustat truth for `item`, newest
+    first. The latest WRDS quarter is often preliminary (NaN fields) during the summer
+    stale window — anchoring the gate there fails even when earlier quarters would
+    validate (measured: 21 symbols have NaN seqq at the latest quarter; recovers 19).
+    Debt items count NaN as a legitimate 0."""
+    rows = []
+    for _, r in g.iloc[::-1].iterrows():
+        if pd.notna(r.get(item)) or item in ZERO_OK:
+            rows.append(r)
+        if len(rows) >= depth:
+            break
+    return rows
+
+
 def main():
     members = json.load(open(DATA / "sp1500_members.json"))
     syms = sorted(set(members["sp500"] + members["sp400"] + members["sp600"]))
     fund = pd.read_parquet(FUND)
     fund["datadate"] = pd.to_datetime(fund["datadate"])
     last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
-    two_rows = fund.sort_values("datadate").groupby("tic").tail(2)  # two-quarter validation anchor
+    by_tic = {t: g.sort_values("datadate") for t, g in fund.groupby("tic")}
     cik_map = load_cik_map()
 
     stats = {f: {"validated": 0, "patched": 0, "failed": 0} for f in FEATURES}
@@ -228,24 +252,27 @@ def main():
             continue
         row = last_rows.loc[sym]
         overlap_end = row["datadate"]
-        prior = two_rows[(two_rows.tic == sym) & (two_rows.datadate < overlap_end)]
-        prior_row = prior.iloc[-1] if len(prior) else None
+        g = by_tic[sym]
 
         # resolve each ITEM once. TWO-QUARTER GATE (2026-07-11 hardening): the spec must
-        # reproduce Compustat on the LAST TWO overlapping quarters (where a second
+        # reproduce Compustat on the last two overlapping quarters (where a second
         # exists) — protects against unstable/fluke tag mappings and mid-stream
-        # reclassifications; a method that only matches once is not trusted.
+        # reclassifications. Anchors are the most recent NON-NULL-truth quarters per
+        # item (skips preliminary NaN latest quarters during the summer stale window).
         resolved = {}
         for item, candidates in CONCEPTS.items():
-            cs_val = row[item]
+            depth = GATE_DEPTH.get(item, 1)
+            anchors = item_anchors(g, item, depth)
+            a0 = anchors[0] if anchors else row
+            cs_val = a0[item]
             hit = None
             for spec in candidates:
-                v, _ = spec_value(facts, spec, overlap_end, item in FLOWS)
+                v, _ = spec_value(facts, spec, a0["datadate"], item in FLOWS)
                 if not close_enough(v, cs_val):
                     continue
-                if GATE_DEPTH.get(item, 1) >= 2 and prior_row is not None:
-                    v2, _ = spec_value(facts, spec, prior_row["datadate"], item in FLOWS)
-                    if not close_enough(v2, prior_row[item]):
+                if depth >= 2 and len(anchors) >= 2:
+                    v2, _ = spec_value(facts, spec, anchors[1]["datadate"], item in FLOWS)
+                    if not close_enough(v2, anchors[1][item]):
                         continue
                 hit = spec
                 break

@@ -26,15 +26,20 @@ ML = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ML))
 sys.path.insert(0, str(ML / "scripts"))
 from edgar_fundamentals_patch import (  # noqa: E402
-    CONCEPTS, DATA, FUND, GATE_DEPTH, close_enough, fetch_facts, load_cik_map,
-    spec_value)
+    CONCEPTS, DATA, FUND, GATE_DEPTH, close_enough, fetch_facts, item_anchors,
+    load_cik_map, spec_value)
 
 
-def resolve_spec(facts, item, is_flow, anchor_rows):
+def resolve_spec(facts, item, is_flow, g):
+    """Uses the production non-null-truth anchors (skips preliminary NaN latest
+    quarters) + the widened ±20d value_at — measures the deployed fix."""
     depth = GATE_DEPTH.get(item, 1)
+    anchors = item_anchors(g, item, depth)
+    if len(anchors) < depth:
+        return None
     for spec in CONCEPTS[item]:
         ok = True
-        for r in anchor_rows[:depth]:
+        for r in anchors:
             v, _ = spec_value(facts, spec, r["datadate"], is_flow)
             truth = r.get(item)
             if item in ("dlcq", "dlttq") and pd.isna(truth):
@@ -73,9 +78,8 @@ def main():
         if facts is None:
             roe_fail["no_facts"].append(sym)
             continue
-        anchor = [g.iloc[-1], g.iloc[-2]]
-        spec_ni = resolve_spec(facts, "niq", True, anchor)
-        spec_se = resolve_spec(facts, "seqq", False, anchor)
+        spec_ni = resolve_spec(facts, "niq", True, g)
+        spec_se = resolve_spec(facts, "seqq", False, g)
         if spec_ni is None:
             roe_fail["spec_fail_niq"].append(sym)
             gaap = facts.get("facts", {}).get("us-gaap", {})
@@ -86,8 +90,8 @@ def main():
             roe_fail["spec_fail_seqq"].append(sym)
 
         # drift probe on gm (saleq/cogsq gate-passers)
-        spec_sa = resolve_spec(facts, "saleq", True, anchor)
-        spec_co = resolve_spec(facts, "cogsq", True, anchor)
+        spec_sa = resolve_spec(facts, "saleq", True, g)
+        spec_co = resolve_spec(facts, "cogsq", True, g)
         if spec_sa and spec_co and len(g) >= 10:
             drift["n"] += 1
             # anchor quarter reproduction (already known ok) vs 8 quarters back
