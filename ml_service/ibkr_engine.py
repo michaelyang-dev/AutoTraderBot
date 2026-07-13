@@ -329,10 +329,17 @@ class IBKREngine:
             today = datetime.now().date().isoformat()           # server runs in ET
             hist = self._load_nav_history()
             close_nav = hist[-1][1] if (hist and hist[-1][0] == today and hist[-1][1]) else s["nav"]
+            # Freeze IBKR's dailyPnL at the close = the REGULAR-SESSION P&L. /pnl and
+            # /daily subtract this from live dailyPnL to show after-hours separately
+            # while still matching each other. Deposit-clean (dailyPnL excludes flows).
+            _dp = getattr(self, "_pnl_obj", None)
+            close_pnl = (float(_dp.dailyPnL) if (_dp is not None and _dp.dailyPnL is not None
+                         and _dp.dailyPnL == _dp.dailyPnL and abs(_dp.dailyPnL) < 1e8) else None)
             snap = {
                 "date": today,
                 "captured": datetime.now().strftime("%H:%M ET"),
                 "nav": close_nav, "cash": s["cash"], "gross": s["gross"], "upl": s["upl"],
+                "close_pnl": close_pnl,
                 "lev": (s["gross"] / close_nav if close_nav else 0),
                 "positions": sorted(
                     [{"symbol": it.contract.symbol, "qty": it.position,
@@ -1336,31 +1343,62 @@ class IBKREngine:
         label = "Today" if gap <= 1 else f"Since {_date.fromisoformat(base_date).strftime('%b %-d')}"
         return pnl, label, pct_base, base_date
 
+    def _ibkr_daily_split(self, nav):
+        """Split IBKR's day into REGULAR-SESSION + AFTER-HOURS (or PRE-MARKET) from the
+        live dailyPnL and the 4pm-frozen close_pnl. BOTH /pnl and /daily use this, so
+        their 'Today' number matches AND the after-hours/pre-market move shows on its
+        own line. Deposit-clean (dailyPnL excludes deposits). Returns
+        (regular_pnl, after_hrs_pnl, label, pct_base):
+          - market OPEN           -> (live dailyPnL, None, 'Today', start-of-day value)
+          - CLOSED, today's close -> (frozen close_pnl, live-frozen, 'Today', ...)
+          - CLOSED, new session   -> (live dailyPnL, None, 'Pre-mkt'/'Overnight', ...)
+        (None, None, None, None) if dailyPnL isn't ready (caller falls back)."""
+        dpo = getattr(self, "_pnl_obj", None)
+        if dpo is None or dpo.dailyPnL is None or dpo.dailyPnL != dpo.dailyPnL \
+                or abs(dpo.dailyPnL) >= 1e8:
+            return None, None, None, None
+        dp = float(dpo.dailyPnL)
+        pct_base = (nav - dp) or nav   # account value at the start of the session
+        today = datetime.now().date().isoformat()
+        snap = self._load_close_snapshot()
+        close_pnl = snap.get("close_pnl") if (snap and snap.get("date") == today) else None
+        if self.is_market_open():
+            return dp, None, "Today", pct_base
+        if close_pnl is not None:
+            return close_pnl, dp - close_pnl, "Today", pct_base
+        return dp, None, ("Pre-mkt" if self._is_trading_day() else "Overnight"), pct_base
+
     async def _cmd_pnl(self):
         import html as _h
         await self._detect_capital_flow()   # ledger a fresh deposit BEFORE the math
         mkt_open = self.is_market_open()
         out = [self._tg_header("💰 P&L", mkt_open)]
         today = datetime.now().date().isoformat()
-        # ── IBKR: "Today" = IBKR's OWN dailyPnL (authoritative, deposit-excluded).
-        # Market open -> today's P&L; closed -> includes after-hours (dailyPnL marks
-        # continuously, so NO separate after-hours line — it's already in the number).
+        # ── IBKR: REGULAR-SESSION "Today" (IBKR dailyPnL, deposit-excluded) + a separate
+        # After-hours / Pre-mkt line via the 4pm-frozen close_pnl. Same split /daily uses.
         try:
             s = await self._ibkr_snapshot()
             live_nav = s["nav"]
             rows = []
-            d, lbl, pct_base, base_date = self._ibkr_today_pnl(live_nav)
-            tag = "live" if mkt_open else "incl. after-hrs"
-            if d is not None:
-                rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/pct_base*100:>+6.2f}%")
-                # Flow line only on the NAV-history fallback path; the dailyPnL path
-                # (base_date is None) already excludes deposits, so none is shown.
-                if base_date is not None:
-                    flow = self._flow_between(base_date, today)
-                    if flow:
-                        rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
+            reg, ah, lbl, pct_base = self._ibkr_daily_split(live_nav)
+            if reg is not None:
+                tag = "live" if mkt_open else ("close + after-hrs" if ah is not None else lbl.lower())
+                rows.append(f"{self._chip(reg)} {lbl:<10}│{reg:>+9,.0f} │{reg/pct_base*100:>+6.2f}%")
+                if ah is not None:
+                    ah_base = (pct_base + reg) or live_nav   # close NAV = start of after-hours
+                    rows.append(f"{self._chip(ah)} {'After-hrs':<10}│{ah:>+9,.0f} │{ah/ah_base*100:>+6.2f}%")
             else:
-                rows.append("Today      n/a (building history)")
+                # fallback: NAV-history baseline (reqPnL not ready yet)
+                tag = "live" if mkt_open else "closed"
+                d, lbl, pb, base_date = self._ibkr_today_pnl(live_nav)
+                if d is not None:
+                    rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/pb*100:>+6.2f}%")
+                    if base_date is not None:
+                        flow = self._flow_between(base_date, today)
+                        if flow:
+                            rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
+                else:
+                    rows.append("Today      n/a (building history)")
             rows.append(f"{self._chip(s['upl'])} {'Open P&L':<10}│{s['upl']:>+9,.0f} │")
             invested = IBKR_INITIAL_CAPITAL + sum(a for _, a in self._load_flows())
             since = live_nav - invested
@@ -1448,11 +1486,11 @@ class IBKREngine:
             return f"{self._chip(tot)} {pctd:+.2f}% today", self._tg_table(body) + note
 
         # collect both books first so one data-API call prices everything
-        ib_entries, ib_nav, ib_err = [], 0, None
+        ib_entries, ib_nav, ib_live_nav, ib_err = [], 0, 0, None
         try:
             s = await self._ibkr_snapshot()
             ib_entries = [(it.contract.symbol, it.position) for it in s["items"]]
-            ib_nav = s["nav"]
+            ib_nav = ib_live_nav = s["nav"]   # ib_live_nav stays live (for the dailyPnL split)
         except Exception as e:
             ib_err = self._ib_err_text(e)
         poss = self._alpaca_get("/v2/positions") or []
@@ -1485,10 +1523,14 @@ class IBKREngine:
         # trading close minus capital flows; Alpaca = equity minus last_equity (paper,
         # no flows). These are the ACCURATE numbers; pct_base = start-of-day capital so
         # the % isn't distorted by a deposit; the tables' rows are the breakdown.
-        ib_pnl, ib_pct_base = (None, ib_nav)
+        ib_pnl, ib_pct_base, ib_ah = (None, ib_nav, None)
         if not ib_err:
-            _p, _l, ib_pct_base, _d = self._ibkr_today_pnl(ib_nav)
-            ib_pnl = _p
+            reg, ah, _l, ib_pct_base = self._ibkr_daily_split(ib_live_nav)
+            if reg is not None:
+                ib_pnl, ib_ah = reg, ah   # regular-session P&L (matches /pnl) + after-hrs
+            else:
+                _p, _l, ib_pct_base, _d = self._ibkr_today_pnl(ib_live_nav)
+                ib_pnl = _p
         le = float(acct.get("last_equity", 0) or 0)
         al_pnl = (al_nav - le) if le else None
         al_pct_base = le or al_nav
@@ -1496,7 +1538,12 @@ class IBKREngine:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {ib_err}")
         elif ib_entries:
             day, tbl = table(ib_entries, bars, ib_pct_base, ib_pnl)
-            out.append(f"<b>🟢 IBKR · ${ib_nav:,.0f} · {day}</b>\n{tbl}")
+            block = f"<b>🟢 IBKR · ${ib_nav:,.0f} · {day}</b>\n{tbl}"
+            if ib_ah is not None:   # after-hours drift on its own line (matches /pnl)
+                ah_base = (ib_pct_base + ib_pnl) or ib_nav
+                block += "\n" + self._tg_table(
+                    [f"{self._chip(ib_ah)} {'Aft-hr':<6}│{ib_ah/ah_base*100:>+6.2f} │{ib_ah:>+9,.0f}"])
+            out.append(block)
         if al_entries:
             day, tbl = table(al_entries, bars, al_pct_base, al_pnl)
             out.append(f"\n<b>🔵 ALPACA · ${al_nav:,.0f} · {day}</b>\n{tbl}")
