@@ -1239,8 +1239,14 @@ class IBKREngine:
                 f"{'Leverage':<10}│ {s['lev']:>10.2f}x"]))
         except Exception as e:
             out.append(f"<b>🟢 IBKR LIVE</b> — ⚠️ {self._ib_err_text(e)}")
+        # "at close" line ONLY if the snapshot is the ACTUAL last trading close (its date
+        # matches the NAV history's last trading day). A snapshot left over from a
+        # non-trading-day restart (e.g. the 7/12 Sunday one) is stale and its leverage
+        # would contradict the live line — hide it rather than show a phantom close.
         snap = self._load_close_snapshot()
-        if snap:
+        hist = self._load_nav_history()
+        last_close_date = hist[-1][0] if hist else None
+        if snap and snap.get("date") == last_close_date:
             out.append(f"<i>at close {snap['date']}: ${snap['nav']:,.0f} · "
                        f"{len(snap.get('positions', []))} pos · {snap.get('lev', 0):.2f}x</i>")
         acct = self._alpaca_get("/v2/account"); poss = self._alpaca_get("/v2/positions")
@@ -1289,6 +1295,25 @@ class IBKREngine:
                 + f"{len(poss)} positions · P&amp;L since entry\n\n"
                 + self._tg_table(rows))
 
+    def _ibkr_today_pnl(self, live_nav):
+        """CANONICAL IBKR 'today' P&L — used by BOTH /pnl and /daily so their headline
+        numbers agree. live_nav minus the last TRADING-day close (NAV history) minus
+        capital flows since then. On a Mon/holiday the last close is Fri, so it's
+        labeled 'Since Jul 10' rather than the misleading 'Today'. Returns
+        (pnl, label, base_nav, base_date) or (None, 'Today', None, None) if no history."""
+        from datetime import date as _date
+        hist = self._load_nav_history()
+        today = datetime.now().date().isoformat()
+        prev = [p for p in hist if p[0] != today and p[1]]
+        if not prev:
+            return None, "Today", None, None
+        base_date, base_nav = prev[-1]
+        flow = self._flow_between(base_date, today)
+        pnl = live_nav - base_nav - flow
+        gap = (_date.fromisoformat(today) - _date.fromisoformat(base_date)).days
+        label = "Today" if gap <= 1 else f"Since {_date.fromisoformat(base_date).strftime('%b %-d')}"
+        return pnl, label, base_nav, base_date
+
     async def _cmd_pnl(self):
         import html as _h
         await self._detect_capital_flow()   # ledger a fresh deposit BEFORE the math
@@ -1307,11 +1332,12 @@ class IBKREngine:
             session_nav = live_nav if (mkt_open or not have_close) else snap["nav"]
             tag = "live" if mkt_open else ("4pm close" if have_close else "pre-mkt")
             rows = []
-            if prev and prev[-1][1]:
-                flow = self._flow_between(prev[-1][0], today)   # deposits aren't gains
-                d = session_nav - prev[-1][1] - flow
-                lbl = "Today" if (mkt_open or have_close) else "Overnight"
-                rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/prev[-1][1]*100:>+6.2f}%")
+            d, lbl, base_nav, base_date = self._ibkr_today_pnl(session_nav)
+            if d is not None:
+                if not mkt_open and not have_close:
+                    lbl = "Overnight"
+                rows.append(f"{self._chip(d)} {lbl:<10}│{d:>+9,.0f} │{d/base_nav*100:>+6.2f}%")
+                flow = self._flow_between(base_date, today)
                 if flow:
                     rows.append(f"💵 {'Flow':<10}│{flow:>+9,.0f} │ <i>excl.</i>")
             else:
@@ -1370,9 +1396,14 @@ class IBKREngine:
         mkt_open = self.is_market_open()
         out = [self._tg_header("📅 TODAY BY POSITION", mkt_open)]
 
-        def table(entries, bars, nav):
-            """entries: [(sym, qty)] → (header_suffix, aligned rows) sorted by day-$ impact."""
-            rows, total, missing = [], 0.0, []
+        def table(entries, bars, nav, auth_pnl):
+            """Per-position PRICE moves (the breakdown) + an AUTHORITATIVE account-P&L
+            total. auth_pnl is the broker-NAV day P&L (flow-adjusted for IBKR, so a
+            deposit is never counted as a gain) — this makes /daily's headline match
+            /pnl EXACTLY. The rows are Alpaca-priced contributions and may not sum to it
+            (cash, fees, financing, deposits, shares bought today); the gap is shown when
+            material so the numbers reconcile transparently."""
+            rows, price_sum, missing = [], 0.0, []
             for sym, qty in entries:
                 b = bars.get(sym) or {}
                 px = (b.get("px") if mkt_open else b.get("close")) or b.get("px")
@@ -1381,17 +1412,22 @@ class IBKREngine:
                     missing.append(sym)
                     continue
                 d = (px - prev) * qty
-                total += d
+                price_sum += d
                 rows.append((sym, (px / prev - 1) * 100, d))
             rows.sort(key=lambda r: -r[2])
+            tot = auth_pnl if auth_pnl is not None else price_sum
             rule = "   " + "─" * 6 + "┼" + "─" * 7 + "┼" + "─" * 9
             body = [f"   {'SYM':<6}│{'DAY%':>6} │{'DAY$':>9}", rule]
             body += [f"{self._chip(d)} {sym:<6}│{pct:>+6.1f} │{d:>+9,.0f}" for sym, pct, d in rows]
             body.append(rule)
-            body.append(f"{self._chip(total)} {'TOTAL':<6}│{(total/nav*100 if nav else 0):>+6.2f} │{total:>+9,.0f}")
-            note = f"\n<i>no data: {', '.join(missing)}</i>" if missing else ""
-            pct_day = total / nav * 100 if nav else 0
-            return f"{self._chip(total)} {pct_day:+.2f}% today", self._tg_table(body) + note
+            body.append(f"{self._chip(tot)} {'TOTAL':<6}│{(tot/nav*100 if nav else 0):>+6.2f} │{tot:>+9,.0f}")
+            note = ""
+            if auth_pnl is not None and abs(auth_pnl - price_sum) > max(40, 0.0008 * (nav or 0)):
+                note += (f"\n<i>rows = price moves (Σ {price_sum:+,.0f}); TOTAL = account "
+                         f"P&amp;L incl. cash/fees/deposits ({auth_pnl - price_sum:+,.0f})</i>")
+            if missing:
+                note += f"\n<i>no data: {', '.join(missing)}</i>"
+            return f"{self._chip(tot)} {(tot/nav*100 if nav else 0):+.2f}% today", self._tg_table(body) + note
 
         # collect both books first so one data-API call prices everything
         ib_entries, ib_nav, ib_err = [], 0, None
@@ -1427,18 +1463,25 @@ class IBKREngine:
             if sess and sess != today:
                 out[0] = self._tg_header(f"📅 LAST SESSION ({sess}) BY POSITION", mkt_open)
 
+        # authoritative day P&L per book (matches /pnl): IBKR = broker NAV minus last
+        # trading close minus capital flows; Alpaca = equity minus last_equity (paper,
+        # no flows). These are the ACCURATE numbers; the tables' rows are the breakdown.
+        ib_pnl = None if ib_err else self._ibkr_today_pnl(ib_nav)[0]
+        le = float(acct.get("last_equity", 0) or 0)
+        al_pnl = (al_nav - le) if le else None
         if ib_err:
             out.append(f"<b>🟢 IBKR</b> — ⚠️ {ib_err}")
         elif ib_entries:
-            day, tbl = table(ib_entries, bars, ib_nav)
+            day, tbl = table(ib_entries, bars, ib_nav, ib_pnl)
             out.append(f"<b>🟢 IBKR · ${ib_nav:,.0f} · {day}</b>\n{tbl}")
         if al_entries:
-            day, tbl = table(al_entries, bars, al_nav)
+            day, tbl = table(al_entries, bars, al_nav, al_pnl)
             out.append(f"\n<b>🔵 ALPACA · ${al_nav:,.0f} · {day}</b>\n{tbl}")
         elif not ib_entries and not ib_err:
             out.append("no positions in either book")
         out.append(f"<i>{'live prices' if mkt_open else 'session close vs prev close'}"
-                   f" · price-move view; /pnl = NAV view (incl. cash/fees/flows)</i>")
+                   f" · TOTAL = account P&amp;L (matches /pnl, deposits excluded); "
+                   f"rows = per-position price moves</i>")
         return "\n".join(out)
 
     async def _cmd_status(self):
