@@ -1578,20 +1578,17 @@ class IBKREngine:
         return ("🔴 DISCONNECTED\nSocket: down. The engine auto-reconnects; send /reconnect to force it.")
 
     async def _detect_capital_flow(self, nav=None):
-        """Cash reconciliation: cash now minus the last close-snapshot cash, minus the
-        cash effect of EVERY fill today (incl. stops and manual trades — reqExecutions
-        is server-side, restart-proof), minus flows already recorded since that
-        snapshot. The unexplained residue is a deposit/withdrawal — recorded so
-        vol-scaling and P&L never mistake a flow for a return (tranches: $2.5K landed
-        7/12, ~$17.3K due 7/20, possibly $8.7K Schwab later).
-
-        Called from the 16:05 EOD path (authoritative) AND on demand by /pnl, /daily,
-        /portfolio and /deploy — a 9am deposit is ledgered the FIRST time anything
-        looks, not at 16:05. IDEMPOTENT by construction: the already-recorded netting
-        makes repeat calls a no-op. Threshold max($400, 1.2% NAV) sits above monthly
-        margin interest (~$95) and dividend postings, far below any real transfer.
-        Errors -> skip silently; the >5% NAV nudge in record_nav is the backstop."""
-        try:
+        """DISABLED 2026-07-13 — no-op. The cash-reconciliation auto-detect MIS-FIRED:
+        on 7/13 it recorded the day's /deploy stock PURCHASES ($1,455.97 of buys) as a
+        phantom DEPOSIT, because the fills weren't cleanly netted against the close-
+        snapshot cash baseline (which itself gets overwritten by restarts / the EOD
+        re-fire). A wrong flow corrupts EVERY P&L number (showed -2,629 instead of the
+        real -1,173). Distinguishing a deposit from a trade reliably needs perfect fill
+        accounting the snapshot baseline can't guarantee, so this is OFF. Manual
+        /deposit is the sole path (reliable); record_nav's >5% NAV-jump alert nudges you
+        if a deposit is unrecorded. Kept as a no-op so existing call sites stay harmless."""
+        return
+        try:  # noqa: unreachable — retained for reference / possible robust rebuild
             prevsnap = self._load_close_snapshot()
             if not prevsnap or prevsnap.get("cash") is None:
                 return
@@ -2063,7 +2060,11 @@ class IBKREngine:
                 # ~30 min (seen 2026-07-09: EOD fired 16:30, polluting the close mark with
                 # after-hours drift), so this must not depend on reaching the closed branch.
                 if not hasattr(self, '_eod_sent_today'):
-                    self._eod_sent_today = None
+                    # Seed from the persisted close snapshot so a restart AFTER the 16:05
+                    # EOD does NOT re-fire it and clobber the frozen 4pm close with
+                    # after-hours drift (7/13 incident: 34,685 -> 34,597 on restart).
+                    _snap = self._load_close_snapshot()
+                    self._eod_sent_today = _snap.get("date") if _snap else None
                 from zoneinfo import ZoneInfo
                 now_et = datetime.now(ZoneInfo("US/Eastern"))
                 today_str = now_et.strftime("%Y-%m-%d")
