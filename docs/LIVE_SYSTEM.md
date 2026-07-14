@@ -59,17 +59,20 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
   positions NOT tagged `ml`, and the whole book is ml-tagged. The ml cooldown can delay a
   rebalance re-buy ~30min (self-heals same day).
 
-## EDGAR freshness overlay (phase 3 — SHADOW running since 2026-07-11)
+## EDGAR freshness overlay — ENABLED LIVE 2026-07-13 (roe-only)
 - `scripts/edgar_fundamentals_patch.py` (daily cron 18:40): per-feature proof gate vs
   Compustat -> `data/edgar_feature_overlay.json`. Coverage: roe 93% / gm 34% / d2e 22% /
   eps_surprise 100% (FMP events, 91.5% sign agreement vs IBES on 57,864 events).
-- `signal_builder.build_signals_v9(..., edgar_overlay=True)` applies it via a
-  non-mutating universe proxy; the signal server builds BOTH each refresh and serves the
-  shadow at `/signals?edgar=1`, logging a per-refresh diff line ("EDGAR shadow: ...").
+- **LIVE build now `build_signals_v9(..., edgar_overlay=True)`** — the engines trade the
+  overlay (fresh ROE) signals. First effect: 7/14 rebalance. A/B validated +0.5pp CAGR
+  (roe-only, PIT-honest). The no-overlay build is now a monitoring BASELINE (served at
+  `/signals?edgar=1`; diff logged "OVERLAY LIVE: N BUY vs baseline M"). At flip: 244 roe
+  patched, 2 of 24 names changed (DOCU/SFM in, LIF/SABR out).
+- **Patcher health**: `data_freshness_check._check_edgar_overlay` (in /data + cron
+  9am/1pm/**19:30** weekdays) alerts on Telegram if the daily patcher fails silently
+  (overlay stale vs expected run / roe-patched collapse / log traceback).
 - eps-surprise boost REMOVED from live 2026-07-12 (divergence #61: live-only unvalidated
-  feature; PIT A/B showed -0.5pp CAGR). Overlay live-set = roe only.
-- LIVE path is untouched (param defaults False). FLIP = change the server's live build
-  to edgar_overlay=True — only after shadow review + user approval.
+  feature; PIT A/B showed -0.5pp CAGR). Overlay live-set = roe only (gm/d2e unharvestable).
 - Vintage guards: Compustat-datadate guard (3 ratios) + IBES-vintage guard (eps) mean a
   fresh WRDS upload automatically retires stale overlay entries — WRDS is now the
   quarterly CALIBRATION ANCHOR, not a live dependency.
