@@ -1505,8 +1505,10 @@ class IBKREngine:
             body.append(f"{self._chip(tot)} {'TOTAL':<6}│{pctd:>+6.2f} │{tot:>+9,.0f}")
             note = ""
             if auth_pnl is not None and abs(auth_pnl - price_sum) > max(40, 0.0008 * (pct_base or 0)):
-                note += (f"\n<i>rows = price moves (Σ {price_sum:+,.0f}); TOTAL = account "
-                         f"P&amp;L incl. cash/fees/deposits ({auth_pnl - price_sum:+,.0f})</i>")
+                note += (f"\n<i>rows = current holdings vs yesterday's close (Σ {price_sum:+,.0f}); "
+                         f"TOTAL {auth_pnl:+,.0f} = account P&amp;L (matches /pnl); they differ by "
+                         f"{auth_pnl - price_sum:+,.0f} — on rebalance days rows miss stocks sold "
+                         f"at the open + fees</i>")
             if missing:
                 note += f"\n<i>no data: {', '.join(missing)}</i>"
             return f"{self._chip(tot)} {pctd:+.2f}% today", self._tg_table(body) + note
