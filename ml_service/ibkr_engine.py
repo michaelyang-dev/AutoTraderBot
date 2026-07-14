@@ -551,7 +551,7 @@ class IBKREngine:
         """Get current market price for a contract."""
         await self.ib.qualifyContractsAsync(contract)
         ticker = self.ib.reqMktData(contract, "", False, False)
-        await asyncio.sleep(4)  # longer wait for delayed data
+        await asyncio.sleep(4)  # let the live (type-1) tick populate before reading
         price = ticker.marketPrice()
         self.ib.cancelMktData(contract)
         if price and price > 0 and not util.isNan(price):
@@ -851,7 +851,11 @@ class IBKREngine:
         # Rebalance COMPLETED — only now reset the day counter (see note at method top:
         # a failure anywhere above leaves the counter >= 20 and the next cycle retries).
         self._trading_days_since_rebal = 0
-        self._last_rebal_date = datetime.now().date().isoformat()
+        # keep this a date object (not .isoformat() string): _load_rebal_state reads it via
+        # date.fromisoformat and _save_rebal_state calls .isoformat() on it — passing a string
+        # here made the end-of-rebalance save throw "'str' object has no attribute 'isoformat'",
+        # so the counter reset never persisted (disk stuck at 20 -> restart would re-rebalance).
+        self._last_rebal_date = datetime.now().date()
         self.last_rebalance = datetime.now()
         self._save_rebal_state()
         await self.update_positions()
