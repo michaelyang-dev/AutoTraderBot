@@ -2,16 +2,23 @@
 """
 Unified data-freshness checker. Inspects every data source the strategy depends on
 and fires ONE Telegram alert if anything critical is stale. Runs on a cron
-(pre-open + midday) and is also callable on-demand from the Telegram /data command.
+(pre-open + midday + post-patcher) and is also callable on-demand from /data.
+
+HARDENED 2026-07-13 (user: "make sure nothing will silently fail"):
+  - EVERY check runs in ISOLATION (its own try/except). A bug in one check reports
+    ERROR for that check but never hides the others or crashes the whole report.
+  - Added the EDGAR OVERLAY / PATCHER check — the overlay now feeds LIVE signals, so a
+    silently-broken daily patcher = live signals drifting on stale fresh-data.
+  - A check that cannot verify its source returns STALE/ERROR (never silently OK).
 
 Two deliberate carve-outs:
-  - WRDS Compustat/IBES are uploaded MANUALLY (quarterly). Next upload is ~Sept 2026,
-    so their staleness is SUPPRESSED (reported 'expected', no alarm) until WRDS_EXPECTED_BY.
-  - FMP fundamentals are a flaky FALLBACK (WRDS is primary) — informational, never alarm.
+  - WRDS Compustat/IBES are uploaded MANUALLY (quarterly). Next upload ~Sept 2026, so
+    their staleness is SUPPRESSED ('expected', no alarm) until WRDS_EXPECTED_BY.
+  - FMP fundamentals are a flaky FALLBACK (WRDS primary) — informational, never alarm.
 """
 import os
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 import requests
 
@@ -59,113 +66,184 @@ def _age_days(path):
     return (datetime.now().timestamp() - newest) / 86400
 
 
+def _min_age_days(path, pattern="*"):
+    """OLDEST (stalest) mtime among files matching pattern under a dir, in days —
+    catches PARTIAL staleness that max-mtime (_age_days) would hide (a few fresh files
+    masking many stale ones). (count, oldest_age_days) or (0, None) if empty."""
+    p = Path(path)
+    if not p.exists() or p.is_file():
+        return (0, None)
+    files = [f for f in p.rglob(pattern) if f.is_file()]
+    if not files:
+        return (0, None)
+    oldest = min(f.stat().st_mtime for f in files)
+    return (len(files), (datetime.now().timestamp() - oldest) / 86400)
+
+
 def _parquet_last_date(path, col):
-    try:
-        import pandas as pd
-        return pd.to_datetime(pd.read_parquet(path, columns=[col])[col]).max().date()
-    except Exception:
-        return None
+    import pandas as pd
+    return pd.to_datetime(pd.read_parquet(path, columns=[col])[col]).max().date()
 
 
 def _fmt(age):
     return f"{age*24:.0f}h" if age is not None and age < 1 else (f"{age:.1f}d" if age is not None else "?")
 
 
-def check_all():
-    """Returns (list of (name, status, detail), any_critical_stale)."""
-    checks, crit = [], False
+def _last_expected_patcher_run():
+    """Most recent weekday 18:40 (server ET) that the patcher cron should have finished.
+    Handles the weekend gap so Monday morning doesn't false-alarm on Friday's run."""
+    now = datetime.now()
+    d = now if now.hour >= 19 else now - timedelta(days=1)   # today's 18:40 may not be done
+    while d.weekday() >= 5:                                   # skip Sat/Sun back to Fri
+        d = d - timedelta(days=1)
+    return d.replace(hour=18, minute=40, second=0, microsecond=0)
 
-    # 1. Prices (Massive/Polygon cache) — refreshes every 15 min in market hours
+
+# ── individual checks: each returns (name, status, detail); raising is caught by the
+#    runner and reported as ERROR (never a silent skip). status in OK/STALE/INFO/EXPECTED/ERROR
+def _check_prices():
     age = _age_days(DATA / "massive_cache")
     if age is None:
-        checks.append(("Prices (Massive)", "STALE", "missing")); crit = True
-    elif age > 2.5:
-        checks.append(("Prices (Massive)", "STALE", f"{_fmt(age)} old")); crit = True
-    else:
-        checks.append(("Prices (Massive)", "OK", _fmt(age)))
+        return ("Prices (Massive)", "STALE", "missing")
+    if age > 2.5:
+        return ("Prices (Massive)", "STALE", f"{_fmt(age)} old")
+    return ("Prices (Massive)", "OK", _fmt(age))
 
-    # 2. Signals (signal server)
-    try:
-        d = requests.get("http://localhost:5001/signals", timeout=6).json()
-        buys = len([x for x in d.get("signals", []) if x.get("signal") == "BUY"])
-        if d.get("is_stale"):
-            checks.append(("Signals", "STALE", "server reports STALE")); crit = True
-        elif buys == 0:
-            checks.append(("Signals", "STALE", "0 BUY signals")); crit = True
-        else:
-            checks.append(("Signals", "OK", f"{buys} BUYs, fresh"))
-    except Exception:
-        checks.append(("Signals", "STALE", "server unreachable")); crit = True
 
-    # 3. Fama-French factors — check DOWNLOAD health via file mtime. The data itself
-    #    lags ~6 weeks (Ken French's publication schedule), which is normal, not a fault.
+def _check_signals():
+    d = requests.get("http://localhost:5001/signals", timeout=6).json()
+    buys = len([x for x in d.get("signals", []) if x.get("signal") == "BUY"])
+    if d.get("is_stale"):
+        return ("Signals", "STALE", "server reports STALE")
+    if buys == 0:
+        return ("Signals", "STALE", "0 BUY signals")
+    return ("Signals", "OK", f"{buys} BUYs, fresh")
+
+
+def _check_fama_french():
     ff = WRDS / "fama_french_5factors_momentum_daily.parquet"
     age = _age_days(ff)
-    ffd = _parquet_last_date(ff, "date")
+    try:
+        ffd = _parquet_last_date(ff, "date")
+    except Exception:
+        ffd = None
     note = f", data to {ffd}" if ffd else ""
     if age is None:
-        checks.append(("Fama-French", "STALE", "missing")); crit = True
-    elif age > 4:
-        checks.append(("Fama-French", "STALE", f"download {_fmt(age)} old{note}")); crit = True
-    else:
-        checks.append(("Fama-French", "OK", f"{_fmt(age)}{note}"))
+        return ("Fama-French", "STALE", "missing")
+    if age > 4:
+        return ("Fama-French", "STALE", f"download {_fmt(age)} old{note}")
+    return ("Fama-French", "OK", f"{_fmt(age)}{note}")
 
-    # 4. WRDS Compustat (manual quarterly — suppressed until ~Sept upload)
-    cqd = _parquet_last_date(WRDS / "compustat_fundamentals_quarterly.parquet", "datadate")
+
+def _check_wrds_compustat():
+    try:
+        cqd = _parquet_last_date(WRDS / "compustat_fundamentals_quarterly.parquet", "datadate")
+    except Exception:
+        cqd = None
     if cqd is None:
-        checks.append(("WRDS Compustat", "STALE", "missing")); crit = True
-    else:
-        old = (date.today() - cqd).days
-        if date.today() < WRDS_EXPECTED_BY:
-            checks.append(("WRDS Compustat", "EXPECTED", f"datadate {cqd} — next upload ~Sept"))
-        elif old > 200:
-            checks.append(("WRDS Compustat", "STALE", f"datadate {cqd} ({old}d) — upload overdue")); crit = True
-        else:
-            checks.append(("WRDS Compustat", "OK", f"datadate {cqd}"))
+        return ("WRDS Compustat", "STALE", "missing / unreadable")
+    old = (date.today() - cqd).days
+    if date.today() < WRDS_EXPECTED_BY:
+        return ("WRDS Compustat", "EXPECTED", f"datadate {cqd} — next upload ~Sept")
+    if old > 200:
+        return ("WRDS Compustat", "STALE", f"datadate {cqd} ({old}d) — upload overdue")
+    return ("WRDS Compustat", "OK", f"datadate {cqd}")
 
-    # 5. FMP fundamentals (flaky FALLBACK — WRDS is primary; informational only)
+
+def _check_edgar_overlay():
+    """EDGAR overlay / daily patcher — LIVE-feeding since 2026-07-13, so a silently
+    broken patcher = live signals drifting on stale fresh-data. Verifies: the overlay
+    was regenerated by the most recent expected patcher run, the ROE patched count
+    hasn't collapsed, and the patcher log has no recent traceback."""
+    ov = DATA / "edgar_feature_overlay.json"
+    if not ov.exists():
+        return ("EDGAR overlay", "STALE", "overlay MISSING — patcher never ran")
+    o = json.load(open(ov))                       # raise -> runner reports ERROR
+    gen = o.get("generated")
+    roe_patched = o.get("stats", {}).get("roe", {}).get("patched", 0)
+    gen_dt = None
+    if gen:
+        try:
+            gen_dt = datetime.fromisoformat(gen)
+        except Exception:
+            pass
+    if gen_dt is None:
+        return ("EDGAR overlay", "STALE", "no valid 'generated' timestamp")
+    expected = _last_expected_patcher_run()
+    if gen_dt < expected - timedelta(hours=1):
+        age_h = (datetime.now() - gen_dt).total_seconds() / 3600
+        return ("EDGAR overlay", "STALE",
+                f"generated {age_h:.0f}h ago — MISSED the {expected:%a %H:%M} patcher run")
+    if roe_patched < 30:
+        return ("EDGAR overlay", "STALE", f"roe patched COLLAPSED to {roe_patched} — patcher broken?")
+    # recent patcher-log traceback (only if the log was written this cycle)
+    logf = BASE.parent / "logs" / "edgar_patch.log"
+    if logf.exists() and (datetime.now().timestamp() - logf.stat().st_mtime) < 30 * 3600:
+        tail = logf.read_text(errors="ignore").splitlines()[-80:]
+        if any(("Traceback" in ln or "Error" in ln) for ln in tail):
+            return ("EDGAR overlay", "STALE", f"patcher LOG has a recent error (roe {roe_patched})")
+    return ("EDGAR overlay", "OK", f"roe patched {roe_patched}, {gen_dt:%b %d %H:%M}")
+
+
+def _check_fmp():
     age = _age_days(DATA / "fundamentals_cache")
     if age is None:
-        checks.append(("FMP fundamentals", "INFO", "missing (fallback only)"))
-    elif age > 3:
-        checks.append(("FMP fundamentals", "INFO", f"{_fmt(age)} stale (fallback; WRDS primary)"))
-    else:
-        checks.append(("FMP fundamentals", "OK", _fmt(age)))
+        return ("FMP fundamentals", "INFO", "missing (fallback only)")
+    if age > 3:
+        return ("FMP fundamentals", "INFO", f"{_fmt(age)} stale (fallback; WRDS primary)")
+    return ("FMP fundamentals", "OK", _fmt(age))
 
-    # 6. IBKR NAV history (only records when the engine is connected)
-    try:
-        hist = json.load(open(DATA / "ibkr_nav_history.json"))
-        last = date.fromisoformat(hist[-1][0]); old = (date.today() - last).days
-        if old > 4:
-            checks.append(("IBKR NAV history", "STALE", f"last {last} ({old}d) — engine recording?")); crit = True
-        else:
-            checks.append(("IBKR NAV history", "OK", f"last {last}"))
-    except Exception:
-        checks.append(("IBKR NAV history", "STALE", "unreadable")); crit = True
 
-    # 7. Sentiment archive (6h collector cron)
+def _check_ibkr_nav():
+    hist = json.load(open(DATA / "ibkr_nav_history.json"))
+    last = date.fromisoformat(hist[-1][0])
+    old = (date.today() - last).days
+    if old > 4:
+        return ("IBKR NAV history", "STALE", f"last {last} ({old}d) — engine recording?")
+    return ("IBKR NAV history", "OK", f"last {last}")
+
+
+def _check_sentiment():
     age = _age_days(DATA / "sentiment_archive" / "raw")
     if age is None:
-        checks.append(("Sentiment", "INFO", "no data yet"))
-    elif age > 1.5:
-        checks.append(("Sentiment", "INFO", f"{_fmt(age)} stale (collector)"))
-    else:
-        checks.append(("Sentiment", "OK", _fmt(age)))
+        return ("Sentiment", "INFO", "no data yet")
+    if age > 1.5:
+        return ("Sentiment", "INFO", f"{_fmt(age)} stale (collector)")
+    return ("Sentiment", "OK", _fmt(age))
 
-    # 8. SP1500 membership (daily 6 AM scrape)
+
+def _check_sp1500():
     age = _age_days(DATA / "sp1500_members.json")
     if age is None:
-        checks.append(("SP1500 membership", "STALE", "missing")); crit = True
-    elif age > 4:
-        checks.append(("SP1500 membership", "STALE", f"{_fmt(age)} old")); crit = True
-    else:
-        checks.append(("SP1500 membership", "OK", _fmt(age)))
+        return ("SP1500 membership", "STALE", "missing")
+    if age > 4:
+        return ("SP1500 membership", "STALE", f"{_fmt(age)} old")
+    return ("SP1500 membership", "OK", _fmt(age))
 
+
+_CHECKS = [_check_prices, _check_signals, _check_fama_french, _check_wrds_compustat,
+           _check_edgar_overlay, _check_fmp, _check_ibkr_nav, _check_sentiment, _check_sp1500]
+
+
+def check_all():
+    """Run EVERY check in isolation. Returns (list of (name, status, detail),
+    any_critical). A check that raises is reported as ERROR (critical) — never
+    silently skipped, so one broken check can't hide a real staleness elsewhere."""
+    checks, crit = [], False
+    for fn in _CHECKS:
+        try:
+            name, status, detail = fn()
+        except Exception as e:
+            name = fn.__name__.replace("_check_", "").replace("_", " ")
+            status, detail = "ERROR", f"check crashed: {type(e).__name__}: {e}"
+        checks.append((name, status, detail))
+        if status in ("STALE", "ERROR"):
+            crit = True
     return checks, crit
 
 
 def format_report(checks):
-    icons = {"OK": "✅", "STALE": "🔴", "INFO": "ℹ️", "EXPECTED": "🟡"}
+    icons = {"OK": "✅", "STALE": "🔴", "INFO": "ℹ️", "EXPECTED": "🟡", "ERROR": "🔴"}
     return "📋 DATA FRESHNESS\n\n" + "\n".join(
         f"{icons.get(s, '?')} {n}: {m}" for n, s, m in checks)
 
