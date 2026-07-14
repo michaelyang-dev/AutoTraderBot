@@ -222,7 +222,7 @@ async def _refresh() -> bool:
         # v12: pass None for enhanced_data — PIT backtest proved enhanced data
         # HURTS returns by -2pp (quality boosts dilute pure momentum signal)
         new_signals = await asyncio.get_event_loop().run_in_executor(
-            None, build_signals_v9, raw, None, state.top_n
+            None, build_signals_v9, raw, None, state.top_n, True   # EDGAR overlay ON — ENABLED 2026-07-13
         )
         state.cache       = new_signals
         state.last_update = datetime.now(ET)
@@ -230,33 +230,33 @@ async def _refresh() -> bool:
         state._last_raw   = raw  # store for short sleeve price access
         _save_signal_cache(new_signals)
 
-        # EDGAR SHADOW build (cheap: reuses the daily universe cache via a read-only
-        # proxy). Served on /signals?edgar=1 ONLY — the live path above is untouched.
-        # The logged diff line is the daily evidence for the phase-3 flip decision.
+        # The overlay is now LIVE (new_signals above ARE the overlay signals the engines
+        # trade). Here we build the no-overlay BASELINE only to MONITOR the overlay's
+        # ongoing effect — the logged diff shows what fresh ROE is changing vs stale
+        # Compustat. Served on /signals?edgar=1 (now = the baseline). If it fails, LIVE
+        # is unaffected (live is the overlay, built above).
         try:
-            edgar_signals = await asyncio.get_event_loop().run_in_executor(
-                None, build_signals_v9, raw, None, state.top_n, True
+            baseline_signals = await asyncio.get_event_loop().run_in_executor(
+                None, build_signals_v9, raw, None, state.top_n   # overlay OFF = baseline
             )
-            state.cache_edgar = edgar_signals
-            live_buys = {s["symbol"] for s in new_signals if s["signal"] == "BUY"}
-            sh_buys = {s["symbol"] for s in edgar_signals if s["signal"] == "BUY"}
-            log.info("EDGAR shadow: %d BUY vs live %d | added=%s dropped=%s",
-                     len(sh_buys), len(live_buys),
-                     sorted(sh_buys - live_buys)[:8], sorted(live_buys - sh_buys)[:8])
-            # persistent record (pm2 logs rotate): one JSONL row per refresh, so the
-            # week-of-shadow review compares live vs overlay across the whole window
+            state.cache_edgar = baseline_signals
+            overlay_buys = {s["symbol"] for s in new_signals if s["signal"] == "BUY"}
+            base_buys = {s["symbol"] for s in baseline_signals if s["signal"] == "BUY"}
+            log.info("OVERLAY LIVE: %d BUY vs baseline %d | overlay-added=%s overlay-dropped=%s",
+                     len(overlay_buys), len(base_buys),
+                     sorted(overlay_buys - base_buys)[:8], sorted(base_buys - overlay_buys)[:8])
             try:
                 with open(DATA_DIR / "edgar_shadow_diffs.jsonl", "a") as fh:
                     fh.write(_json.dumps({
                         "ts": datetime.now(ET).isoformat(timespec="seconds"),
-                        "live_buys": sorted(live_buys), "shadow_buys": sorted(sh_buys),
-                        "added": sorted(sh_buys - live_buys),
-                        "dropped": sorted(live_buys - sh_buys)}) + "\n")
+                        "overlay_buys": sorted(overlay_buys), "baseline_buys": sorted(base_buys),
+                        "overlay_added": sorted(overlay_buys - base_buys),
+                        "overlay_dropped": sorted(base_buys - overlay_buys)}) + "\n")
             except Exception:
                 pass
         except Exception as e:
             state.cache_edgar = []
-            log.warning("EDGAR shadow build failed (live unaffected): %s", e)
+            log.warning("baseline (no-overlay) build failed — live overlay unaffected: %s", e)
 
         elapsed = time.perf_counter() - t0
         buys = [s for s in new_signals if s["signal"] == "BUY"]
