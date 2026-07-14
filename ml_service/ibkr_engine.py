@@ -349,8 +349,10 @@ class IBKREngine:
             with open(CLOSE_SNAPSHOT_FILE, "w") as f:
                 json.dump(snap, f)
             log.info(f"Close snapshot recorded: NAV ${close_nav:,.0f}, {len(snap['positions'])} positions")
+            return close_pnl   # broker dailyPnL — so the Daily Close summary matches /pnl exactly
         except Exception as e:
             log.warning(f"Close snapshot failed: {e}")
+            return None
 
     # ── Disconnect alerting (suppress brief blips, escalate real outages) ──
     def _on_disconnect_detected(self):
@@ -2194,10 +2196,19 @@ class IBKREngine:
                         except Exception as _e:
                             log.warning(f"deposit auto-detect skipped: {_e}")
                         self.record_nav(nav, at_close=True)  # authoritative 4pm close mark
-                        await self._record_close_snapshot()  # close mark for /portfolio + /pnl
+                        close_pnl = await self._record_close_snapshot()  # close mark + broker P&L
                         n_pos = len(self.positions)
                         msg = f"📊 Daily Close ({today_str})\nNAV ${nav:,.0f}"
-                        if prev and prev[-1][1]:
+                        # Today = broker dailyPnL (matches /pnl and /daily EXACTLY). The old
+                        # nav-vs-nav_history calc drifted whenever the recorded prior close
+                        # differed from IBKR's own dailyPnL baseline (seen 2026-07-14: this
+                        # summary showed +1,185 vs /pnl's +998 — a $187 baseline gap). Fall
+                        # back to the nav-history delta only if dailyPnL is unavailable.
+                        if close_pnl is not None:
+                            base = (nav - close_pnl) or nav
+                            msg += (f" | {'🟩' if close_pnl >= 0 else '🟥'} Today ${close_pnl:+,.0f} "
+                                    f"({close_pnl / base * 100:+.2f}%)")
+                        elif prev and prev[-1][1]:
                             d = nav - prev[-1][1]
                             msg += f" | {'🟩' if d >= 0 else '🟥'} Today ${d:+,.0f} ({d/prev[-1][1]*100:+.2f}%)"
                         msg += f" | {n_pos} pos"
