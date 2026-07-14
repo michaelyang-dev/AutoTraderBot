@@ -1344,43 +1344,51 @@ class IBKREngine:
         return pnl, label, pct_base, base_date
 
     def _ibkr_daily_split(self, nav):
-        """Split IBKR's day into REGULAR-SESSION + AFTER-HOURS (or PRE-MARKET) from the
-        live dailyPnL and the 4pm-frozen close_pnl. BOTH /pnl and /daily use this, so
-        their 'Today' number matches AND the after-hours/pre-market move shows on its
-        own line. Deposit-clean (dailyPnL excludes deposits). Returns
-        (regular_pnl, after_hrs_pnl, label, pct_base):
-          - market OPEN           -> (live dailyPnL, None, 'Today', start-of-day value)
-          - CLOSED, today's close -> (frozen close_pnl, live-frozen, 'Today', ...)
-          - CLOSED, new session   -> (live dailyPnL, None, 'Pre-mkt'/'Overnight', ...)
-        (None, None, None, None) if dailyPnL isn't ready (caller falls back)."""
+        """Split IBKR's day into REGULAR-SESSION + AFTER-HOURS (or PRE-MARKET). Returns
+        (regular_pnl, after_hrs_pnl, label, pct_base); BOTH /pnl and /daily use it.
+
+        CRITICAL: IBKR's dailyPnL is only reliable DURING the regular session — it RESETS
+        to ~0 after the bell to start the next session (verified 2026-07-13: -1,100 at
+        4:50pm -> -33 at 9:11pm). So AFTER the close we must NOT use dailyPnL:
+          - regular session = the 4pm-frozen close_pnl (best) OR NAV-based
+            (close_nav - prev_close - flows) from the close snapshot;
+          - after-hours     = NAV DRIFT (live_nav - close_nav), always reliable.
+        Deposit-clean (flows subtracted; dailyPnL itself excludes deposits)."""
         dpo = getattr(self, "_pnl_obj", None)
-        if dpo is None or dpo.dailyPnL is None or dpo.dailyPnL != dpo.dailyPnL \
-                or abs(dpo.dailyPnL) >= 1e8:
-            return None, None, None, None
-        dp = float(dpo.dailyPnL)
-        pct_base = (nav - dp) or nav   # account value at the start of the session
+        dp = (float(dpo.dailyPnL) if (dpo is not None and dpo.dailyPnL is not None
+              and dpo.dailyPnL == dpo.dailyPnL and abs(dpo.dailyPnL) < 1e8) else None)
         today = datetime.now().date().isoformat()
         snap = self._load_close_snapshot()
+        today_close = snap.get("nav") if (snap and snap.get("date") == today) else None
         close_pnl = snap.get("close_pnl") if (snap and snap.get("date") == today) else None
+        hist = self._load_nav_history()
+        prev = [p for p in hist if p[0] != today and p[1]]
+
         if self.is_market_open():
-            return dp, None, "Today", pct_base
-        if close_pnl is not None:
-            return close_pnl, dp - close_pnl, "Today", pct_base
-        # No frozen close_pnl for today (only until the 4pm EOD starts recording it).
+            # regular session in progress — dailyPnL is reliable
+            if dp is None:
+                return None, None, None, None
+            return dp, None, "Today", (nav - dp) or nav
+
+        # MARKET CLOSED — dailyPnL has reset, do NOT use it.
+        if today_close is not None and prev:
+            pn0 = prev[-1][1]
+            flow = self._flow_between(prev[-1][0], today)
+            regular = close_pnl if close_pnl is not None else (today_close - pn0 - flow)
+            after_hrs = nav - today_close                       # NAV drift since 4pm
+            return regular, after_hrs, "Today", (pn0 + flow) or nav
+
+        # pre-market (before today's close) or weekend/holiday — NAV vs last close
         from zoneinfo import ZoneInfo
         hr = datetime.now(ZoneInfo("US/Eastern")).hour
-        today_snap = snap.get("nav") if (snap and snap.get("date") == today) else None
-        if not self._is_trading_day():
-            return dp, None, "Overnight", pct_base
-        if hr < 12:
-            return dp, None, "Pre-mkt", pct_base        # morning, before the open
-        if today_snap:
-            # evening after close: derive after-hrs from the NAV drift since the 4pm
-            # close snapshot (same method Alpaca uses); regular = dp - after_hrs so
-            # regular + after_hrs == dailyPnL. Clean frozen split takes over tomorrow.
-            ah = nav - today_snap
-            return dp - ah, ah, "Today", pct_base
-        return dp, None, "Today", pct_base              # no snapshot -> whole-day, no split
+        lbl = "Overnight" if not self._is_trading_day() else ("Pre-mkt" if hr < 12 else "Today")
+        if prev:
+            pn0 = prev[-1][1]
+            flow = self._flow_between(prev[-1][0], today)
+            return nav - pn0 - flow, None, lbl, (pn0 + flow) or nav
+        if dp is not None:
+            return dp, None, lbl, (nav - dp) or nav
+        return None, None, None, None
 
     async def _cmd_pnl(self):
         import html as _h
