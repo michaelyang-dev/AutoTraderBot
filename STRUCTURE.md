@@ -19,24 +19,34 @@ ml_service/
 server/                     # Alpaca paper engine (Node) + Grafana metrics
 ```
 
-## 🟠 Crypto — IN DEVELOPMENT (self-contained, US-accessible via IBKR)
+**Python envs:** production (PM2 + cron on AWS) runs from `ml_service/venv`; local
+dev (`start.sh`) uses the repo-root `.venv` — two separate environments, so keep
+both in sync when adding a dependency.
+
+## 🟠 Crypto — RESEARCH COMPLETE → PAPER-SHADOW (self-contained, US-accessible)
 
 All crypto work lives under `ml_service/crypto/`. Nothing here touches the live
 equity system.
 
 ```
 ml_service/crypto/
-  data/         # spot OHLCV providers + CME-futures/basis fetcher
-  strategies/   # basis carry (core), trend (research)
+  data/         # Binance CDN fetchers (survivorship-complete spot + funding)
+  backtest/     # research battery (momentum, structural_edges, trend, beta_product…)
+  strategy/     # beta_signal.py (live daily target), paper_trade.py, risk_controls.py
   research/     # crypto backtests
-  backtest/     # crypto backtest engine
-ml_service/data/crypto/     # crypto data files (spot, CME futures, basis history)
+ml_service/data/crypto/     # crypto data files (Binance close/funding parquets)
 ```
 
-**Direction (US person):** market-neutral **basis carry** as the core (long
-spot/ETF + short CME futures, harvest the futures premium), with a possible
-trend sleeve. Executed in the existing IBKR account (spot via Paxos, CME BTC/ETH
-futures, spot ETFs). See `ml_service/crypto/README.md`.
+**Finding:** after a survivorship-clean sweep across every frequency and signal
+class, **no systematic alpha survives out-of-sample (2023+)** — momentum, basis,
+funding carry, trend and intraday edges all decayed post-2020-21. (The early
+"+47% momentum" was a survivorship / meme-exclusion mirage on incomplete data.)
 
-**Data:** spot OHLCV is already available (Polygon/Massive `X:BTCUSD`, Alpaca,
-FMP). CME futures/basis history is fetched via the IBKR API.
+**Product = risk-managed BTC/ETH beta** (not alpha): 60/40, vol-target 30%, 200d
+regime de-risk → Sharpe ~1.24 / MaxDD −30% vs BTC buy&hold 0.90 / −77%. US-deployable
+as **spot on Coinbase/Kraken**. A carry+beta paper-trade book runs daily via cron
+(`crypto/strategy/paper_trade.py`); `beta_signal.py` emits today's BTC/ETH/cash
+target from free Coinbase public candles. See `ml_service/crypto/README.md` + `FINDINGS.md`.
+
+**Data:** FREE + survivorship-complete from the Binance `data.binance.vision` CDN
+(683 USDT perps incl. delisted + 57 funding series). No paid vendor, no CME/IBKR feed.

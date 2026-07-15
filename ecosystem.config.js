@@ -1,8 +1,35 @@
 module.exports = {
   apps: [
-    // ── Core services (always running) ──────────────────────────────
+    // ── Live equity engine — REAL MONEY (IBKR) ─────────────────────
+    // start_ibkr_engine.sh loads .env, then execs ml_service/ibkr_engine.py.
+    // Added 2026-07-14: this engine was previously started ONLY by a manual
+    // `pm2 start start_ibkr_engine.sh` and was absent from this file — so a
+    // clean `pm2 start ecosystem.config.js` would NOT have brought up live trading.
     {
-      name: "trading-bot",
+      name: "ibkr-engine",
+      script: "start_ibkr_engine.sh",
+      cwd: "/home/ubuntu/AutoTraderBot",
+      watch: false,
+      autorestart: true,
+      restart_delay: 10000,
+      max_restarts: 10,
+      env: {
+        PYTHONUNBUFFERED: "1",
+      },
+    },
+    {
+      name: "signal-server",
+      script: "start_signal_server.sh",
+      cwd: "/home/ubuntu/AutoTraderBot",
+      watch: false,
+      autorestart: true,
+      max_restarts: 5,
+      env: {
+        PYTHONUNBUFFERED: "1",
+      },
+    },
+    {
+      name: "trading-engine",
       script: "server/index.js",
       cwd: "/home/ubuntu/AutoTraderBot",
       watch: false,
@@ -14,11 +41,13 @@ module.exports = {
         PORT: 3001,
       },
     },
+    // ── EDGAR realtime monitor — currently STOPPED on the server (short-data
+    // collection paused); a from-git bring-up will start it. `pm2 stop
+    // edgar-monitor` afterward to keep it paused.
     {
-      name: "ml-server",
-      script: "/home/ubuntu/AutoTraderBot/ml_service/venv/bin/python3",
-      args: "/home/ubuntu/AutoTraderBot/ml_service/signal_server.py",
-      cwd: "/home/ubuntu/AutoTraderBot/ml_service",
+      name: "edgar-monitor",
+      script: "start_edgar_monitor.sh",
+      cwd: "/home/ubuntu/AutoTraderBot",
       watch: false,
       autorestart: true,
       max_restarts: 5,
@@ -27,55 +56,13 @@ module.exports = {
       },
     },
 
-    // ── Reconciler (every 5 min) ────────────────────────────────────
-    {
-      name: "journal-reconciler",
-      script: "scripts/reconcile_journal.js",
-      cwd: "/home/ubuntu/AutoTraderBot",
-      cron_restart: "*/5 * * * *",
-      autorestart: false,
-      watch: false,
-    },
-
-    // ── Pre-market check (9:25 AM ET, Mon–Fri) ─────────────────────
-    {
-      name: "premarket-check",
-      script: "scripts/premarket_check.js",
-      cwd: "/home/ubuntu/AutoTraderBot",
-      cron_restart: "25 9 * * 1-5",
-      autorestart: false,
-      watch: false,
-    },
-
-    // ── Daily report (4:15 PM ET, Mon–Fri) ──────────────────────────
-    {
-      name: "daily-report",
-      script: "scripts/daily_report.js",
-      cwd: "/home/ubuntu/AutoTraderBot",
-      cron_restart: "15 16 * * 1-5",
-      autorestart: false,
-      watch: false,
-    },
-
-    // ── Hourly heartbeat (10 AM–3 PM ET, Mon–Fri) ───────────────────
-    {
-      name: "hourly-heartbeat",
-      script: "scripts/hourly_heartbeat.js",
-      cwd: "/home/ubuntu/AutoTraderBot",
-      cron_restart: "0 10-15 * * 1-5",
-      autorestart: false,
-      watch: false,
-    },
-
-    // ── Weekly report (Sunday 6:00 PM ET) ───────────────────────────
-    {
-      name: "weekly-report",
-      script: "scripts/weekly_report.js",
-      cwd: "/home/ubuntu/AutoTraderBot",
-      cron_restart: "0 18 * * 0",
-      autorestart: false,
-      watch: false,
-    },
+    // Retired 2026-07-14: the journal-reconciler / premarket-check / daily-report /
+    // hourly-heartbeat / weekly-report PM2 cron_restart apps were removed. They were
+    // committed (bb7243f) but NEVER ran on the server — pm2 cron_restart is flaky
+    // ("cron_restart on a stopped process doesn't fire", see below) and they were
+    // never registered. Real-money alerts now come from ibkr-engine's own Telegram;
+    // the Alpaca paper side has Grafana on :3001. The scripts remain under scripts/
+    // — if ever wanted, wire them via the SYSTEM crontab (reliable), not pm2.
 
     // NOTE: data refreshes (weekday 5:30 PM + Sunday 9 PM ET) run via the SYSTEM
     // crontab — reliable. The old PM2 cron_restart apps for refresh were flaky

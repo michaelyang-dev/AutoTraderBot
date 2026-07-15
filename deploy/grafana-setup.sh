@@ -17,7 +17,7 @@
 #    - Access: http://<EC2_IP>:3000
 #
 #  Prerequisites:
-#    - trading-bot running on port 3001 (serves /api/grafana/* endpoints)
+#    - trading-engine running on port 3001 (serves /api/grafana/* endpoints)
 #    - EC2 security group allows inbound TCP 3000
 # ══════════════════════════════════════════════════════════════════════
 

@@ -17,7 +17,7 @@ The history accumulation (#6) is critical: it builds a point-in-time record
 of signals that change daily (price targets, DCF, short interest, etc.).
 Without this, backtests use current values applied to past dates (look-ahead bias).
 
-After completion, restarts ml-server to pick up new data.
+After completion, restarts signal-server to pick up new data.
 
 Usage:
     cd ml_service && python3 scripts/refresh_data.py

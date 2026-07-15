@@ -111,7 +111,7 @@ function getPmStatus() {
 
 // ── Services health (PM2 continuous vs cron aware) ───────────────────
 
-const CONTINUOUS_APPS = new Set(["trading-bot", "ml-server"]);
+const CONTINUOUS_APPS = new Set(["trading-engine", "signal-server"]);
 const CRON_APPS = new Set(["journal-reconciler", "premarket-check", "daily-report", "hourly-heartbeat", "weekly-report"]);
 
 function checkServicesHealth() {
