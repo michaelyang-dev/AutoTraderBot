@@ -163,6 +163,10 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 - `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
 - Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
   `sp1500_members.json`.
+- **Trailing-stop KeyError (fixed 2026-07-16, fb3f539):** every stop fire crashed the rest of
+  that cycle (`check_trailing_stops` double-deleted `trailing_peaks[sym]` — `sell_position`
+  already removes it). The sale always completed; an "⚠️ IBKR Engine error: '<SYM>'" telegram
+  right after a stop was THIS, not a failed sale. First exposed by the SNDK −40.2% stop.
 
 ## Services (PM2 on EC2 54.158.238.15)
 - `ibkr-engine` — LIVE v12, IBKR (IB Gateway in docker, engine connects :4001)
