@@ -61,8 +61,23 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 
 ## EDGAR freshness overlay — ENABLED LIVE 2026-07-13 (roe-only)
 - `scripts/edgar_fundamentals_patch.py` (daily cron 18:40): per-feature proof gate vs
-  Compustat -> `data/edgar_feature_overlay.json`. Coverage: roe 93% / gm 34% / d2e 22% /
-  eps_surprise 100% (FMP events, 91.5% sign agreement vs IBES on 57,864 events).
+  Compustat -> `data/edgar_feature_overlay.json`. Coverage: roe **96%** (raised from ~93%;
+  see roe-coverage note below) / gm 23% / d2e 10% / eps_surprise 100% (FMP events, 91.5%
+  sign agreement vs IBES on 57,864 events).
+- **roe coverage 95.4%→96.5% (2026-07-15):** appended niq/seqq specs for minority-interest
+  firms (parent niq = `ProfitLoss`−NCI; parent seqq = incl-NCI equity−`MinorityInterest`)
+  + preferred-heavy filers (`NetIncomeLossAvailableToCommonStockholdersDiluted`). Appended
+  after the base specs → cannot alter any currently-passing symbol; gate still arbitrates.
+  Calibration (5,948 events): +1.1pp roe coverage, accuracy flat at 98.8%. validated 1430→1442.
+- **Reconciliation monitor** `scripts/edgar_overlay_reconcile.py` (cron 18:55, after the
+  patch): (1) WALK-FORWARD — replays extraction over the Compustat history we already own,
+  scores vs truth (2026-07-15: roe **98.57%** over 8,419 events); (2) GO-FORWARD — archives
+  each overlay to `data/edgar_overlay_archive/` and, when a later WRDS upload reveals a
+  patched quarter's truth, diffs served-vs-truth into `data/edgar_reconcile_ledger.json`.
+  Telegram-alerts if realized roe accuracy < 97%. Report: `data/edgar_reconcile_report.json`.
+  Third-vendor spot-check (`research/edgar_fmp_crosscheck.py`, 2026-07-15): the live roe
+  patches agree with FMP within 10% on **98.4%** of 249 names (disagreers = ROE denominator
+  instability for near-zero-equity firms, not extraction error).
 - **LIVE build now `build_signals_v9(..., edgar_overlay=True)`** — the engines trade the
   overlay (fresh ROE) signals. First effect: 7/14 rebalance. A/B validated +0.5pp CAGR
   (roe-only, PIT-honest). The no-overlay build is now a monitoring BASELINE (served at

@@ -54,9 +54,18 @@ _STB = ["CommercialPaper", "ShortTermBorrowings", "OtherShortTermBorrowings",
         "ShortTermBankLoansAndNotesPayable"]
 _FLN = ["FinanceLeaseLiabilityNoncurrent"]
 _FLC = ["FinanceLeaseLiabilityCurrent"]
+_NCI = ["NetIncomeLossAttributableToNoncontrollingInterest"]   # parent niq = total - NCI
+_MI = ["MinorityInterest"]                                     # parent seqq = incl-NCI - MI
 CONCEPTS = {
+    # Trailing niq/seqq variants (2026-07-15, appended → tried only after the base specs
+    # fail, so they cannot alter any currently-passing symbol; gate still arbitrates):
+    # minority-interest firms report consolidated (incl-NCI) totals, so parent-attributable
+    # = total − NCI; preferred-heavy filers expose only the AvailableToCommon* variant.
+    # Recovers +4 niq / +9 seqq of the 28/38 item fails (probe 2026-07-15, gate-verified).
     "niq":   [("NetIncomeLoss", [], []), ("ProfitLoss", [], []),
-              ("NetIncomeLossAvailableToCommonStockholdersBasic", [], [])],
+              ("NetIncomeLossAvailableToCommonStockholdersBasic", [], []),
+              ("NetIncomeLossAvailableToCommonStockholdersDiluted", [], []),
+              ("ProfitLoss", [], [_NCI]), ("NetIncomeLoss", [], [_NCI])],
     "saleq": [("RevenueFromContractWithCustomerExcludingAssessedTax", [], []),
               ("Revenues", [], []), ("SalesRevenueNet", [], []),
               ("RevenueFromContractWithCustomerIncludingAssessedTax", [], []),
@@ -66,7 +75,8 @@ CONCEPTS = {
               ("CostOfRevenue", [], []), ("CostOfGoodsAndServicesSold", [], []),
               ("CostOfGoodsSold", [], [_DA]), ("CostOfGoodsSold", [], [])],
     "seqq":  [("StockholdersEquity", [], []),
-              ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", [], [])],
+              ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", [], []),
+              ("StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", [], [_MI])],
     "dlttq": [("LongTermDebtNoncurrent", [], []), ("LongTermDebtNoncurrent", [_FLN], []),
               ("LongTermDebtAndCapitalLeaseObligations", [], []), ("LongTermDebt", [], [])],
     "dlcq":  [("LongTermDebtCurrent", [_STB], []), ("DebtCurrent", [], []),
@@ -81,6 +91,11 @@ FLOWS = {"niq", "saleq", "cogsq"}
 GATE_DEPTH = {"niq": 1, "seqq": 1, "saleq": 1, "cogsq": 2, "dlttq": 2, "dlcq": 2}
 ZERO_OK = {"dlttq", "dlcq"}            # legitimately 0/absent (debt-free firms)
 REL_TOL, ABS_TOL = 0.02, 2.0           # 2% relative or $2M absolute ($MM units)
+# NOTE: a served-quarter "2nd-source corroboration" guard was tested 2026-07-15 and
+# REJECTED — the candidate specs are deliberately NON-equivalent (NetIncomeLoss=parent vs
+# ProfitLoss=incl-NCI), so a second tag disagreeing is usually CORRECT, not an error. It
+# withheld 25/250 good patches (10%) to chase a 1.2% error rate the gate+jump-guard already
+# cover (calibration served-quarter acc 98.8%). The anchor gate + 5x jump-guard suffice.
 
 # Candidate features + EXACT live formulas (signal_builder._fill_fundamentals). Only
 # `roe` is live-consumed; gm/d2e are generated for research and excluded by the loader.
@@ -384,7 +399,8 @@ def main():
                "features": overlay}, open(OVERLAY, "w"), indent=1)
     json.dump({"stats": stats, "fail_items": fail_items}, open(REPORT, "w"), indent=1)
     print(f"  overlay -> {OVERLAY} ({len(overlay)} symbols with >=1 fresh feature)")
-    print("  INERT: nothing reads this file until the flagged signal_builder integration + shadow pass.")
+    print("  LIVE: signal_builder consumes ROE from this file (edgar_overlay=True since 2026-07-13);"
+          " gm/d2e/eps generated for research only, excluded by the loader.")
 
 
 if __name__ == "__main__":
