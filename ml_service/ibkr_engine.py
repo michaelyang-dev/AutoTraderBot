@@ -601,7 +601,7 @@ class IBKREngine:
             if dd < -TRAILING_STOP:
                 log.warning(f"TRAILING STOP: {sym} dropped {dd:.1%} from peak ${peak:.2f}")
                 await self.sell_position(sym, pos["qty"], f"trailing_stop ({dd:.1%})")
-                del self.trailing_peaks[sym]
+                self.trailing_peaks.pop(sym, None)  # sell_position already deletes it; idempotent (was del -> KeyError)
 
         # Persist peaks to disk after every check
         self._save_trailing_peaks()
