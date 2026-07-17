@@ -167,6 +167,15 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
   that cycle (`check_trailing_stops` double-deleted `trailing_peaks[sym]` — `sell_position`
   already removes it). The sale always completed; an "⚠️ IBKR Engine error: '<SYM>'" telegram
   right after a stop was THIS, not a failed sale. First exposed by the SNDK −40.2% stop.
+- **Engine runs clientId 2 since 2026-07-17** (`IB_CLIENT_ID=2` in `.env`). The gateway's
+  internal clientId-1 session WEDGED during IBKR's nightly server reset (00:14 ET, "Error
+  326: client id already in use" while the container stayed up) — engine flapped 00:14→09:01
+  until switched. If 326 ever recurs on clientId 2: bump the id again or restart the
+  `ibgateway` container (may require 2FA re-auth). Telegram/pnl/deploy "breaking" during such
+  an outage is downstream of the dead IB connection, not a bot bug.
+- **"/deploy: nothing to deploy" with fresh cash is usually CORRECT**, not a bug: deploy only
+  buys the deficit to (1.49 × vol_scale × NAV). Elevated vol → scale ~0.5 → target below
+  current gross → inert. New cash goes to work at the next rebalance / when vol normalizes.
 
 ## Services (PM2 on EC2 54.158.238.15)
 - `ibkr-engine` — LIVE v12, IBKR (IB Gateway in docker, engine connects :4001)
