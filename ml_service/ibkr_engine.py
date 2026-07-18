@@ -96,6 +96,16 @@ VOL_TARGET = VOL_TARGET_1X * EFFECTIVE_LEVERAGE  # ~0.22 account-NAV-vol target
 VOL_LOOKBACK = 40       # trading days of NAV history for the vol estimate
 VOL_SCALE_FLOOR = 0.30  # never cut effective leverage below 30% of base
 
+# Credit de-risk gate (2026-07-18): halve the gross-leverage target while the HY credit
+# spread (FRED BAMLH0A0HYM2) sits in the top 5% of its own expanding-history percentile.
+# Orthogonal to vol-scaling (credit-led crises vs equity-vol crises; measured ~93% additive).
+# Validated full-engine (26yr): MaxDD -63.5%->-56.6% at +0.3pp CAGR (free tail insurance);
+# walk-forward OOS: +16.6pp MaxDD and +1.8pp CAGR on an OOS-selected book, with the 2008
+# de-risk decision using only pre-2008 data. Historically ON ~8.7% of days. Signal file is
+# maintained by the daily credit_gate.py cron; the engine only READS it (no network in the
+# trading path) and FAILS SAFE to 1.0. See research/THREAD_T_FINDINGS.md + THREAD_B/WF docs.
+CREDIT_GATE = True
+
 # Telegram
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -445,6 +455,29 @@ class IBKREngine:
         vol_scale = min(1.0, max(VOL_SCALE_FLOOR, VOL_TARGET / realized_vol))
         return vol_scale, realized_vol
 
+    def compute_credit_derisk(self):
+        """Credit-spread de-risk gate multiplier: 1.0 normal, 0.5 while HY-OAS >= p95 of
+        its own expanding history (exact parity with the validated backtest math — see
+        credit_gate.py). Pure FILE read via credit_gate.gate_status(); the daily cron
+        maintains the data, so there is NO network in the trading path. FAIL-SAFE: any
+        problem (missing/stale file, import error) -> 1.0, with one Telegram warning per
+        day so a dead feed can't silently change sizing."""
+        if not CREDIT_GATE:
+            return 1.0, None
+        try:
+            from credit_gate import gate_status
+            st = gate_status()
+        except Exception as e:
+            st = {"derisk": 1.0, "ok": False, "stale": True,
+                  "why": f"{type(e).__name__}: {e}", "pctile": None}
+        if (not st.get("ok")) or st.get("stale"):
+            today = datetime.now().date().isoformat()
+            if getattr(self, "_credit_warned", None) != today:
+                self._credit_warned = today
+                send_telegram(f"⚠️ Credit-gate data problem ({st.get('why') or 'stale data'}) "
+                              f"— gate inert at 1.0 (fail-safe). Check the credit_gate cron.")
+        return st.get("derisk", 1.0), st
+
     def get_drawdown_scale(self, current_value):
         """Reduce position sizes as drawdown deepens from peak."""
         if self.portfolio_peak <= 0:
@@ -674,10 +707,10 @@ class IBKREngine:
         return trade
 
     @staticmethod
-    def _calibrate_quantities(signals, prices, nav, vol_scale):
+    def _calibrate_quantities(signals, prices, nav, vol_scale, credit_derisk=1.0):
         """CLOSED-LOOP position sizing. Chooses integer share counts whose ACTUAL
         gross (after the 15% cap and whole-share truncation) hits
-        EFFECTIVE_LEVERAGE x vol_scale of NAV.
+        EFFECTIVE_LEVERAGE x vol_scale x credit_derisk of NAV.
 
         Replaces the open-loop LEVERAGE=1.8 overshoot: that constant was tuned for
         ~$30K rounding drag, so as NAV grows (drag shrinks) realized leverage would
@@ -695,8 +728,8 @@ class IBKREngine:
         if not priced or nav <= 0:
             return {}, 0.0, 0.0
         total_prob = sum(p for _, p, _ in priced)
-        target_gross = nav * EFFECTIVE_LEVERAGE * vol_scale
-        m = EFFECTIVE_LEVERAGE * vol_scale      # pass 1: assume zero rounding drag
+        target_gross = nav * EFFECTIVE_LEVERAGE * vol_scale * credit_derisk
+        m = EFFECTIVE_LEVERAGE * vol_scale * credit_derisk   # pass 1: assume zero rounding drag
         qty, gross = {}, 0.0
         for i in range(4):
             qty, gross = {}, 0.0
@@ -793,7 +826,19 @@ class IBKREngine:
         # Vol-scaling overlay: scale effective leverage by realized portfolio vol.
         # Logs the realized-leverage path for the live-vs-backtest watch-item.
         vol_scale, realized_vol = self.compute_vol_scale()
-        target_eff = EFFECTIVE_LEVERAGE * vol_scale
+        # Credit de-risk gate: multiplies the leverage target alongside vol_scale.
+        credit_derisk, credit_st = self.compute_credit_derisk()
+        if credit_derisk < 1.0:
+            log.warning(f"CREDIT GATE ON: HY-OAS pctile {credit_st['pctile']:.1%} "
+                        f"-> gross-leverage target x{credit_derisk:.2f}")
+            send_telegram(f"🛡️ CREDIT GATE ON: HY credit spread at the "
+                          f"{credit_st['pctile']:.0%} percentile of its history — "
+                          f"leverage target cut to "
+                          f"{EFFECTIVE_LEVERAGE * vol_scale * credit_derisk:.2f}x until stress passes.")
+        elif credit_st and credit_st.get("ok"):
+            log.info(f"CREDIT-GATE: HY-OAS {credit_st['latest']:.2f} "
+                     f"pctile {credit_st['pctile']:.1%} -> off (1.00)")
+        target_eff = EFFECTIVE_LEVERAGE * vol_scale * credit_derisk
         if realized_vol is not None:
             log.info(f"VOL-SCALE: realized_vol={realized_vol:.1%} target={VOL_TARGET:.0%} "
                      f"-> scale={vol_scale:.2f} -> effective leverage target {target_eff:.2f}x "
@@ -818,11 +863,11 @@ class IBKREngine:
         # 2b. Closed-loop sizing: integer quantities whose ACTUAL gross hits the
         # EFFECTIVE_LEVERAGE target (see _calibrate_quantities for why).
         target_qty_map, sizing_mult, projected_gross = self._calibrate_quantities(
-            signals, live_prices, portfolio_value, vol_scale)
+            signals, live_prices, portfolio_value, vol_scale, credit_derisk)
         log.info(f"SIZING: adaptive mult {sizing_mult:.2f} (ceiling {LEVERAGE:.2f}) -> "
                  f"projected gross ${projected_gross:,.0f} = "
                  f"{(projected_gross / portfolio_value if portfolio_value else 0):.2f}x NAV "
-                 f"(target {EFFECTIVE_LEVERAGE * vol_scale:.2f}x)")
+                 f"(target {EFFECTIVE_LEVERAGE * vol_scale * credit_derisk:.2f}x)")
 
         # 3. BUY new positions / adjust existing
         for sig in signals:
@@ -1728,6 +1773,8 @@ class IBKREngine:
         nav, gross = s["nav"], s["gross"]
         items = [it for it in s["items"] if it.position > 0 and it.marketValue > 0]
         vs, _ = self.compute_vol_scale()
+        cd, _ = self.compute_credit_derisk()
+        vs = vs * cd   # combined scale: vol-scaling x credit gate (same target the rebalance uses)
         target_gross = nav * EFFECTIVE_LEVERAGE * vs
         deficit = target_gross - gross
         plan = []
@@ -1782,7 +1829,7 @@ class IBKREngine:
         lev_now = s["gross"] / s["nav"] if s["nav"] else 0
         head = (self._tg_header("🚀 DEPLOY IDLE CASH", self.is_market_open()) +
                 f"Book {lev_now:.2f}x vs target {EFFECTIVE_LEVERAGE * vs:.2f}x "
-                f"<i>(vol-scale {vs:.2f})</i>\n")
+                f"<i>(scale {vs:.2f} = vol-scale × credit gate)</i>\n")
         if not plan:
             left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
             why = ("gap under the $500 / 2% NAV floor" if deficit > 0
