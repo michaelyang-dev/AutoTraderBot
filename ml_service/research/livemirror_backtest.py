@@ -106,6 +106,9 @@ class LiveMirrorBacktester(FastBacktester):
         holdings = {}
         port_values = []
         last_targets = {}
+        sig_exit_every = config.get("signal_exit_every")   # research: mid-cycle exit check cadence (days)
+        sig_exit_grace = config.get("signal_exit_grace")   # tolerate mom top-K membership (None = top_n)
+        self._sigexit_count = 0
         self._fin_paid = 0.0
         self._gross_path = []   # (date, realized gross / NAV) diagnostic
         prev_sh = {}; prev_px = {}; prev_gross = 0.0   # UNLEVERED vol-signal tracking
@@ -169,6 +172,27 @@ class LiveMirrorBacktester(FastBacktester):
                 return g
 
             if day_idx % rebal_days != 0:
+                # ---- mid-cycle SIGNAL-EXIT (research): sell a holding when NO sleeve
+                # currently wants it (user idea: don't wait out the 20d cadence). Cash
+                # waits until the next rebalance (recycle tested-dead). grace = tolerate
+                # names still inside the mom top-K even if outside the top-5 picks. ----
+                if sig_exit_every and holdings and day_idx % sig_exit_every == 0 and day_idx > 0:
+                    K = sig_exit_grace if sig_exit_grace else top_n
+                    m1 = strategy1_momentum_reversal(date, self.uni, 0, top_n=K,
+                                                     rebal_days=rebal_days) or {}
+                    mem = self.uni.get_sp500(date)
+                    mv = strategy_value(self.uni, date, mem, top_n=10) or {}
+                    m3 = strategy3_sector_rotation(date, self.uni, 0) or {}
+                    m5 = strategy5_lowvol_quality(date, self.uni, 0) or {}
+                    wanted = set(m1) | set(mv) | set(m3) | set(m5)
+                    for sym in list(holdings):
+                        if sym not in wanted:
+                            px = today.get(sym, holdings[sym]["entry_px"])
+                            cash += holdings[sym]["shares"] * px * (1 - cost_frac)
+                            del holdings[sym]
+                            self._sigexit_count += 1
+                    nav = cash + sum(h["shares"] * today.get(s, h["entry_px"])
+                                     for s, h in holdings.items())
                 prev_gross = _snapshot()
                 port_values.append((date, nav))
                 continue
