@@ -483,7 +483,7 @@ class FastBacktester:
             if vol_scaling and len(recent_rets) >= 20:
                 realized_vol = np.std(recent_rets) * np.sqrt(252)
                 if realized_vol > 0.01:
-                    vol_scale = min(1.5, max(0.3, vol_target / realized_vol))
+                    vol_scale = min(config.get("vol_scale_cap", 1.5), max(0.3, vol_target / realized_vol))
                     combined = {s: w * vol_scale for s, w in combined.items()}
 
             longs = {s: w for s, w in combined.items() if w > 0}

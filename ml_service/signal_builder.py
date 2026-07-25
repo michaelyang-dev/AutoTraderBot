@@ -293,7 +293,11 @@ def _fill_fundamentals(features, data_dir):
             # roe = niq / seqq (annualized: *4 for quarterly) — matches backtest exactly
             # Note: ceqq (common equity) != seqq (stockholders' equity) for ~10% of stocks
             if "niq" in latest.columns and "seqq" in latest.columns:
-                roe = (latest["niq"] * 4) / latest["seqq"].replace(0, np.nan)
+                # F3 PARITY FIX (2026-07-25): require seqq > 0 like the backtest
+                # (wrds_universe.py) — negative-equity + negative-income firms otherwise
+                # compute spurious POSITIVE roe and slip into the value sleeve (measured:
+                # 10 live-eligible names the backtest excludes, incl. SABR which was picked).
+                roe = (latest["niq"] * 4) / latest["seqq"].where(latest["seqq"] > 0)
                 roe_map = roe.to_dict()
                 mask = features["symbol"].isin(roe_map)
                 features.loc[mask, "roe"] = features.loc[mask, "symbol"].map(roe_map)
@@ -556,7 +560,21 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
         # v12: SI DISABLED — hurts returns by -3pp (verified May 2026)
         # _load_si_change_data(_uni_cache)
         _uni_cache._si_change_rank = {}
-        log.info("v9.6 FastUniverse ready")
+        # F1 PARITY FIX (2026-07-25): momentum + lowvol sleeves must select from the FULL
+        # SP1500, like every validated backtest (which overrides get_sp500 to SP1500).
+        # Live never did — FastUniverse.get_sp500 served SP500-only (503 names), so 65% of
+        # the book picked from 1/3 of the validated universe. Live-mirror A/B (clean PIT
+        # membership, 2018-25 3-start): SP500-pool −15.7pp CAGR / −0.38 Sharpe vs SP1500.
+        # Value sleeve already used SP1500 (below); this aligns mom/s5 with it.
+        _uni_cache.get_sp500 = lambda d: get_sp1500_on_date(d)
+        # F2 PARITY FIX (2026-07-25): rev-surprise ×1.10 / beat-streak ×1.05 momentum
+        # boosts were ACTIVE live but zeroed in every validated number (FastUniverse loads
+        # fundamentals_earnings.parquet unconditionally; validated runs clear_deployed()).
+        # Unvalidated live-only behavior — same class as the removed eps boost (−0.5pp).
+        _uni_cache._earnings_signals = {}
+        _uni_cache._revenue_surprise = {}
+        _uni_cache._beat_streak = {}
+        log.info("v9.6 FastUniverse ready (SP1500 pool, earnings boosts OFF — parity)")
 
     uni = _uni_cache
     if edgar_overlay:

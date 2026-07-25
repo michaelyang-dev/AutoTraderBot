@@ -108,6 +108,24 @@ class LiveMirrorBacktester(FastBacktester):
         last_targets = {}
         sig_exit_every = config.get("signal_exit_every")   # research: mid-cycle exit check cadence (days)
         sig_exit_grace = config.get("signal_exit_grace")   # tolerate mom top-K membership (None = top_n)
+        # research: DE-RISK PARKING — when the leverage target < 1.0x NAV, park the idle
+        # fraction in a bond ETF (total-return series) instead of 0%-cash. Sold when the
+        # target returns to >= 1.0x. Trades only at rebalance (cadence-consistent).
+        park_etf = config.get("park_etf")                  # "TLT" | "IEF" | "SHY" | None
+        park_px_ser = None
+        if park_etf:
+            _b = pd.read_parquet(os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "research", "_bond_etf_tr.parquet"))[park_etf].dropna()
+            _idx = pd.DatetimeIndex(trading_dates)
+            park_px_ser = _b.reindex(_idx.union(_b.index)).sort_index().ffill().reindex(_idx)
+        park_sh = 0.0
+        self._park_days = 0
+
+        def park_val(d):
+            if park_sh <= 0 or park_px_ser is None:
+                return 0.0
+            v = park_px_ser.get(d)
+            return park_sh * float(v) if pd.notna(v) else 0.0
         self._sigexit_count = 0
         self._fin_paid = 0.0
         self._gross_path = []   # (date, realized gross / NAV) diagnostic
@@ -161,7 +179,7 @@ class LiveMirrorBacktester(FastBacktester):
                 chg = (-cash) * (fin_rate / 252.0)
                 cash -= chg; self._fin_paid += chg
 
-            nav = cash + sum(h["shares"] * today.get(s, h["entry_px"]) for s, h in holdings.items())
+            nav = cash + sum(h["shares"] * today.get(s, h["entry_px"]) for s, h in holdings.items()) + park_val(date)
 
             def _snapshot():
                 prev_sh.clear(); prev_px.clear()
@@ -192,7 +210,7 @@ class LiveMirrorBacktester(FastBacktester):
                             del holdings[sym]
                             self._sigexit_count += 1
                     nav = cash + sum(h["shares"] * today.get(s, h["entry_px"])
-                                     for s, h in holdings.items())
+                                     for s, h in holdings.items()) + park_val(date)
                 prev_gross = _snapshot()
                 port_values.append((date, nav))
                 continue
@@ -211,6 +229,20 @@ class LiveMirrorBacktester(FastBacktester):
             sector_cap = config.get("sector_cap")         # max names per 2-digit SIC among top_n
             pool = config.get("mom_pool", config.get("mom_quality_pool", 2.0))
             _tn = int(round(top_n * pool)) if (mom_qual or sector_cap) else top_n
+            # ---- F1 AUDIT REPLICA: live mom/s5 sleeves select from SP500-only membership
+            #      (PIT via self.sp500_mem); value/breadth stay SP1500. mom_pool_sp500=True ----
+            _restore_pool = None
+            if config.get("mom_pool_sp500"):
+                _restore_pool = self.uni.get_sp500
+                _mem = self.sp500_mem
+                _keys = sorted(_mem.keys())
+                def _sp500_pit(d, __m=_mem, __k=_keys):
+                    if d in __m:
+                        return set(__m[d])
+                    import bisect
+                    i = bisect.bisect_right(__k, d) - 1
+                    return set(__m[__k[i]]) if i >= 0 else set()
+                self.uni.get_sp500 = _sp500_pit
             t1 = strategy1_momentum_reversal(date, self.uni, day_idx, top_n=_tn, rebal_days=rebal_days)
             if t1 is None:
                 t1 = last_targets.get("mom", {})
@@ -238,10 +270,12 @@ class LiveMirrorBacktester(FastBacktester):
                         picked.append(s)
                 tot = sum(t1[s] for s in picked)
                 t1 = {s: t1[s] / tot for s in picked} if tot > 0 else {s: t1[s] for s in picked}
+            t5 = strategy5_lowvol_quality(date, self.uni, day_idx)   # s5 under the (possibly SP500) pool
+            if _restore_pool is not None:
+                self.uni.get_sp500 = _restore_pool                   # value/breadth back to SP1500
             members = self.uni.get_sp500(date)
             t_val = strategy_value(self.uni, date, members, top_n=10)
             t3 = strategy3_sector_rotation(date, self.uni, day_idx)
-            t5 = strategy5_lowvol_quality(date, self.uni, day_idx)
             if t3 is None:
                 t3 = last_targets.get("s3", {})
             if t5 is None:
@@ -300,7 +334,7 @@ class LiveMirrorBacktester(FastBacktester):
             if vol_scaling and len(recent_rets) >= 20:
                 realized_vol = np.std(recent_rets) * np.sqrt(252)
                 if realized_vol > 0.01:
-                    vol_scale = min(1.5, max(0.3, vol_target / realized_vol))
+                    vol_scale = min(config.get("vol_scale_cap", 1.5), max(0.3, vol_target / realized_vol))
                     combined = {s: w * vol_scale for s, w in combined.items()}
 
             longs = {s: w for s, w in combined.items() if w > 0}
@@ -358,7 +392,30 @@ class LiveMirrorBacktester(FastBacktester):
                         cash += 0
                         del holdings[sym]
 
-            nav = cash + sum(h["shares"] * today.get(s, h["entry_px"]) for s, h in holdings.items())
+            # ---- research: DE-RISK PARKING trade (rebalance-cadence only) ----
+            if park_px_ser is not None:
+                ppx = park_px_ser.get(date)
+                if pd.notna(ppx) and ppx > 0:
+                    nav_now = cash + sum(h["shares"] * today.get(s, h["entry_px"])
+                                         for s, h in holdings.items()) + park_sh * float(ppx)
+                    park_target = max(0.0, nav_now * (1.0 - lev_t))   # idle fraction when de-levered
+                    delta = park_target - park_sh * float(ppx)
+                    if abs(delta) > max(nav_now * 0.003, 1e-9):
+                        if delta > 0:
+                            spend = min(delta, max(0.0, cash - 1.0))   # never borrow to park
+                            q = float(np.floor(spend / ppx)) if integer_shares else spend / ppx
+                            if q > 0:
+                                cash -= q * float(ppx) * (1 + cost_frac)
+                                park_sh += q
+                        else:
+                            q = min(park_sh, float(np.ceil(-delta / ppx)) if integer_shares else -delta / ppx)
+                            if q > 0:
+                                cash += q * float(ppx) * (1 - cost_frac)
+                                park_sh -= q
+                    if park_sh > 0:
+                        self._park_days += 1
+
+            nav = cash + sum(h["shares"] * today.get(s, h["entry_px"]) for s, h in holdings.items()) + park_val(date)
             prev_gross = _snapshot()   # end-of-rebal snapshot for tomorrow's vol signal
             self._gross_path.append((date, prev_gross / nav if nav > 0 else 0))
             port_values.append((date, max(nav, 0)))
