@@ -164,6 +164,15 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 - `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
 - Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
   `sp1500_members.json`.
+- **UNIVERSE PARITY (fixed 2026-07-25, c8a097a) — the biggest divergence found to date:**
+  live momentum+lowvol sleeves selected from **SP500-only** (FastUniverse.get_sp500 →
+  sp500_constituents.json, 503 names) from launch until 2026-07-25, while every validated
+  number selects from SP1500. Measured (clean-PIT live-mirror A/B, 2018-25 3-start):
+  **−15.7pp CAGR / −0.38 Sharpe**. Fixed by overriding get_sp500 → get_sp1500_on_date in
+  signal_builder (same source the value sleeve always used). Also fixed same-commit:
+  rev-surprise ×1.10 / beat-streak ×1.05 boosts zeroed (were live-only, unvalidated);
+  roe seqq>0 guard (spurious value-eligibility for negative-equity names, e.g. SABR).
+  First trading effect: Aug-11 rebalance — expect HEAVY turnover into mid-cap momentum.
 - **Trailing-stop KeyError (fixed 2026-07-16, fb3f539):** every stop fire crashed the rest of
   that cycle (`check_trailing_stops` double-deleted `trailing_peaks[sym]` — `sell_position`
   already removes it). The sale always completed; an "⚠️ IBKR Engine error: '<SYM>'" telegram
