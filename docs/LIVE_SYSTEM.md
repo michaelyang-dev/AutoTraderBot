@@ -164,6 +164,19 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 - `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
 - Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
   `sp1500_members.json`.
+- **SECTOR SLEEVE (s3) ZEROED 2026-07-26 — parity by construction.** `strategy3_sector_rotation`
+  returns sector **ETFs** (XLK/XLE/...), which the live path can never deliver (signal_builder
+  emits SP1500 *members*; ETFs are not members), so live silently dropped them while the
+  backtest bought them — active whenever bear/crash weights applied (s3 was .10 there).
+  Measured (`research/THREAD_S3_FINDINGS.md`, full live-mirror, both periods): dropping s3 and
+  renormalizing = **+0.1pp/+0.2pp CAGR, IDENTICAL Sharpe (0.96/0.79), -0.3pp/-0.2pp MaxDD** —
+  inside noise. So s3 was zeroed in `PROD_WEIGHTS_BEAR/CRASH` (survivors renormalized) to make
+  live and backtest the same book. **Verified live-neutral on deploy: same 24 names, max
+  probability change 0.0002.** s3 code path retained, zero-weighted.
+- **UMD CRASH MODE was ACTIVE on 2026-07-26** (20d price-UMD -0.079 vs -0.05 threshold) — the
+  book runs `PROD_WEIGHTS_CRASH` (momentum cut, lowvol/value raised). If the top signal looks
+  like a defensive/odd name rather than the strongest momentum, check the UMD state FIRST:
+  served "probability" is the blended **portfolio weight** (max = 0.95), NOT a momentum score.
 - **UNIVERSE PARITY (fixed 2026-07-25, c8a097a) — the biggest divergence found to date:**
   live momentum+lowvol sleeves selected from **SP500-only** (FastUniverse.get_sp500 →
   sp500_constituents.json, 503 names) from launch until 2026-07-25, while every validated
