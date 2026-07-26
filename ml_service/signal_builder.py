@@ -574,6 +574,30 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
         _uni_cache._earnings_signals = {}
         _uni_cache._revenue_surprise = {}
         _uni_cache._beat_streak = {}
+        # PARITY GUARD (2026-07-26): the F1 bug ran undetected for 2 months because nothing
+        # ever asserted the sleeve pool size. Fail LOUD (Telegram + log) if the momentum
+        # pool is ever not SP1500-sized again — silent degradation is the real enemy here.
+        try:
+            _pool_n = len(_uni_cache.get_sp500(today))
+            _PARITY_MIN_POOL = 1200          # SP1500 minus normal membership churn/coverage
+            if _pool_n < _PARITY_MIN_POOL:
+                msg = (f"PARITY ALARM: momentum/lowvol pool is {_pool_n} names "
+                       f"(expected ~1500, floor {_PARITY_MIN_POOL}). Sleeves may be running "
+                       f"an UNVALIDATED universe — this is the 2026-07-25 F1 regression.")
+                log.error(msg)
+                try:   # same direct-API pattern as data_freshness_check._send_telegram
+                    import os as _os, requests
+                    _tok = (_os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+                    _chat = (_os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+                    if _tok and _chat:
+                        requests.post(f"https://api.telegram.org/bot{_tok}/sendMessage",
+                                      json={"chat_id": _chat, "text": f"🚨 {msg}"}, timeout=10)
+                except Exception:
+                    pass
+            else:
+                log.info(f"parity guard OK: sleeve pool {_pool_n} names (SP1500)")
+        except Exception as _e:
+            log.error(f"PARITY GUARD could not verify pool size: {_e}")
         log.info("v9.6 FastUniverse ready (SP1500 pool, earnings boosts OFF — parity)")
 
     uni = _uni_cache
