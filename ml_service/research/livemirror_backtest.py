@@ -49,6 +49,70 @@ class LiveMirrorBacktester(FastBacktester):
         pr = s.expanding(min_periods=252).apply(lambda a: (a[-1] >= a).mean(), raw=True).shift(1)
         return {d: (float(v) if pd.notna(v) else 0.5) for d, v in zip(idx, pr.values)}
 
+    # ---------------- research: NARROW "broken company" exclusion ----------------
+    def _sp500_pit(self, date):
+        """PIT S&P500 membership set (used to identify the newly-exposed mid/small caps)."""
+        mem = self.sp500_mem
+        if date in mem:
+            return set(mem[date])
+        keys = getattr(self, "_sp500_keys", None)
+        if keys is None:
+            keys = self._sp500_keys = sorted(mem.keys())
+        import bisect
+        i = bisect.bisect_right(keys, date) - 1
+        return set(mem[keys[i]]) if i >= 0 else set()
+
+    _BROKEN_FEATS = ("revenue_growth_yoy", "eps_growth_yoy", "net_margin", "roe", "gp_assets")
+
+    def _is_broken(self, sym, fm, spec):
+        """True = positive EVIDENCE of fundamental breakage. Missing data -> not broken
+        (unless spec['missing']=='drop'). Rules are exclusion screens, never rankings."""
+        rule = spec["rule"]
+        g = {k: fm[k].get(sym) for k in self._BROKEN_FEATS}
+        need = {"rev_and_eps": ("revenue_growth_yoy", "eps_growth_yoy"),
+                "rev_and_margin": ("revenue_growth_yoy", "net_margin"),
+                "net_margin_neg": ("net_margin",),
+                "roe_neg": ("roe",),
+                "gp_floor": ("gp_assets",),
+                "triple": ("revenue_growth_yoy", "net_margin", "roe")}[rule]
+        if any(g[k] is None for k in need):
+            return spec.get("missing", "keep") == "drop"
+        if rule == "rev_and_eps":
+            return g["revenue_growth_yoy"] < spec.get("rev_thr", 0.0) and g["eps_growth_yoy"] < 0.0
+        if rule == "rev_and_margin":
+            return g["revenue_growth_yoy"] < spec.get("rev_thr", 0.0) and g["net_margin"] < 0.0
+        if rule == "net_margin_neg":
+            return g["net_margin"] < spec.get("thr", 0.0)
+        if rule == "roe_neg":
+            return g["roe"] < spec.get("thr", 0.0)
+        if rule == "gp_floor":
+            return g["gp_assets"] < spec.get("thr", 0.10)
+        if rule == "triple":
+            return (g["revenue_growth_yoy"] < 0.0 and g["net_margin"] < 0.0 and g["roe"] < 0.0)
+        return False
+
+    def _apply_broken_filter(self, tgt, date, keep_n, spec):
+        """Drop broken names from a (larger) momentum pool, keep top-`keep_n` by score."""
+        fm = {k: self.uni.get_feature_map(date, k) for k in self._BROKEN_FEATS}
+        small_only = spec.get("smallcap_only", False)
+        big = self._sp500_pit(date) if small_only else set()
+        ranked = sorted(tgt, key=tgt.get, reverse=True)
+        keep, dropped = [], []
+        for s in ranked:
+            if small_only and s in big:
+                keep.append(s); continue
+            (dropped if self._is_broken(s, fm, spec) else keep).append(s)
+        self._brk_seen += min(len(ranked), keep_n)
+        base_top = set(ranked[:keep_n])
+        self._brk_dropped += len(base_top & set(dropped))
+        if not keep:
+            keep = ranked
+        keep = keep[:keep_n]
+        if set(keep) != base_top:
+            self._brk_bind_dates += 1
+        tot = sum(tgt[s] for s in keep)
+        return {s: tgt[s] / tot for s in keep} if tot > 0 else {s: tgt[s] for s in keep}
+
     def _stress_pctile_map(self, trading_dates, col, win=None):
         """date -> causal expanding percentile of a _macro_stress column (hy_oas/rates_vol/
         curve), acts t+1. `win` re-derives rates_vol at a custom window from DGS10 if given."""
@@ -127,6 +191,7 @@ class LiveMirrorBacktester(FastBacktester):
             v = park_px_ser.get(d)
             return park_sh * float(v) if pd.notna(v) else 0.0
         self._sigexit_count = 0
+        self._brk_seen = self._brk_dropped = self._brk_bind_dates = self._brk_reb = 0
         self._fin_paid = 0.0
         self._gross_path = []   # (date, realized gross / NAV) diagnostic
         prev_sh = {}; prev_px = {}; prev_gross = 0.0   # UNLEVERED vol-signal tracking
@@ -227,8 +292,9 @@ class LiveMirrorBacktester(FastBacktester):
             # ---- strategy signals (EXACT production code) ----
             mom_qual = config.get("mom_quality_filter")   # e.g. "gp_assets"/"roe": keep top-N by quality
             sector_cap = config.get("sector_cap")         # max names per 2-digit SIC among top_n
+            mom_brk = config.get("mom_broken")            # research: narrow broken-company EXCLUSION
             pool = config.get("mom_pool", config.get("mom_quality_pool", 2.0))
-            _tn = int(round(top_n * pool)) if (mom_qual or sector_cap) else top_n
+            _tn = int(round(top_n * pool)) if (mom_qual or sector_cap or mom_brk) else top_n
             # ---- F1 AUDIT REPLICA: live mom/s5 sleeves select from SP500-only membership
             #      (PIT via self.sp500_mem); value/breadth stay SP1500. mom_pool_sp500=True ----
             _restore_pool = None
@@ -246,6 +312,10 @@ class LiveMirrorBacktester(FastBacktester):
             t1 = strategy1_momentum_reversal(date, self.uni, day_idx, top_n=_tn, rebal_days=rebal_days)
             if t1 is None:
                 t1 = last_targets.get("mom", {})
+            elif mom_brk:
+                if len(t1) > top_n:
+                    t1 = self._apply_broken_filter(t1, date, top_n, mom_brk)
+                self._brk_reb += 1
             elif mom_qual and len(t1) > top_n:
                 qmap = self.uni.get_feature_map(date, mom_qual)
                 ranked = sorted(t1.keys(),
@@ -284,7 +354,12 @@ class LiveMirrorBacktester(FastBacktester):
 
             nu = self.umd_20d.loc[:date]
             in_crash = len(nu) > 0 and pd.notna(nu.iloc[-1]) and nu.iloc[-1] < UMD_CRASH_THRESHOLD
-            ew = _short_weights(PROD_WEIGHTS_CRASH) if in_crash else {"mom": mom_w, "val": val_w, "s5": lv_w, "s3": sec_w}
+            # research hook: crash_weights override (used by the s3-ETF live-parity A/B —
+            # live DROPS sector-ETF picks because the served signal list only emits SP1500
+            # members, so its effective crash/bear weights have s3 removed + renormalized).
+            _cw = config.get("crash_weights")
+            ew = (dict(_cw) if _cw else _short_weights(PROD_WEIGHTS_CRASH)) if in_crash \
+                else {"mom": mom_w, "val": val_w, "s5": lv_w, "s3": sec_w}
 
             # ---- vol-managed momentum (Barroso): scale the mom sleeve by target/own-vol ----
             vmm = config.get("vol_managed_mom")   # target annualized vol for the momentum book
@@ -431,4 +506,6 @@ class LiveMirrorBacktester(FastBacktester):
         return {"cagr": cagr, "sharpe": sharpe, "max_dd": max_dd,
                 "vol": dr.std() * np.sqrt(252), "final": vals.iloc[-1],
                 "fin_paid": self._fin_paid, "avg_gross": float(gp.mean()) if len(gp) else 0,
+                "brk_seen": self._brk_seen, "brk_dropped": self._brk_dropped,
+                "brk_bind_dates": self._brk_bind_dates, "brk_reb": self._brk_reb,
                 "daily_values": vals}
