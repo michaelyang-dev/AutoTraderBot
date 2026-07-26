@@ -31,8 +31,8 @@ from strategies.multi_strategy_engine import (
     strategy3_sector_rotation,
     strategy4_index_inclusion,
     strategy5_lowvol_quality,
-    STRATEGY_CONFIG_BULL,
-    STRATEGY_CONFIG_BEAR,
+    LEGACY_V9_CONFIG_BULL as STRATEGY_CONFIG_BULL,   # legacy v9 weights (NOT production v12)
+    LEGACY_V9_CONFIG_BEAR as STRATEGY_CONFIG_BEAR,
     INITIAL_CASH,
     COST_BPS,
 )

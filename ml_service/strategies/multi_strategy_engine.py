@@ -955,11 +955,26 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
 #  Backtester
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Strategy config: (name, capital_pct, function)
-# Dynamic allocation: shifts between strategies based on regime
-# Bull: heavy momentum + sector
-# Bear: heavy low-vol quality + sector (which goes to cash in bear)
-STRATEGY_CONFIG_BULL = [
+# ⚠️ ══════════════════════════════════════════════════════════════════════════════
+# ⚠️  LEGACY v9 WEIGHTS — **NOT PRODUCTION**. DO NOT READ THESE AS "THE STRATEGY".
+# ⚠️ ══════════════════════════════════════════════════════════════════════════════
+# These 90/5/5 weights belong to the retired v9 multi-bucket era and are used ONLY by
+# the legacy research backtester in THIS file (run_backtest) plus
+# strategies/true_walkforward.py and strategies/wrds_walkforward.py. Nothing in
+# production imports them (verified 2026-07-26: no cron, no pm2 service).
+#
+#   ✅ PRODUCTION SLEEVE WEIGHTS (v12) LIVE IN ONE PLACE:
+#        PROD_WEIGHTS_BULL  = mom .50 / value .35 / lowvol .15
+#        PROD_WEIGHTS_BEAR  = mom .10 / value .30 / lowvol .50 / sector .10
+#        PROD_WEIGHTS_CRASH = mom .15 / value .45 / lowvol .30 / sector .10
+#      signal_builder.py (live) and main_production_backtest.py (backtest) BOTH read
+#      those constants — that is the single source of truth.
+#
+# RENAMED 2026-07-26 from STRATEGY_CONFIG_BULL/BEAR: the old names collided with
+# signal_builder's production constants of the SAME NAME but DIFFERENT VALUES, so anyone
+# reading this file concluded production was 90% momentum. Renaming makes accidental use
+# impossible. If you want production weights, use PROD_WEIGHTS_* above.
+LEGACY_V9_CONFIG_BULL = [
     ("s1_momentum", 0.90),
     ("s2_drift", 0.00),
     ("s3_sector", 0.05),
@@ -968,7 +983,7 @@ STRATEGY_CONFIG_BULL = [
     ("s6_short", 0.00),
 ]
 
-STRATEGY_CONFIG_BEAR = [
+LEGACY_V9_CONFIG_BEAR = [
     ("s1_momentum", 0.10),   # sector-tilted picks
     ("s2_drift", 0.00),
     ("s3_sector", 0.20),     # sector momentum
@@ -978,7 +993,7 @@ STRATEGY_CONFIG_BEAR = [
 ]
 
 # Use the same names so lookup works
-STRATEGY_CONFIG = STRATEGY_CONFIG_BULL  # default, overridden at runtime
+LEGACY_V9_CONFIG = LEGACY_V9_CONFIG_BULL  # legacy default, overridden at runtime
 
 VIX_EXTREME = 40
 
@@ -1019,7 +1034,7 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
     total_costs = 0.0
 
     # Strategy state
-    last_targets = {name: {} for name, _ in STRATEGY_CONFIG}
+    last_targets = {name: {} for name, _ in LEGACY_V9_CONFIG}
     s4_active = {}  # index inclusion active trades
 
     for day_idx, date in enumerate(trading_dates):
@@ -1098,8 +1113,8 @@ def run_backtest(uni, start_date="2022-01-01", end_date="2025-12-31",
 
         # Blended capital allocations
         blended_config = {}
-        for name, bull_pct in STRATEGY_CONFIG_BULL:
-            bear_pct = dict(STRATEGY_CONFIG_BEAR).get(name, 0)
+        for name, bull_pct in LEGACY_V9_CONFIG_BULL:            # legacy v9 research path
+            bear_pct = dict(LEGACY_V9_CONFIG_BEAR).get(name, 0)
             blended_config[name] = bull_pct * blend + bear_pct * (1 - blend)
 
         # Combine strategy targets into portfolio

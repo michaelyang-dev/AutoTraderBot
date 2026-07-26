@@ -32,7 +32,8 @@ from sp500_history import get_sp500_on_date, load_sp500_changes
 from strategies.multi_strategy_engine import (
     FastUniverse, strategy1_momentum_reversal, strategy3_sector_rotation,
     strategy5_lowvol_quality, strategy4_index_inclusion, strategy6_bear_short,
-    STRATEGY_CONFIG_BULL, STRATEGY_CONFIG_BEAR,
+    LEGACY_V9_CONFIG_BULL as STRATEGY_CONFIG_BULL,   # legacy v9 weights (NOT production v12)
+    LEGACY_V9_CONFIG_BEAR as STRATEGY_CONFIG_BEAR,
     INITIAL_CASH, COST_BPS, SECTOR_ETFS,
 )
 from strategies.enhanced_features import build_enhanced_features
