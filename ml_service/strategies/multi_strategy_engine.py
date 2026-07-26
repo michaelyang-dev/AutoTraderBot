@@ -47,9 +47,23 @@ SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLRE", "
 #  Keys: s1_momentum / s7_value / s5_lowvol / s3_sector / s4_inclusion.
 #  Changing weights here changes BOTH live and backtest — no more drift.
 # ══════════════════════════════════════════════════════════════════════════════
-PROD_WEIGHTS_BULL  = {"s1_momentum": 0.50, "s7_value": 0.35, "s5_lowvol": 0.15, "s3_sector": 0.00, "s4_inclusion": 0.00}
-PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.10, "s7_value": 0.30, "s5_lowvol": 0.50, "s3_sector": 0.10, "s4_inclusion": 0.00}
-PROD_WEIGHTS_CRASH = {"s1_momentum": 0.15, "s7_value": 0.45, "s5_lowvol": 0.30, "s3_sector": 0.10, "s4_inclusion": 0.00}
+#  s3_sector is ZERO IN ALL REGIMES (set 2026-07-26). strategy3_sector_rotation returns
+#  SECTOR ETFs (XLK/XLE/...), which the LIVE path can never deliver: signal_builder emits
+#  only SP1500 *members*, and ETFs are not members, so every s3 pick was silently dropped
+#  live while the backtest bought them — a real live-vs-backtest divergence, active in
+#  bear/crash regimes (s3 was .10 there). A/B on both periods (research/THREAD_S3_FINDINGS.md,
+#  full live-mirror): dropping s3 and renormalizing the other sleeves = +0.1pp / +0.2pp CAGR,
+#  IDENTICAL Sharpe (0.96 / 0.79), -0.3pp / -0.2pp MaxDD — inside the noise floor. So the
+#  allocation is fungible with more stock exposure, and zeroing it makes live and backtest
+#  the SAME book by construction instead of papering over the gap.
+#  The bear/crash numbers below are the old weights renormalized over the surviving sleeves
+#  (bear .10/.30/.50 -> /0.90 ; crash .15/.45/.30 -> /0.90), so relative sleeve mix is
+#  unchanged — only the undeliverable 10% is removed.
+#  The s3 code path is retained (computed, zero-weighted) for future use if ETF order
+#  routing is ever added to the live engine.
+PROD_WEIGHTS_BULL  = {"s1_momentum": 0.50,   "s7_value": 0.35,   "s5_lowvol": 0.15,   "s3_sector": 0.00, "s4_inclusion": 0.00}
+PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.1111, "s7_value": 0.3333, "s5_lowvol": 0.5556, "s3_sector": 0.00, "s4_inclusion": 0.00}
+PROD_WEIGHTS_CRASH = {"s1_momentum": 0.1667, "s7_value": 0.5000, "s5_lowvol": 0.3333, "s3_sector": 0.00, "s4_inclusion": 0.00}
 
 # Momentum-crash threshold: trigger CRASH weights when the 20-day UMD sum drops below this.
 UMD_CRASH_THRESHOLD = -0.05
