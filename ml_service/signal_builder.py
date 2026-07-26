@@ -578,11 +578,21 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
         # ever asserted the sleeve pool size. Fail LOUD (Telegram + log) if the momentum
         # pool is ever not SP1500-sized again — silent degradation is the real enemy here.
         try:
-            _pool_n = len(_uni_cache.get_sp500(today))
+            _pool = _uni_cache.get_sp500(today)
+            _pool_n = len(_pool)
+            # Count names the sleeves can ACTUALLY rank (membership alone is not enough:
+            # get_sp1500_on_date falls back to FMP-SP500-only if sp1500_members.json is
+            # missing, and price coverage can collapse independently of membership —
+            # either failure silently shrinks the effective universe. Hardened 2026-07-26
+            # after the adversarial audit flagged that a membership-only count would read
+            # ~1500 even if S&P600 price data vanished).
+            _r252 = _uni_cache.get_feature_map(today, "ret_252d")
+            _usable_n = sum(1 for s in _pool if _r252.get(s) is not None)
             _PARITY_MIN_POOL = 1200          # SP1500 minus normal membership churn/coverage
-            if _pool_n < _PARITY_MIN_POOL:
+            if _pool_n < _PARITY_MIN_POOL or _usable_n < _PARITY_MIN_POOL:
                 msg = (f"PARITY ALARM: momentum/lowvol pool is {_pool_n} names "
-                       f"(expected ~1500, floor {_PARITY_MIN_POOL}). Sleeves may be running "
+                       f"({_usable_n} with usable ret_252d; expected ~1500, floor "
+                       f"{_PARITY_MIN_POOL}). Sleeves may be running "
                        f"an UNVALIDATED universe — this is the 2026-07-25 F1 regression.")
                 log.error(msg)
                 try:   # same direct-API pattern as data_freshness_check._send_telegram
@@ -595,7 +605,8 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
                 except Exception:
                     pass
             else:
-                log.info(f"parity guard OK: sleeve pool {_pool_n} names (SP1500)")
+                log.info(f"parity guard OK: sleeve pool {_pool_n} names "
+                         f"({_usable_n} rankable) (SP1500)")
         except Exception as _e:
             log.error(f"PARITY GUARD could not verify pool size: {_e}")
         log.info("v9.6 FastUniverse ready (SP1500 pool, earnings boosts OFF — parity)")
