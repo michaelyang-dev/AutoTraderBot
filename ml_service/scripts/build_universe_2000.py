@@ -27,117 +27,127 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefm
 log = logging.getLogger("build_universe")
 
 WRDS = Path("data/wrds")
-START = "2000-01-01"
-END = "2025-12-31"
+# Date range is overridable so this ONE audited builder can produce BOTH canonical universes
+# (they must share identical construction, or their numbers are not comparable):
+#   26yr:  START=2000-01-01  -> data/wrds/sp1500_universe_2000.pkl
+#    8yr:  START=2016-06-01  -> data/wrds/complete_sp1500_universe.pkl
+START = os.environ.get("BUILD_UNIVERSE_START", "2000-01-01")
+END = os.environ.get("BUILD_UNIVERSE_END", "2025-12-31")
 # Output path is overridable so a rebuild can be written side-by-side and diffed against the
 # incumbent before anything replaces it:  BUILD_UNIVERSE_OUT=/path/to.pkl python3 build_universe_2000.py
 OUTPUT = Path(os.environ.get("BUILD_UNIVERSE_OUT", str(WRDS / "sp1500_universe_2000.pkl")))
 
 
 def load_crsp_prices():
-    """Load CRSP daily prices, compute total-return adjusted prices."""
-    log.info("Loading CRSP daily stock data (selected columns only)...")
+    """Load CRSP daily prices as a PERMNO-keyed total-return matrix, then expose each series
+    under the membership ticker convention.
+
+    ⚠️ WHY PERMNO (rewritten 2026-07-27): the previous version grouped prices by CRSP's
+    `Ticker` column, which is the ticker AS OF THAT ROW'S DATE. Two failure modes followed,
+    both measured on the ticker-keyed build:
+      1. TICKER CHANGES — a company that renamed (AEOS->AEO, and ~8,261 PERMNOs changed ticker
+         at least once) had its history split across two columns, so its pre-rename prices were
+         invisible under the modern ticker the membership file uses. This is why index-member
+         coverage ramped 82%(2001)->99%(2025) and 88.5%(2016)->99.3%(2025): the further back
+         you looked, the more members had no reachable price history. Departure rate among the
+         missing was 73% vs 60% among the present => residual SURVIVORSHIP skew.
+      2. TICKER REUSE — 940 of 3,642 series (25.8%) had >1 PERMNO active in-window, so one
+         column spliced two different companies (AA = Alcoa 2000-2016 then Arconic 2016-2025).
+         Momentum computed across such a splice is meaningless.
+    PERMNO is CRSP's permanent security identifier: stable across renames, never reused. We
+    build one series per PERMNO, then map it to the membership symbol so the sleeves can find
+    it. Where several PERMNOs claim the same membership symbol we keep the one with the most
+    overlap with that symbol's own ticker history (the reuse case), so no splicing occurs.
+    """
+    log.info("Loading CRSP daily stock data (PERMNO-keyed)...")
     t0 = time.time()
-    # Only load columns we need to avoid OOM (full file is 110M rows × 94 cols)
-    cols = ["Ticker", "DlyCalDt", "DlyRet", "DlyPrc"]
+    cols = ["PERMNO", "Ticker", "DlyCalDt", "DlyRet", "DlyPrc"]
     df = pd.read_parquet(WRDS / "crsp_daily_stock_full.parquet", columns=cols)
-    log.info("  Raw CRSP: %d rows, %d cols (%.1fs)" % (len(df), len(df.columns), time.time() - t0))
+    log.info("  Raw CRSP: %d rows (%.1fs)" % (len(df), time.time() - t0))
 
-    # Filter date range
-    df["DlyCalDt"] = pd.to_datetime(df["DlyCalDt"])
+    df["DlyCalDt"] = pd.to_datetime(df["DlyCalDt"], errors="coerce")
+    df = df.dropna(subset=["DlyCalDt", "DlyPrc", "PERMNO"])
     df = df[(df["DlyCalDt"] >= START) & (df["DlyCalDt"] <= END)]
-    log.info("  After date filter: %d rows" % len(df))
+    log.info("  After date/price filter: %d rows" % len(df))
 
-    # Drop rows with missing ticker or price
-    df = df.dropna(subset=["Ticker", "DlyPrc"])
-    log.info("  After dropna: %d rows" % len(df))
-
-    ticker_col = "Ticker"
-    ret_col = "DlyRet"
-    prc_col = "DlyPrc"
-
-    # Filter to only tickers that were ever in SP1500 (reduces 25K to ~5K)
-    log.info("  Loading SP1500 membership to filter tickers...")
-    # ⚠️ SURVIVORSHIP-BIAS FIX (2026-07-26): strip the trailing date suffix BEFORE matching.
-    # WRDS marks delisted/reused tickers as "AAI-199908", "AAMRQ-201312", "FRC-200709" —
-    # 59.1% of membership symbols (2,536 / 4,293) carry one. CRSP's Ticker column has NO
-    # suffix, so matching on the RAW symbol silently dropped every one of those names from
-    # the price matrix — and suffixed names are precisely the companies that were DELISTED
-    # (Enron, Lehman, AMR, Yahoo/Altaba, First Republic, SIVB...). That produced a universe
-    # of only 1,743 tradeable tickers whose coverage of index members climbed 36% (2001) ->
-    # 96% (2025): textbook survivorship bias, inflating every 26yr backtest number.
-    # The membership map below already strips these suffixes; the price filter did not.
-    # CAVEAT (pre-existing, unchanged): ticker REUSE across eras (e.g. "AAI-199908" and
-    # "AAI-201105" both -> "AAI") can splice two different companies into one series. That
-    # risk is bounded and far smaller than excluding all delisted names outright; the proper
-    # long-term fix is to join on PERMNO rather than ticker.
-    # BANKRUPTCY-TICKER FIX (2026-07-26): WRDS membership records a failed company under its
-    # POST-bankruptcy ticker (4-letter root + "Q": SIVBQ, BBBYQ, AKRXQ) while CRSP carries the
-    # prices under the PRE-bankruptcy ticker (SIVB, BBBY, AKRX). The join therefore failed for
-    # precisely the companies that went bust — the ones a backtest most needs in order to be
-    # honest. We accept BOTH forms; a candidate that matches nothing is simply never used, so
-    # adding the stripped variant is safe. Only strip a trailing Q from 5-char symbols (the
-    # standard convention) so ordinary tickers ending in Q are untouched. Rescues 114 names.
-    # NOT rescued (~176, documented in data/wrds/UNIVERSE_MANIFEST.md): failures whose Q-ticker
-    # has a different root (ENRNQ->ENE, LEHMQ->LEH, WAMUQ->WM, AAMRQ->AMR) and share-class /
-    # foreign formats (BRK.B, BF.B). Fixing those needs a CUSIP/PERMNO join, not a ticker join.
+    # --- membership symbols we need (suffix + bankruptcy-Q normalised, as before) ---
     _strip = lambda s: re.sub(r"-\d+$", "", str(s))
-    all_sp1500_tickers = set()
+    wanted = set()
     for mem_file in ["sp500_membership_history.parquet", "sp400_membership_history.parquet",
                      "sp600_membership_history.parquet"]:
         mf = WRDS / mem_file
         if mf.exists():
             mdf = pd.read_parquet(mf, columns=["symbol"])
             for s in mdf["symbol"].dropna().unique():
-                base = _strip(s)
-                all_sp1500_tickers.add(base)
-                if len(base) == 5 and base.endswith("Q"):
-                    all_sp1500_tickers.add(base[:-1])      # bankruptcy ticker -> live ticker
-    # Always need SPY + sector ETFs
-    for etf in ["SPY", "GLD", "VIXM", "SH", "XLK", "XLF", "XLE", "XLV", "XLI",
-                "XLY", "XLP", "XLB", "XLRE", "XLU", "XLC"]:
-        all_sp1500_tickers.add(etf)
-    log.info("  SP1500 tickers ever: %d" % len(all_sp1500_tickers))
-    df = df[df[ticker_col].isin(all_sp1500_tickers)]
-    log.info("  After SP1500 filter: %d rows" % len(df))
+                b = _strip(s)
+                wanted.add(b)
+                if len(b) == 5 and b.endswith("Q"):
+                    wanted.add(b[:-1])
+    ETFS = ["SPY", "GLD", "VIXM", "SH", "XLK", "XLF", "XLE", "XLV", "XLI",
+            "XLY", "XLP", "XLB", "XLRE", "XLU", "XLC"]
+    wanted.update(ETFS)
+    log.info("  membership symbols wanted: %d" % len(wanted))
 
-    # Build total-return adjusted price matrix
+    # --- PERMNO -> which wanted symbol does it represent, and for how many days? ---
+    df["tick"] = df["Ticker"].astype(str)
+    cand = df[df["tick"].isin(wanted)]
+    pair = cand.groupby(["PERMNO", "tick"]).size().reset_index(name="days")
+    # a PERMNO maps to the symbol it traded under most (handles mid-window renames);
+    # a symbol claimed by several PERMNOs goes to the PERMNO with the most days (no splice).
+    pair = pair.sort_values("days", ascending=False)
+    permno_to_sym, sym_to_permno = {}, {}
+    for _, r in pair.iterrows():
+        p, s = int(r["PERMNO"]), r["tick"]
+        if p in permno_to_sym or s in sym_to_permno:
+            continue
+        permno_to_sym[p] = s
+        sym_to_permno[s] = p
+    log.info("  resolved %d PERMNO<->symbol pairs (1:1, no splicing)" % len(permno_to_sym))
+
+    keep = df[df["PERMNO"].isin(permno_to_sym)]
+    log.info("  rows for resolved securities: %d" % len(keep))
+
+    # --- total-return back-adjusted series per PERMNO (uses the FULL history of that
+    #     security, including dates when it traded under a different ticker) ---
     log.info("  Building price matrix...")
     t1 = time.time()
-
-    tickers = df[ticker_col].unique()
-    log.info("  Unique tickers: %d" % len(tickers))
-
-    prices = {}
-    count = 0
-    for ticker, group in df.groupby(ticker_col):
-        g = group.sort_values("DlyCalDt").drop_duplicates(subset=["DlyCalDt"], keep="last")
-
-        if ret_col and ret_col in g.columns:
-            ret = g[ret_col].fillna(0).values
-            raw = g[prc_col].abs().values if prc_col else np.ones(len(g))
-            n = len(ret)
-            adj = np.empty(n)
-            adj[-1] = raw[-1]
-            for i in range(n - 2, -1, -1):
-                if ret[i + 1] != 0 and not np.isnan(ret[i + 1]):
-                    adj[i] = adj[i + 1] / (1 + ret[i + 1])
+    prices, count = {}, 0
+    for permno, g in keep.groupby("PERMNO"):
+        sym = permno_to_sym[int(permno)]
+        g = g.sort_values("DlyCalDt").drop_duplicates(subset=["DlyCalDt"], keep="last")
+        ret = pd.to_numeric(g["DlyRet"], errors="coerce").fillna(0.0).values
+        raw = pd.to_numeric(g["DlyPrc"], errors="coerce").abs().values
+        n_ = len(ret)
+        if n_ == 0 or not np.isfinite(raw[-1]):
+            continue
+        adj = np.empty(n_)
+        adj[-1] = raw[-1]
+        for i in range(n_ - 2, -1, -1):
+            r = ret[i + 1]
+            if np.isfinite(r) and r != -1.0:
+                adj[i] = adj[i + 1] / (1.0 + r)
+            else:
+                # ⚠️ DELISTING-LOSS FIX (2026-07-27). CRSP leaves DlyRet NaN on the final
+                # delisting row, and the old code then did `adj[i] = adj[i+1]`, i.e. treated
+                # that day as a ZERO return — silently deleting the collapse. Measured on SVB
+                # (PERMNO 11786): 2023-03-10 close $39.37 -> 2023-03-13 delist $0.40, a -99%
+                # move that simply vanished, so a held bankruptcy realised about -86% instead
+                # of ~-100%. Fall back to the RAW PRICE RATIO, which recovers the true move.
+                pr_next, pr_cur = raw[i + 1], raw[i]
+                if np.isfinite(pr_next) and np.isfinite(pr_cur) and pr_next > 0 and pr_cur > 0:
+                    adj[i] = adj[i + 1] * (pr_cur / pr_next)
                 else:
                     adj[i] = adj[i + 1]
-            prices[ticker] = pd.Series(adj, index=g["DlyCalDt"].values)
-        elif prc_col:
-            prices[ticker] = pd.Series(g[prc_col].abs().values, index=g["DlyCalDt"].values)
-
+        prices[sym] = pd.Series(adj, index=g["DlyCalDt"].values)
         count += 1
         if count % 1000 == 0:
-            log.info("  Processed %d/%d tickers..." % (count, len(tickers)))
+            log.info("  Processed %d/%d securities..." % (count, len(permno_to_sym)))
 
     prices_df = pd.DataFrame(prices)
     prices_df.index = pd.to_datetime(prices_df.index)
     prices_df = prices_df.sort_index()
-
     log.info("  Price matrix: %s (%.1fs)" % (str(prices_df.shape), time.time() - t1))
-    return prices_df, df
+    return prices_df, keep, permno_to_sym
 
 
 def load_sp1500_membership():
@@ -325,7 +335,7 @@ def main():
     t_total = time.time()
 
     # 1. Load prices
-    prices_df, crsp_raw = load_crsp_prices()
+    prices_df, crsp_raw, permno_to_sym = load_crsp_prices()
     if prices_df is None:
         log.error("Failed to load prices")
         return
@@ -338,6 +348,21 @@ def main():
 
     # 4. Load fundamentals (for value strategy)
     fund = load_fundamentals()
+
+    # ⚠️ FUNDAMENTALS PERMNO JOIN (2026-07-27). Compustat rows were previously matched to the
+    # price matrix by ticker (`tic`), which suffers the same rename/reuse failure as prices did:
+    # measured fundamentals coverage ramped 66%(2001) -> 88%(2025), i.e. the further back you
+    # looked the more names silently lost roe/gross_margin. The VALUE sleeve is 35% of the book
+    # and REQUIRES both, so early-period value picks were drawn from a shrunken, survivor-skewed
+    # subset. compustat_quarterly carries LPERMNO (100% populated), so we relabel each Compustat
+    # row with the universe symbol its PERMNO maps to; everything downstream stays keyed by
+    # symbol and is unchanged. Rows with no PERMNO match keep their original ticker.
+    if "LPERMNO" in fund.columns:
+        _mapped = fund["LPERMNO"].map(permno_to_sym)
+        _n_before = fund["tic"].isin(set(permno_to_sym.values())).sum()
+        fund["tic"] = _mapped.fillna(fund["tic"])
+        log.info("  fundamentals relabelled via LPERMNO: %d/%d rows now carry a universe symbol "
+                 "(was %d by ticker)" % (_mapped.notna().sum(), len(fund), _n_before))
 
     # Compute fundamental features per ticker per quarter
     # and merge into features_by_date using point-in-time
