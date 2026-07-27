@@ -28,7 +28,9 @@ log = logging.getLogger("build_universe")
 WRDS = Path("data/wrds")
 START = "2000-01-01"
 END = "2025-12-31"
-OUTPUT = WRDS / "sp1500_universe_2000.pkl"
+# Output path is overridable so a rebuild can be written side-by-side and diffed against the
+# incumbent before anything replaces it:  BUILD_UNIVERSE_OUT=/path/to.pkl python3 build_universe_2000.py
+OUTPUT = Path(os.environ.get("BUILD_UNIVERSE_OUT", str(WRDS / "sp1500_universe_2000.pkl")))
 
 
 def load_crsp_prices():
@@ -130,9 +132,17 @@ def load_sp1500_membership():
         df = pd.read_parquet(f)
         log.info("  %s: %d rows, cols=%s, index=%s" % (name, len(df), list(df.columns), df.index.name))
 
-        # The membership files have date as INDEX, "Index Constituent" as flag, "symbol" as ticker
-        # Each row = one date-ticker pair where the ticker is in the index
-        # Some have ticker suffixes like "AAI-199908" — strip the suffix
+        # The membership files have date as INDEX, "Index Constituent" as flag, "symbol" as ticker.
+        # ⚠️ CRITICAL: a row is NOT proof of membership — every (date, ticker) pair carries an
+        # "Index Constituent" flag that is 1 (in the index that day) or 0 (NOT in it). The
+        # original code here assumed "each row = one date-ticker pair where the ticker is in
+        # the index" and grouped ALL symbols per date, which silently pulled in every 0-flag
+        # row. Effect at 2001-01-02: SP500 866 / SP400 1136 / SP600 1508 = 3510 names instead
+        # of the true 500/400/600 = 1500 (2.3x too many), and it is LOOK-AHEAD — 99.8% of the
+        # spurious names have 0-flag rows BEFORE they ever joined the index, so the backtest
+        # could hold tomorrow's index members today. FIXED 2026-07-26; filtering flag==1
+        # reproduces the true index sizes exactly. The WRDS data was always correct.
+        # Some tickers have suffixes like "AAI-199908" — strip the suffix.
         if "symbol" in df.columns:
             # Reset index to get date as column
             df = df.reset_index()
@@ -142,6 +152,18 @@ def load_sp1500_membership():
 
             # Filter date range
             df = df[(df[date_col] >= pd.Timestamp(START)) & (df[date_col] <= pd.Timestamp(END))]
+
+            # THE FIX: keep only rows actually flagged as index constituents.
+            _flag = next((c for c in df.columns if c.strip().lower() == "index constituent"), None)
+            if _flag is None:
+                raise RuntimeError(
+                    f"{filename}: no 'Index Constituent' column — refusing to build a "
+                    f"membership map without it (that produced the 2.3x look-ahead universe)."
+                )
+            _before = df["symbol"].nunique()
+            df = df[pd.to_numeric(df[_flag], errors="coerce") == 1]
+            log.info("  %s: constituent filter %d -> %d unique symbols" %
+                     (name, _before, df["symbol"].nunique()))
 
             # Clean ticker: strip suffixes like "-199908"
             df["clean_sym"] = df["symbol"].str.replace(r'-\d+$', '', regex=True)
