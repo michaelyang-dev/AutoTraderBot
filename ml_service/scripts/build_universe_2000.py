@@ -10,6 +10,7 @@ starting from 2000 instead of 2016.
 Output: data/wrds/sp1500_universe_2000.pkl
 """
 import os
+import re
 import sys
 import time
 import pickle
@@ -57,13 +58,41 @@ def load_crsp_prices():
 
     # Filter to only tickers that were ever in SP1500 (reduces 25K to ~5K)
     log.info("  Loading SP1500 membership to filter tickers...")
+    # ⚠️ SURVIVORSHIP-BIAS FIX (2026-07-26): strip the trailing date suffix BEFORE matching.
+    # WRDS marks delisted/reused tickers as "AAI-199908", "AAMRQ-201312", "FRC-200709" —
+    # 59.1% of membership symbols (2,536 / 4,293) carry one. CRSP's Ticker column has NO
+    # suffix, so matching on the RAW symbol silently dropped every one of those names from
+    # the price matrix — and suffixed names are precisely the companies that were DELISTED
+    # (Enron, Lehman, AMR, Yahoo/Altaba, First Republic, SIVB...). That produced a universe
+    # of only 1,743 tradeable tickers whose coverage of index members climbed 36% (2001) ->
+    # 96% (2025): textbook survivorship bias, inflating every 26yr backtest number.
+    # The membership map below already strips these suffixes; the price filter did not.
+    # CAVEAT (pre-existing, unchanged): ticker REUSE across eras (e.g. "AAI-199908" and
+    # "AAI-201105" both -> "AAI") can splice two different companies into one series. That
+    # risk is bounded and far smaller than excluding all delisted names outright; the proper
+    # long-term fix is to join on PERMNO rather than ticker.
+    # BANKRUPTCY-TICKER FIX (2026-07-26): WRDS membership records a failed company under its
+    # POST-bankruptcy ticker (4-letter root + "Q": SIVBQ, BBBYQ, AKRXQ) while CRSP carries the
+    # prices under the PRE-bankruptcy ticker (SIVB, BBBY, AKRX). The join therefore failed for
+    # precisely the companies that went bust — the ones a backtest most needs in order to be
+    # honest. We accept BOTH forms; a candidate that matches nothing is simply never used, so
+    # adding the stripped variant is safe. Only strip a trailing Q from 5-char symbols (the
+    # standard convention) so ordinary tickers ending in Q are untouched. Rescues 114 names.
+    # NOT rescued (~176, documented in data/wrds/UNIVERSE_MANIFEST.md): failures whose Q-ticker
+    # has a different root (ENRNQ->ENE, LEHMQ->LEH, WAMUQ->WM, AAMRQ->AMR) and share-class /
+    # foreign formats (BRK.B, BF.B). Fixing those needs a CUSIP/PERMNO join, not a ticker join.
+    _strip = lambda s: re.sub(r"-\d+$", "", str(s))
     all_sp1500_tickers = set()
     for mem_file in ["sp500_membership_history.parquet", "sp400_membership_history.parquet",
                      "sp600_membership_history.parquet"]:
         mf = WRDS / mem_file
         if mf.exists():
             mdf = pd.read_parquet(mf, columns=["symbol"])
-            all_sp1500_tickers.update(mdf["symbol"].dropna().unique())
+            for s in mdf["symbol"].dropna().unique():
+                base = _strip(s)
+                all_sp1500_tickers.add(base)
+                if len(base) == 5 and base.endswith("Q"):
+                    all_sp1500_tickers.add(base[:-1])      # bankruptcy ticker -> live ticker
     # Always need SPY + sector ETFs
     for etf in ["SPY", "GLD", "VIXM", "SH", "XLK", "XLF", "XLE", "XLV", "XLI",
                 "XLY", "XLP", "XLB", "XLRE", "XLU", "XLC"]:
@@ -167,6 +196,13 @@ def load_sp1500_membership():
 
             # Clean ticker: strip suffixes like "-199908"
             df["clean_sym"] = df["symbol"].str.replace(r'-\d+$', '', regex=True)
+            # ...and normalise bankruptcy tickers to their live root (SIVBQ -> SIVB) so the
+            # MEMBERSHIP map uses the same convention as the CRSP price matrix. Without this
+            # the price fix above is useless: get_sp1500() would hand the sleeves "SIVBQ",
+            # which has no price series, so the name stays untradeable and the survivorship
+            # hole remains. Only 5-char symbols ending in Q (the standard convention).
+            _q = df["clean_sym"].str.len().eq(5) & df["clean_sym"].str.endswith("Q")
+            df.loc[_q, "clean_sym"] = df.loc[_q, "clean_sym"].str[:-1]
 
             # Group by date — each date's members are all symbols present on that date
             for date, grp in df.groupby(date_col):

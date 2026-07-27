@@ -5,7 +5,8 @@
 | file | period | status | use it? |
 |---|---|---|---|
 | `complete_sp1500_universe.pkl` | 2016-06 → 2025-12 | ✅ **AUDITED CLEAN** | **YES — the canonical 8yr universe.** All 8yr numbers (+28.3%/0.95 etc.) come from here. |
-| `sp1500_universe_2000.pkl` | 2000 → 2025 | ⛔ **POISONED — see below** | **NO** until replaced by the rebuild. |
+| `sp1500_universe_2000.pkl` | 2000 → 2025 | ✅ **REBUILT CLEAN 2026-07-27** | **YES** — 3,642 tickers, coverage 82%(2001)→99%(2025). |
+| `sp1500_universe_2000.POISONED_DO_NOT_USE.pkl` | 2000 → 2025 | ⛔ quarantined original | **NEVER** — kept only as evidence. |
 | `expanded_sp1500_universe.pkl` | — | 🗑️ orphan (0 code references) | no — deletion candidate |
 | `expanded_r3000_universe.pkl` | — | research-only (1 reference) | only `research/alpha_universe_inspect.py` |
 | `r2000_universe.pkl` | — | research-only (4 references) | short-strategy research only |
@@ -69,3 +70,35 @@ Checked exhaustively on 2026-07-26 for the same failure modes plus several more:
 
 **Verdict: the 8yr universe is not materially inflated.** The one honest caveat is the 77
 missing bankruptcy tickers; the strategy's own trend filters make that largely moot.
+
+
+---
+
+## 🔴 CORRECTED 26yr NUMBERS (2026-07-27) — the old ones were inflated by ~half
+
+Re-ran the canonical config on the clean universe (2-start, 1.49x, integer shares, $50k,
+6.3% financing, vol-scaling, `vol_scale_cap=1.0`):
+
+| variant | POISONED universe | **CLEAN universe** |
+|---|---|---|
+| baseline | +20.8% / 0.78 / −63.5% | **+9.9% / 0.47 / −59.9%** |
+| + credit gate p95 | +21.1% / 0.79 / −56.5% | **+10.3% / 0.49 / −54.8%** |
+
+**The 26yr CAGR was overstated by 10.9pp and Sharpe by 0.31** — look-ahead membership plus
+survivorship bias accounted for roughly half the reported through-cycle return.
+**Do not quote the old 26yr figures anywhere.**
+
+Two things survive the correction:
+- **The credit gate still works** on clean data: +0.4pp CAGR, +0.02 Sharpe, **+5.1pp MaxDD**
+  (−59.9% → −54.8%). The deployed feature is validated, not rescued.
+- **The 8yr figures are unaffected** (+28.3% / 0.95) — different, audited-clean universe.
+
+Honest read: through a full cycle incl. dot-com + GFC the strategy does **~10% CAGR at 1.49x,
+Sharpe ~0.47**. The 2018-25 window was a momentum-friendly bull market; treat 26yr as the
+regime-neutral expectation and 8yr as the favourable-regime one.
+
+### Residual known gaps in the clean 26yr universe (documented, not fixed)
+- ~176 membership names still unmatched to CRSP prices (4.3%): failures whose bankruptcy
+  ticker has a different root (ENRNQ→ENE, LEHMQ→LEH, WAMUQ→WM, AAMRQ→AMR) and share-class /
+  foreign formats (BRK.B, BF.B). Needs a CUSIP/PERMNO join rather than ticker matching.
+- Ticker REUSE across eras can splice two companies into one series (pre-existing).
