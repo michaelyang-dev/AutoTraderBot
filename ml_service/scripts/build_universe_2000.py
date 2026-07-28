@@ -115,14 +115,24 @@ def load_crsp_prices():
     for permno, g in keep.groupby("PERMNO"):
         sym = permno_to_sym[int(permno)]
         g = g.sort_values("DlyCalDt").drop_duplicates(subset=["DlyCalDt"], keep="last")
-        ret = pd.to_numeric(g["DlyRet"], errors="coerce").fillna(0.0).values
+        ret = pd.to_numeric(g["DlyRet"], errors="coerce").values
         raw = pd.to_numeric(g["DlyPrc"], errors="coerce").abs().values
+        # CRSP writes DlyPrc = 0 to mean "no valid price that day" — it is NOT a real quote.
+        # Treat it as missing, otherwise anchoring the back-adjustment on a 0 propagates zero
+        # through the whole series (measured: 666,293 zero cells / 621 columns, some entirely
+        # zero, when these securities were first included by the delisting fix).
+        raw = np.where(np.isfinite(raw) & (raw > 0), raw, np.nan)
         n_ = len(ret)
-        if n_ == 0 or not np.isfinite(raw[-1]):
+        pos = np.flatnonzero(np.isfinite(raw))
+        if n_ == 0 or pos.size == 0:
             continue
-        adj = np.empty(n_)
-        adj[-1] = raw[-1]
-        for i in range(n_ - 2, -1, -1):
+        anchor = pos[-1]                      # last VALID price anchors the total-return chain
+        adj = np.full(n_, np.nan)
+        adj[anchor] = raw[anchor]
+        for i in range(anchor + 1, n_):       # tail after the last valid quote: carry by return
+            r = ret[i]
+            adj[i] = adj[i - 1] * (1.0 + r) if (np.isfinite(r) and r > -1.0) else np.nan
+        for i in range(anchor - 1, -1, -1):
             r = ret[i + 1]
             if np.isfinite(r) and r != -1.0:
                 adj[i] = adj[i + 1] / (1.0 + r)

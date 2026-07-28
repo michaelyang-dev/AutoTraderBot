@@ -102,3 +102,65 @@ regime-neutral expectation and 8yr as the favourable-regime one.
   ticker has a different root (ENRNQ→ENE, LEHMQ→LEH, WAMUQ→WM, AAMRQ→AMR) and share-class /
   foreign formats (BRK.B, BF.B). Needs a CUSIP/PERMNO join rather than ticker matching.
 - Ticker REUSE across eras can splice two companies into one series (pre-existing).
+
+
+---
+
+# ✅ FINAL — FULLY AUDITED UNIVERSES (2026-07-28)
+
+Both canonical universes rebuilt by the SAME audited builder (`scripts/build_universe_2000.py`,
+date range via `BUILD_UNIVERSE_START/END`) after **8 defects** were found and fixed.
+
+## The 8 defects (each was found only after fixing the previous one)
+1. **Look-ahead membership** — `Index Constituent` flag ignored → 2.3x too many names (3,510 vs 1,500).
+2. **Survivorship via suffixed tickers** — price filter matched raw `AAI-199908` forms → every
+   delisted name dropped (59.1% of symbols carry a suffix).
+3. **Bankruptcy Q-ticker, price side** — membership `SIVBQ` vs CRSP `SIVB`.
+4. **Bankruptcy Q-ticker, membership side** — prices added but `get_sp1500()` still returned the
+   unreachable Q-ticker (91 names had prices the strategy could never see).
+5. **Ticker-keyed prices** — renames lost pre-rename history; **940/3,642 (25.8%) series spliced
+   two different companies** (AA = Alcoa→Arconic). Now PERMNO-keyed, 1:1, no splicing.
+6. **Delisting losses deleted** — CRSP leaves `DlyRet` NaN on the final row and the loop treated
+   it as a 0% return. SVB's $39.37→$0.40 vanished; a held bankruptcy realised −85% not −99.9%.
+7. **Fundamentals ticker-joined** — coverage ramped 66%(2001)→88%(2025); the VALUE sleeve (35% of
+   book) needs roe+gross_margin, so early value picks came from a survivor-skewed subset.
+   Now joined via `LPERMNO` (100% populated in compustat_quarterly).
+8. **Zero prices** (introduced by fix #6, caught in validation) — CRSP writes `DlyPrc = 0` for
+   "no valid price"; anchoring back-adjustment on a 0 zeroed whole columns (666,293 cells).
+   Now zeros are treated as missing and the chain anchors on the last VALID positive price.
+
+## Measured improvement
+| metric | before audit | after |
+|---|---|---|
+| 26yr coverage @2001 | 35% | **83.6%** |
+| 26yr coverage @2010 | 53% | **94.4%** |
+| 8yr coverage @2016 | 88.5% | **94.8%** |
+| 26yr fundamentals roe @2001 | 66.2% | **95.8%** |
+| delisting capture (SIVB/BBBY/AKRX/FRC) | −85% / dropped | **−100%** |
+| spliced series | 940 | **0** |
+| zero-price cells | 666,293 | **0** |
+
+## 🔴 CORRECTED CANONICAL NUMBERS (live-mirror: 1.49x, integer shares, $50k, 6.3% financing,
+## vol-scaling, vol_scale_cap=1.0; 3-start 8yr / 2-start 26yr)
+
+| | pre-audit | **AUDITED** |
+|---|---|---|
+| **8yr 2018-25 baseline** | +28.6% / 0.97 / −33.2% | **+25.1% / 0.87 / −39.5%** |
+| 8yr + credit gate | — | +24.5% / 0.86 / −39.1% |
+| **26yr 2001-25 baseline** | +20.8% / 0.78 / −63.5% | **+10.4% / 0.48 / −65.8%** |
+| **26yr + credit gate** | +21.1% / 0.79 / −56.5% | **+10.9% / 0.50 / −58.1%** |
+
+**Both horizons were inflated.** 8yr CAGR overstated by 3.5pp and drawdown understated by 6.3pp;
+26yr CAGR overstated by 10.4pp and Sharpe by 0.30. Do not quote any pre-2026-07-28 figure.
+
+**The credit gate still earns its place on clean data (26yr): +0.5pp CAGR, +0.02 Sharpe, and
++7.7pp of drawdown protection (−65.8% → −58.1%).** On the 8yr it is ~free (−0.6pp CAGR, +0.4pp DD)
+because that window contains no credit crisis — exactly as originally documented.
+
+## Remaining known gap (one item)
+399 of 4,305 membership symbols (9.3%) never resolve to a CRSP ticker — mostly companies WRDS
+identifies ONLY by a post-bankruptcy ticker that never existed in CRSP (`AAMRQ` vs CRSP `AMR`),
+plus share-class dots (`BRK.B`) and ADRs. A name-based bridge was TESTED AND REJECTED: it matched
+LEHMQ→Lehigh Valley RR and WAMUQ→Wampler Longacre — wrong 3 of 4 times, and wrong prices are worse
+than missing ones. **Clean fix: re-download the S&P membership files from WRDS with PERMNO/GVKEY
+included** (next quarterly upload, ~Sept). That would make the join exact.
