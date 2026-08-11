@@ -34,7 +34,11 @@ V12_LIVE_BACKTEST_CONFIG = {
     "trailing_stop": 0.40,
     "cap": 0.10,          # live-effective relative cap (15% NAV at 1.49x gross)
     "use_rp": False,      # live signal_builder applies NO risk-parity
-    "bear_weights": {"mom": 0.10, "val": 0.30, "s5": 0.50, "s3": 0.10},
+    # bear_weights DELIBERATELY OMITTED. main_production_backtest falls back to
+    # _short_weights(PROD_WEIGHTS_BEAR), so this config tracks production automatically.
+    # It used to hardcode {"mom":.10,"val":.30,"s5":.50,"s3":.10}, which went stale when
+    # 59860bb zeroed s3 (real BEAR is now .1111/.3333/.5556/0.00) — anything importing
+    # this "single source of truth" then silently stopped reproducing live. Don't re-add it.
     "vol_scaling": True, "vol_target": 0.15, "vol_lookback": 40,
     # NOTE: stock backtester up-scales to 1.5x; live caps at 1.0 (de-risk only).
     # Use the research fork's vol_scale_cap=1.0 for exact parity (see

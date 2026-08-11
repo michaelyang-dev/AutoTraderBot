@@ -19,7 +19,7 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 | Parameter | IBKR live | Alpaca paper | Backtest equivalent |
 |---|---|---|---|
 | Signals | `:5001` /signals | same | same shared sleeve code |
-| Sleeves | mom .50 / val .35 / lowvol .15 (bear .10/.30/.50/.10, breadth-blended) | same | same (`PROD_WEIGHTS_*`) |
+| Sleeves | mom .50 / val .35 / lowvol .15 (bear .1111/.3333/.5556, **sector 0.00**, breadth-blended) | same | same (`PROD_WEIGHTS_*`) |
 | Risk-parity in sleeves | **NO** (signal_builder skips it) | same | model with `use_rp=False` |
 | Rebalance | 20 trading days, persisted `ibkr_rebal_state.json`, NYSE-calendar gated | same via `js_rebal_state.json` | `rebal_days: 20` |
 | Position cap | 15% of NAV (≈10% of the 1.49x book) | same | model with `cap: 0.10` |
@@ -164,6 +164,26 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 - `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
 - Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
   `sp1500_members.json`.
+- **GROSS_MARGIN NOW BOUNDED TO [-1,1] (2026-08-10, commit 74d57cb) — was a LIVE-ONLY book
+  collapse.** `gross_margin = (saleq-cogsq)/saleq`, so |gm| > 1 is impossible; Compustat rows
+  with saleq ~ 0 produce garbage. VIR carried **gm = 4561.72**. `strategy_value` had only a
+  LOWER bound (`g < 0.15`), so it passed and scored **1140.2 vs 0.4669** for the best real name
+  (TTD). The sleeve's 2/N cap does not contain this (see the `strategy_value` docstring — the
+  cap is renormalized away), so VIR took ~93% of the value sleeve and ten legitimate names
+  (ADBE ADSK BSY DUOL LIF META PAYC PAYX PTC SEZL) fell under the 0.005 floor:
+  **live served 15 BUY names where every backtest runs 25.** Second effect: `strategy5` feeds
+  gm through `zscore()`, and one 4561.72 in n=1487 drags mean to ~3.42 / std to ~118, so every
+  legitimate name collapsed to z ~ -0.025 — measured **z-spread 1.0000 -> 0.0012**, i.e. the
+  low-vol quality factor was switched OFF, not merely tilted.
+  LIVE-ONLY because the EDGAR overlay (roe-only) injects VIR roe = 0.326 over its true -0.6186;
+  without the overlay VIR fails `roe >= 0.05` and never reaches the scorer. **Verified: overlay
+  OFF = 25 names, ON = 15.** Fixed via `_sane_gross_margin` in shared code (value + lowvol), the
+  same bound the overlay already applied to its own values (`signal_builder.py:496`).
+  Post-fix live: **25 names, VIR absent, max name 16.5% of book.**
+  ⚠️ The BACKTEST universes carry the same corrupt values (8yr: 80,398 obs outside [-1,1],
+  **99.2% of dates**; 26yr: 186,842, **99.7% of dates**), so the low-vol z-score was degraded
+  there too. The fix corrects both sides together (parity preserved) but **the canonical
+  numbers were computed with the contamination and must be re-run.**
 - **SECTOR SLEEVE (s3) ZEROED 2026-07-26 — parity by construction.** `strategy3_sector_rotation`
   returns sector **ETFs** (XLK/XLE/...), which the live path can never deliver (signal_builder
   emits SP1500 *members*; ETFs are not members), so live silently dropped them while the

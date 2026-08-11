@@ -152,9 +152,20 @@ def strategy_value(uni, date, members, top_n=10):
     """Value sleeve — quality + long-term reversal. SINGLE SOURCE OF TRUTH.
 
     Used identically by live (signal_builder) and backtest (main_production_backtest).
-    Filters: ROE > 5%, gross margin > 15%, dist_sma200 > -15%, debt/equity < 3.
+    Filters: ROE > 5%, gross margin in [15%, 100%], dist_sma200 > -15%, debt/equity < 3.
+      The gross-margin UPPER bound comes from _sane_gross_margin and is load-bearing:
+      without it a corrupt Compustat row (VIR, gm=4561.72) scored 1140.2 vs 0.4669 for
+      the best real name and took the entire sleeve. See that helper for the full story.
     Score: -ret_252d*0.30 + gross_margin*0.25 + min(ROE, 0.5)*0.25.
-    Returns {symbol: weight} for the top-N, score-proportional (capped 2/N).
+    Returns {symbol: weight} for the top-N, score-proportional.
+
+    CAVEAT — the 2/N cap below does NOT reliably bind. min(v/total, 2/N) is applied and
+    then renormalized by w/sum(w); capping the dominant name shrinks the denominator by
+    almost exactly what was removed, so a name at 98% of raw score renormalizes back to
+    ~93% despite a nominal 20% cap. Real concentration control is the downstream 15%-of-NAV
+    position cap in ibkr_engine, not this line. Same pattern exists in strategy1/strategy5.
+    Fixing it properly (iterative water-filling) changes historical weights and needs a
+    full revalidation — deliberately NOT done as part of the 2026-08-10 gm hotfix.
     """
     roe = uni.get_feature_map(date, "roe", members)
     gm = _sane_gross_margin(uni.get_feature_map(date, "gross_margin", members))
@@ -1002,12 +1013,13 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
 # strategies/true_walkforward.py and strategies/wrds_walkforward.py. Nothing in
 # production imports them (verified 2026-07-26: no cron, no pm2 service).
 #
-#   ✅ PRODUCTION SLEEVE WEIGHTS (v12) LIVE IN ONE PLACE:
-#        PROD_WEIGHTS_BULL  = mom .50 / value .35 / lowvol .15
-#        PROD_WEIGHTS_BEAR  = mom .10 / value .30 / lowvol .50 / sector .10
-#        PROD_WEIGHTS_CRASH = mom .15 / value .45 / lowvol .30 / sector .10
+#   ✅ PRODUCTION SLEEVE WEIGHTS (v12) LIVE IN ONE PLACE — see lines 64-66, not here.
+#      Do not restate the numbers in prose; this comment block already went stale once.
+#      As of 59860bb s3_sector is ZERO in all three regimes (live cannot route ETF orders),
+#      and bear/crash were renormalized over the surviving sleeves, so the true values are
+#      NOT the .10/.30/.50/.10 and .15/.45/.30/.10 this block used to claim.
 #      signal_builder.py (live) and main_production_backtest.py (backtest) BOTH read
-#      those constants — that is the single source of truth.
+#      those constants — that is the single source of truth. Read them; don't trust a comment.
 #
 # RENAMED 2026-07-26 from STRATEGY_CONFIG_BULL/BEAR: the old names collided with
 # signal_builder's production constants of the SAME NAME but DIFFERENT VALUES, so anyone
