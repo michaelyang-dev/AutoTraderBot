@@ -74,6 +74,22 @@ def _load_si_change_data(uni):
         uni._si_change_rank = {}
 
 
+def _is_partial_session(idx):
+    """True when idx[-1] belongs to a session that has NOT closed yet.
+
+    SINGLE SOURCE OF TRUTH for the partial-session guard — used by BOTH the price-matrix
+    trim in _build_universe AND the `today` selection in build_signals_v9. Those two
+    decided "what is today" independently once, and the mismatch produced an EMPTY book
+    (features ended on the completed session while the lookup asked for the in-progress
+    one), so they must never diverge again. Returns False for len < 2 so the caller can
+    never be left with nothing.
+    """
+    if len(idx) < 2:
+        return False
+    now_et = datetime.now(ZoneInfo("US/Eastern"))
+    return pd.Timestamp(idx[-1]).date() == now_et.date() and now_et.hour < 16
+
+
 def _build_universe(raw, enhanced_data=None):
     """Build FastUniverse from raw bar data."""
     DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -107,18 +123,14 @@ def _build_universe(raw, enhanced_data=None):
     # Only drops while the session is still open; after 16:00 ET the bar is final
     # (and the 17:30 refresh cron + 17:50 restart rebuild it properly). The 15-min
     # refresh loop is gated on _is_market_hours(), so nothing runs in between.
-    # len > 1 so the guard can never empty the frame (defensive; live carries ~378 rows).
-    if len(prices) > 1:
-        _now_et = datetime.now(ZoneInfo("US/Eastern"))
-        if prices.index[-1].date() == _now_et.date() and _now_et.hour < 16:
-            _partial = prices.index[-1]
-            _missing = int(prices.loc[_partial].isna().sum())
-            prices = prices.iloc[:-1]
-            log.info("Partial-session guard: dropped in-progress bar %s "
-                     "(%d/%d symbols had no print yet); computing on last completed "
-                     "session %s", str(_partial)[:10], _missing,
-                     prices.shape[1] if prices.shape[1] else 0,
-                     str(prices.index[-1])[:10] if len(prices) else "n/a")
+    if _is_partial_session(prices.index):
+        _partial = prices.index[-1]
+        _missing = int(prices.loc[_partial].isna().sum())
+        prices = prices.iloc[:-1]
+        log.info("Partial-session guard: dropped in-progress bar %s (%d/%d symbols had no "
+                 "print yet); computing on last completed session %s",
+                 str(_partial)[:10], _missing, prices.shape[1],
+                 str(prices.index[-1])[:10])
 
     # Load sector map
     sector_file = DATA_DIR / "cache_sectors.json"
@@ -586,12 +598,29 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     if spy_df.empty or len(spy_df) == 0:
         log.error("SPY data unavailable — cannot build v9.6 signals")
         return []
-    today = pd.Timestamp(spy_df.index[-1]).normalize()
+    # PARTIAL-SESSION GUARD: must use the SAME rule as the price-matrix trim in
+    # _build_universe, or `today` points at a session whose features were dropped and
+    # every lookup returns {} -> empty book. Hence the shared _is_partial_session().
+    _spy_idx = spy_df.index
+    today = pd.Timestamp(_spy_idx[-2] if _is_partial_session(_spy_idx)
+                         else _spy_idx[-1]).normalize()
 
     # Rebuild universe if needed (once per day)
     if _uni_cache is None or _uni_cache_date != today:
         log.info("Building v9.6 FastUniverse ...")
         _uni_cache = _build_universe(raw, enhanced_data)
+        # RECONCILE: SPY's bars and the price matrix are assembled separately, so a
+        # disagreement about the last completed session is possible (SPY printing while
+        # a symbol has not, DST, a provider gap). Trust the universe — asking it for a
+        # date it lacks yields an empty book with no error. Loud, because silent
+        # degradation is the failure mode this whole guard exists to prevent.
+        _feat_dates = getattr(_uni_cache, "_feat_by_date", {})
+        if _feat_dates and today not in _feat_dates:
+            _actual = max(_feat_dates)
+            log.warning("Session mismatch: signal date %s absent from universe features "
+                        "(last available %s) — using the universe's date instead.",
+                        str(today)[:10], str(_actual)[:10])
+            today = pd.Timestamp(_actual).normalize()
         _uni_cache_date = today
         # v12: SI DISABLED — hurts returns by -3pp (verified May 2026)
         # _load_si_change_data(_uni_cache)
