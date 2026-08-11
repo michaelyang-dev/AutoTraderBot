@@ -123,6 +123,31 @@ def log(msg):
     print(msg, flush=True)
 
 
+# ── gross_margin plausibility bound ──────────────────────────────────────────
+# gross_margin = (saleq - cogsq) / saleq, so |gm| > 1 is definitionally impossible.
+# Values outside it are corrupt Compustat rows where saleq ~ 0 blows up the ratio.
+# Live 2026-08-10: VIR carried gm = 4561.72 (456,172%). Two distinct failures:
+#   1. strategy_value has only a LOWER bound (g < 0.15), so 4561.72 passed and scored
+#      1140.2 vs 0.4669 for the best legitimate name — a 2,400x outlier that took the
+#      whole value sleeve (book collapsed 25 -> 15 names).
+#   2. strategy5 feeds gm through zscore(); a single 4561.72 in n=1487 drags mean to
+#      ~3.42 and std to ~118, so EVERY legitimate name collapses to z ~ -0.025 and the
+#      quality factor loses all discriminating power.
+# Same bound the EDGAR overlay already applies to its own values (signal_builder.py:496);
+# it was simply never applied to the underlying Compustat value. Dropping the key (rather
+# than clamping) makes the name fail the existing `g is None` guard in strategy_value and
+# fall out of the z-set in strategy5 — degrade, don't fabricate.
+# Shared by live and backtest, so this closes the hole on both sides with no new divergence.
+GM_PLAUSIBLE_MIN, GM_PLAUSIBLE_MAX = -1.0, 1.0
+
+
+def _sane_gross_margin(gm_map):
+    """Drop implausible gross_margin values before they reach scoring or z-scoring."""
+    return {s: v for s, v in gm_map.items()
+            if v is not None and not np.isnan(v)
+            and GM_PLAUSIBLE_MIN <= v <= GM_PLAUSIBLE_MAX}
+
+
 def strategy_value(uni, date, members, top_n=10):
     """Value sleeve — quality + long-term reversal. SINGLE SOURCE OF TRUTH.
 
@@ -132,7 +157,7 @@ def strategy_value(uni, date, members, top_n=10):
     Returns {symbol: weight} for the top-N, score-proportional (capped 2/N).
     """
     roe = uni.get_feature_map(date, "roe", members)
-    gm = uni.get_feature_map(date, "gross_margin", members)
+    gm = _sane_gross_margin(uni.get_feature_map(date, "gross_margin", members))
     r252 = uni.get_feature_map(date, "ret_252d", members)
     d200 = uni.get_feature_map(date, "dist_sma200", members)
     de = uni.get_feature_map(date, "debt_to_equity", members)
@@ -902,7 +927,7 @@ def strategy5_lowvol_quality(date, uni, day_idx, top_n=10, rebal_days=10):
     members = uni.get_sp500(date)
 
     vol60 = uni.get_feature_map(date, "vol_60d", members)
-    gm = uni.get_feature_map(date, "gross_margin", members)
+    gm = _sane_gross_margin(uni.get_feature_map(date, "gross_margin", members))
     dte = uni.get_feature_map(date, "debt_to_equity", members)
     ret_126 = uni.get_feature_map(date, "ret_126d", members)
     eps = uni.get_feature_map(date, "eps_surprise_last", members)
