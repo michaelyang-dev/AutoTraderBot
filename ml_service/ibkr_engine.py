@@ -569,14 +569,25 @@ class IBKREngine:
         return []
 
     def is_market_open(self):
-        """Check if US market is open."""
-        try:
-            resp = requests.get(SIGNAL_HEALTH_URL, timeout=5)
-            if resp.status_code == 200:
-                return resp.json().get("market_open", False)
-        except Exception:
-            log.debug("Signal server unreachable for market_open check, using time fallback")
-        # Fallback: check time
+        """US market open = the ET session window AND the signal server's flag.
+
+        BOTH are required, and the ORDER matters. This used to `return` the server's
+        market_open flag directly, which made the ET check below unreachable whenever the
+        server was up — i.e. essentially always. The server's flag goes TRUE around 09:16
+        (the misfire already documented at the rebalance() gate from Jul-3-2026), so on
+        2026-08-11 the 20-day rebalance fired at 09:16:39 and submitted every order
+        13 minutes BEFORE the open. It was benign that day only because IBKR queued the
+        market orders and filled them at 09:30:00-09:30:02 — but the orders sat live and
+        cancellable-by-nobody through the pre-market, and every future rebalance would
+        repeat it. `_is_trading_day()` did not save us: it validates the DAY, not that the
+        session has STARTED.
+
+        So the clock is authoritative on TIME (it cannot misfire early) and the server is
+        authoritative on HOLIDAYS/early closes (which a naive clock cannot see). Requiring
+        both means a false TRUE from either one cannot open the gate on its own.
+        If the server is unreachable we fall back to the clock alone — unchanged from
+        before, and the rebalance path additionally gates on NYSE-calendar _is_trading_day().
+        """
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("US/Eastern"))
         if now.weekday() >= 5:
@@ -585,6 +596,13 @@ class IBKREngine:
             return False
         if now.hour == 9 and now.minute < 30:
             return False
+        # Clock says we are inside the session; let the server veto (holiday / early close).
+        try:
+            resp = requests.get(SIGNAL_HEALTH_URL, timeout=5)
+            if resp.status_code == 200:
+                return bool(resp.json().get("market_open", False))
+        except Exception:
+            log.debug("Signal server unreachable for market_open check, using time fallback")
         return True
 
     async def get_market_price(self, contract):
