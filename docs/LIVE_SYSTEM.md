@@ -164,6 +164,29 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 - `record_nav` close marks are write-once per day (evening restarts must not corrupt them).
 - Wikipedia SP1500 scraper has per-index last-good fallback — check the `stale` field in
   `sp1500_members.json`.
+- **PARTIAL-SESSION GUARD (2026-08-11, commits 2ef61fb + 5304eea) — live-only silent
+  exclusion.** v12 is a daily-CLOSE strategy, but `signal_server` rebuilds every
+  `REFRESH_MINUTES` (15) **during market hours**, so the in-progress bar entered the price
+  matrix. A symbol whose bar hasn't printed is NaN, and pandas defaults `rolling()`'s
+  `min_periods` to the window, so **one** missing bar makes `c.rolling(200).mean()` NaN →
+  `get_feature_map` DROPS NaN keys entirely → `dist_sma200.get(sym, 0)` returns 0, fails
+  `> 0`, and the name is silently cut from the momentum AND lowvol sleeves. No log, no alarm.
+  Measured 2026-08-04 10:11 ET: **SNDK had 199/200 bars and vanished despite a 12-1 score of
+  30.37 — 4x the #1 name**; 21 of 1539 symbols affected. `ret_252d` survives the same gap
+  (`pct_change` touches 2 rows), which is why a name can post a huge score and be invisible.
+  The backtest cannot express this (it only reads completed bars), so the guard restores
+  parity rather than adding divergence, and makes the book deterministic through the day.
+  Chose this over loosening `min_periods`, which would change feature VALUES and require
+  mirroring in `build_universe_2000.py`. Only drops while the session is open (after 16:00 ET
+  the bar is final; the 15-min loop is gated on `_is_market_hours()`).
+  ⚠️ **`_is_partial_session()` is the single source of truth and must stay that way.** The
+  first cut trimmed only the price matrix while `build_signals_v9` still took `today` from
+  SPY's raw bars — when the guard fired, features ended on the completed session while the
+  lookup asked for the in-progress one → **EMPTY BOOK (0 names) + parity alarm**. Caught by an
+  efficacy test before any restart. There is now also a reconcile step: if `today` is absent
+  from the universe's features, trust the universe and log a warning.
+  Verified: identity on real data (book byte-identical, 25 names) AND efficacy on an injected
+  partial session (old = SNDK silently absent; new = SNDK present, 25 names).
 - **GROSS_MARGIN NOW BOUNDED TO [-1,1] (2026-08-10, commit 74d57cb) — was a LIVE-ONLY book
   collapse.** `gross_margin = (saleq-cogsq)/saleq`, so |gm| > 1 is impossible; Compustat rows
   with saleq ~ 0 produce garbage. VIR carried **gm = 4561.72**. `strategy_value` had only a
