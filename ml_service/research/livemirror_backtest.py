@@ -432,8 +432,44 @@ class LiveMirrorBacktester(FastBacktester):
             lev_t = leverage * derisk
             if strong_bull and bull_lever > 1.0:
                 lev_t *= bull_lever
-            budget = nav * lev_t
-            target_d = {s: w * budget for s, w in combined.items()}
+            if config.get("live_sizing"):
+                # ---- FAITHFUL PORT of ibkr_engine._calibrate_quantities ----
+                # The default branch below multiplies `combined` by the budget AS-IS, so any
+                # under-allocation (sleeve returning few names, per-position cap binding,
+                # integer-rounding drag, cash drag) is PRESERVED — measured avg realized gross
+                # 1.1164x at nominal 1.49x. Live does not do that: it renormalises
+                # w = prob/total_prob so the weights sum to exactly 1, then closed-loops a
+                # multiplier over 4 passes until ACTUAL gross (after cap + whole-share
+                # truncation) hits nav * leverage * vol_scale * credit_derisk. It therefore
+                # deploys the full target every time and recovers the rounding drag.
+                # Net effect measured 2026-08-11: live runs 1.33x the exposure the backtest
+                # actually held (+33.5%). live_sizing=True reproduces the LIVE behaviour so the
+                # two can be compared at equal footing instead of assumed equivalent.
+                _cap = float(config.get("live_position_cap", 0.15))   # ibkr POSITION_CAP
+                _ceil = float(config.get("live_lev_ceiling", 1.80))   # ibkr LEVERAGE ceiling
+                _tot_w = sum(combined.values())
+                _base = ({s: w / _tot_w for s, w in combined.items()} if _tot_w > 0
+                         else dict(combined))
+                _tgt_gross = nav * lev_t
+                _m = lev_t
+                target_d = {}
+                for _p in range(4):
+                    target_d, _g = {}, 0.0
+                    for _s, _w0 in _base.items():
+                        _px = today.get(_s)
+                        if not _px or _px <= 0:
+                            continue
+                        _w = min(_w0 * _m, _cap)
+                        _q = shr(nav * _w, _px)
+                        if _q > 0:
+                            target_d[_s] = _q * _px
+                            _g += _q * _px
+                    if _p == 3 or _g <= 0:
+                        break
+                    _m = min(_m * (_tgt_gross / _g), _ceil)
+            else:
+                budget = nav * lev_t
+                target_d = {s: w * budget for s, w in combined.items()}
 
             # exit names no longer targeted (integer -> sell whole position)
             for sym in list(holdings):
