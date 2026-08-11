@@ -11,7 +11,9 @@ This module is imported by signal_server.py.
 
 import json as _json
 import logging
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -83,6 +85,40 @@ def _build_universe(raw, enhanced_data=None):
             close_frames[sym] = df["close"]
     prices = pd.DataFrame(close_frames)
     prices.index = pd.to_datetime(prices.index)
+
+    # ── PARTIAL-SESSION GUARD (2026-08-11) ────────────────────────────────────
+    # v12 is a daily-CLOSE strategy: it must never compute features on a session
+    # that has not closed yet. The signal server re-runs this every REFRESH_MINUTES
+    # (15) *during market hours*, so without this guard the in-progress bar enters
+    # the matrix. Any symbol whose bar has not printed yet is NaN, and because
+    # pandas defaults rolling()'s min_periods to the window, ONE missing bar makes
+    # c.rolling(200).mean() NaN for that name. get_feature_map then DROPS NaN keys
+    # entirely, so `dist_sma200.get(sym, 0)` returns 0, fails `> 0`, and the name is
+    # silently excluded from the momentum and lowvol sleeves — no log, no alarm.
+    # Measured live 2026-08-04 10:11 ET: SNDK held 199/200 bars (the one gap being
+    # that morning) and vanished from the book despite a 12-1 momentum score of
+    # 30.37, over 4x the #1 name. 21 symbols were affected that morning.
+    # Note ret_252d survives the same gap (pct_change touches only two rows), which
+    # is why a name can post a huge score and still be invisible.
+    # The backtest CANNOT express this failure — it only ever sees completed bars —
+    # so dropping the in-progress row restores parity rather than creating a new
+    # divergence, and makes the book deterministic through the trading day instead
+    # of shifting every 15 minutes.
+    # Only drops while the session is still open; after 16:00 ET the bar is final
+    # (and the 17:30 refresh cron + 17:50 restart rebuild it properly). The 15-min
+    # refresh loop is gated on _is_market_hours(), so nothing runs in between.
+    # len > 1 so the guard can never empty the frame (defensive; live carries ~378 rows).
+    if len(prices) > 1:
+        _now_et = datetime.now(ZoneInfo("US/Eastern"))
+        if prices.index[-1].date() == _now_et.date() and _now_et.hour < 16:
+            _partial = prices.index[-1]
+            _missing = int(prices.loc[_partial].isna().sum())
+            prices = prices.iloc[:-1]
+            log.info("Partial-session guard: dropped in-progress bar %s "
+                     "(%d/%d symbols had no print yet); computing on last completed "
+                     "session %s", str(_partial)[:10], _missing,
+                     prices.shape[1] if prices.shape[1] else 0,
+                     str(prices.index[-1])[:10] if len(prices) else "n/a")
 
     # Load sector map
     sector_file = DATA_DIR / "cache_sectors.json"
