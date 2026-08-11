@@ -135,7 +135,17 @@ class FastBacktester:
                 ranks = (-latest).rank(pct=True)
                 self._si_change_ranks_by_month[start] = ranks.to_dict()
 
-            log.info(f"Short interest loaded: {len(self._si_months)} months (level + change)")
+            # LOUD ON PURPOSE. Short interest is a BACKTEST-ONLY input: live never sets
+            # uni._short_interest_rank at all (and _options/Ortex is {} on both sides, so
+            # that branch is dead everywhere). Measured 2026-08-11 over 2018-21 with a
+            # runtime counter: leaving this loaded applies 19,765 score multipliers
+            # (325 x1.10, 19,440 x0.80) that the live engine CANNOT reproduce.
+            # Canonical research runs call clear_deployed(), which zeroes it -> the numbers
+            # we quote contain NO SI contribution. Any run that FORGETS clear_deployed()
+            # silently gets backtest-only alpha, so say so every single time.
+            log.warning(f"Short interest loaded: {len(self._si_months)} months (level + change) "
+                        f"— BACKTEST-ONLY INPUT, live has no equivalent. Call clear_deployed() "
+                        f"before quoting any number, or results will not be reproducible live.")
         except Exception as e:
             log.warning(f"Could not load short interest: {e}")
 

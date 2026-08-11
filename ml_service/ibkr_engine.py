@@ -146,6 +146,11 @@ CAPITAL_FLOWS_FILE = Path(__file__).resolve().parent / "data" / "ibkr_capital_fl
 CLOSE_SNAPSHOT_FILE = Path(__file__).resolve().parent / "data" / "ibkr_close_snapshot.json"
 DISCONNECT_ESCALATE_SECS = 900  # only Telegram-alert if Gateway stays down >15 min (needs 2FA); brief blips are silent
 HANG_TIMEOUT_SECS = 360  # watchdog: if the main loop makes no progress this long (e.g. Error-1100 hang), force-restart
+RECONNECT_FAIL_LIMIT = 5  # connection watchdog: force-restart after N CONSECUTIVE failed reconnects.
+# The HANG watchdog cannot catch a reconnect loop (it counts as progress — see its docstring),
+# so a wedged clientId spins forever. Retries are ~60s apart, so 5 ~= 5 min: long enough to ride
+# out the nightly Gateway restart (recovers in ONE retry) and short enough to self-heal before
+# the 09:30 open. See the 2026-08-11 01:05-01:11 Error-326 incident.
 REBAL_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_rebal_state.json"
 REBAL_DAYS = 20  # rebalance cadence in trading days (must match backtest rebal_days)
 
@@ -2187,8 +2192,34 @@ class IBKREngine:
                         await asyncio.sleep(2)
                         log.info("Reconnected successfully — cancelled pending orders")
                         self._on_reconnect()
+                        self._reconnect_failures = 0
                     except Exception as ce:
-                        log.error(f"Reconnect failed: {ce}")
+                        # CONNECTION WATCHDOG (2026-08-11). The loop-progress watchdog above
+                        # deliberately does NOT catch this: its docstring notes "reconnect
+                        # loops keep the heartbeat fresh, so this won't false-fire" — a
+                        # reconnect loop IS progress, so a PERSISTENTLY failing one spins
+                        # forever without restarting. Observed 2026-08-11 01:05-01:11: the
+                        # engine held a live socket from an earlier session, its health check
+                        # read socket=False, and every retry hit "Error 326: client id already
+                        # in use" — against its OWN zombie connection. It could not self-heal,
+                        # and would have been unable to trade the 20-day rebalance at the open.
+                        # A manual `pm2 restart ibkr-engine` cleared it instantly (the clientId
+                        # frees when the process dies), so escalate to exactly that.
+                        # Counts only CONSECUTIVE failures and resets on success, so ordinary
+                        # transients are untouched — the nightly IB Gateway restart recovers in
+                        # one retry (19:59 -> 20:00), far below the threshold.
+                        self._reconnect_failures = getattr(self, "_reconnect_failures", 0) + 1
+                        log.error(f"Reconnect failed: {ce} "
+                                  f"(consecutive={self._reconnect_failures}/{RECONNECT_FAIL_LIMIT})")
+                        if self._reconnect_failures >= RECONNECT_FAIL_LIMIT:
+                            log.error(f"CONNECTION WATCHDOG: {self._reconnect_failures} consecutive "
+                                      f"reconnect failures — force-restarting for a clean clientId")
+                            send_telegram(
+                                f"🔴 IBKR engine cannot reconnect ({self._reconnect_failures} tries, "
+                                f"~{self._reconnect_failures} min). Usually a wedged clientId "
+                                f"(Error 326) against a stale session. Auto-restarting; "
+                                f"reply /status in ~1 min to confirm.")
+                            os._exit(1)   # PM2 restarts -> fresh process -> clientId released
                         await asyncio.sleep(60)
                         continue
 

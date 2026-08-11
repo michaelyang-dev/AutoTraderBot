@@ -674,6 +674,50 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
                          f"({_usable_n} rankable) (SP1500)")
         except Exception as _e:
             log.error(f"PARITY GUARD could not verify pool size: {_e}")
+
+        # FEATURE-COVERAGE GUARD (2026-08-11). The pool guard above only checks ret_252d.
+        # But get_feature_map DROPS NaN keys entirely, so a name missing ANY filter feature
+        # is silently removed from that sleeve — `dist_sma200.get(sym, 0)` returns 0, fails
+        # `> 0`, and the name is gone with no log, no count, no alarm. That is the exact
+        # mechanism behind the SNDK incident (2026-08-04); the partial-session guard fixes
+        # the unclosed-bar CAUSE, but genuinely missing vendor/fundamentals data produces the
+        # same silent exclusion. Observed 2026-08-11: 18 names had no dist_sma200, 108 no roe,
+        # 44 no gross_margin — invisible until someone went looking.
+        # So: log coverage EVERY build (observability), and alarm if a source collapses.
+        # Floors are set well under normal coverage (roe ~93%, gm ~97%, sma200 ~99%) — they
+        # are here to catch a source VANISHING (a parquet failing to load takes roe to ~0),
+        # not to police ordinary churn.
+        try:
+            _cov_floor = {"dist_sma200": 0.85, "roe": 0.70, "gross_margin": 0.80,
+                          "vol_60d": 0.85, "ret_126d": 0.85}
+            _pool2 = _uni_cache.get_sp500(today)
+            _n = max(len(_pool2), 1)
+            _cov_msgs, _cov_bad = [], []
+            for _f, _floor in _cov_floor.items():
+                _m = _uni_cache.get_feature_map(today, _f)
+                _have = sum(1 for s in _pool2 if _m.get(s) is not None)
+                _frac = _have / _n
+                _cov_msgs.append(f"{_f} {_frac:.1%} ({_n - _have} missing)")
+                if _frac < _floor:
+                    _cov_bad.append(f"{_f} {_frac:.1%} < floor {_floor:.0%}")
+            log.info("feature coverage: %s", " | ".join(_cov_msgs))
+            if _cov_bad:
+                msg = ("COVERAGE ALARM: " + "; ".join(_cov_bad) +
+                       ". Names missing a filter feature are SILENTLY dropped from that "
+                       "sleeve — check the fundamentals/price feeds before trusting signals.")
+                log.error(msg)
+                try:
+                    import os as _os, requests
+                    _tok = (_os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+                    _chat = (_os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+                    if _tok and _chat:
+                        requests.post(f"https://api.telegram.org/bot{_tok}/sendMessage",
+                                      json={"chat_id": _chat, "text": f"🚨 {msg}"}, timeout=10)
+                except Exception:
+                    pass
+        except Exception as _e:
+            log.error(f"COVERAGE GUARD could not verify feature coverage: {_e}")
+
         log.info("v9.6 FastUniverse ready (SP1500 pool, earnings boosts OFF — parity)")
 
     uni = _uni_cache
