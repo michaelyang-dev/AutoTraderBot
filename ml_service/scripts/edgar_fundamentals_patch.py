@@ -99,14 +99,30 @@ REL_TOL, ABS_TOL = 0.02, 2.0           # 2% relative or $2M absolute ($MM units)
 
 # Candidate features + EXACT live formulas (signal_builder._fill_fundamentals). Only
 # `roe` is live-consumed; gm/d2e are generated for research and excluded by the loader.
+#
+# DENOMINATOR GUARDS MUST BE `> 0`, NOT TRUTHINESS (fixed 2026-08-13).
+# These lambdas used `if v.get("seqq")`, which is falsy only for 0/None — a NEGATIVE
+# denominator sails through. signal_builder's Compustat path got the `seqq > 0` guard in the
+# F3 parity fix (2026-07-25, line ~348: `niq*4 / seqq.where(seqq > 0)`), but this file was
+# never updated, so the two roe sources in the SAME live process disagreed: Compustat
+# returned NaN for negative-equity companies while the overlay returned a large negative
+# number. Audited 2026-08-13: 21 overlay symbols carried roe < -1.0 (HPQ -12.50, DELL -9.79,
+# MCD -9.24, ABBV -2.44 ...) — all companies whose equity has gone negative through buybacks,
+# where ROE is not a meaningful quantity at all.
+# The practical effect was benign (both paths fail the `roe >= 0.05` value filter, just via
+# different routes), which is exactly why it survived unnoticed — so fix the inconsistency
+# now rather than wait for a code change to make it matter.
+# NOTE the comment above is a standing claim that these match signal_builder EXACTLY; it
+# silently became false when F3 landed. If you change a formula in either place, change both.
 FEATURES = {
     "roe":            (["niq", "seqq"],
-                       lambda v: 4 * v["niq"] / v["seqq"] if v.get("seqq") else None),
+                       lambda v: 4 * v["niq"] / v["seqq"] if (v.get("seqq") or 0) > 0 else None),
     "gross_margin":   (["saleq", "cogsq"],
-                       lambda v: (v["saleq"] - v["cogsq"]) / v["saleq"] if v.get("saleq") else None),
+                       lambda v: (v["saleq"] - v["cogsq"]) / v["saleq"]
+                       if (v.get("saleq") or 0) > 0 else None),
     "debt_to_equity": (["dlttq", "dlcq", "seqq"],
                        lambda v: ((v.get("dlttq") or 0) + (v.get("dlcq") or 0)) / v["seqq"]
-                       if v.get("seqq") else None),
+                       if (v.get("seqq") or 0) > 0 else None),
 }
 
 
