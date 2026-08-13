@@ -166,6 +166,144 @@ class LiveMirrorBacktester(FastBacktester):
         vol_target = config.get("vol_target", 0.20); vol_lookback = config.get("vol_lookback", 40)
         recent_rets = []
 
+        # ---- research: DYNAMIC-LEVERAGE framework (2026-08-13) --------------------------
+        # Deployed behaviour has TWO separate lags, and prior leverage-timing research only
+        # ever varied the rule, never these:
+        #   MEASUREMENT lag — realized vol is a 40d SIMPLE mean, so a vol spike keeps the
+        #     estimate elevated ~40 sessions after it has actually passed.
+        #   APPLICATION lag — vol_scale is applied ONLY inside the rebalance block, i.e. once
+        #     every `rebal_days` (20). Vol can collapse the day after a rebalance and the book
+        #     stays de-levered for 20 more sessions.
+        # These knobs let both be varied independently. All default to CURRENT behaviour, so
+        # an unset config reproduces the deployed engine exactly.
+        vol_mode = config.get("vol_mode", "simple")      # simple | ewma
+        vol_ewma_lam = float(config.get("vol_ewma_lambda", 0.94))
+        vol_up_lb = config.get("vol_up_lookback")        # asym: window used when vol is FALLING
+        vol_dn_lb = config.get("vol_dn_lookback")        # asym: window used when vol is RISING
+        lev_recheck = config.get("lev_recheck_every")    # off-cadence gross re-scale, in days
+        lev_band = float(config.get("lev_band", 0.0))    # only act if |target/current - 1| > band
+
+        def _rv(rets, lb=None, mode=None):
+            """Annualized realized vol from the shadow (unlevered) return series."""
+            r = list(rets)
+            if lb:
+                r = r[-int(lb):]
+            if len(r) < 20:
+                return None
+            a = np.asarray(r, dtype=float)
+            m = (mode or vol_mode)
+            if m == "ewma":
+                lam = vol_ewma_lam
+                w = lam ** np.arange(len(a) - 1, -1, -1)
+                w = w / w.sum()
+                mu = float((w * a).sum())
+                var = float((w * (a - mu) ** 2).sum())
+            else:
+                var = float(a.var())
+            return (var ** 0.5) * np.sqrt(252)
+
+        # ---- research: LEVERAGE POLICIES — fundamentally DIFFERENT ideas of when to be
+        # levered, not just different estimators of the same idea. Inverse-vol targeting is
+        # ONE theory ("size to constant risk"); if that theory is simply wrong for this
+        # strategy, retuning its window can never fix it. Each policy returns a multiplier in
+        # [0.3, vol_scale_cap]; every one is compared against a CONSTANT-leverage arm matched
+        # on realised average gross, because any policy that merely lowers average exposure
+        # will look good against 1.49x for reasons that have nothing to do with timing.
+        shadow_hist = []          # shadow (unlevered) NAV path — self-referential policies
+        def _policy_mult():
+            pol = config.get("lev_policy", "invvol")
+            cap_ = config.get("vol_scale_cap", 1.5)
+            clamp = lambda x: float(min(cap_, max(0.3, x)))
+
+            if pol == "constant":
+                # CONTROL: no timing at all. The bar every policy must clear.
+                return 1.0
+
+            if pol == "eqtrend":
+                # THEORY: the strategy's own equity curve trends. Be levered while the shadow
+                # NAV is above its own moving average, cut when below. Self-referential, so it
+                # reacts to the strategy's actual P&L rather than to market vol — which is the
+                # complaint about inverse-vol: a 40d vol window stays elevated long after the
+                # book has resumed making money.
+                n = int(config.get("eq_ma", 50))
+                if len(shadow_hist) < n + 1:
+                    return None
+                ma = float(np.mean(shadow_hist[-n:]))
+                lo = float(config.get("eq_low", 0.60))
+                return clamp(1.0 if shadow_hist[-1] > ma else lo)
+
+            if pol == "ddstate":
+                # THEORY: risk of ruin is path-dependent, so lever off DISTANCE FROM PEAK
+                # rather than volatility. Full size at highs, taper linearly into drawdown.
+                if len(shadow_hist) < 20:
+                    return None
+                pk = max(shadow_hist)
+                dd = (shadow_hist[-1] - pk) / pk if pk > 0 else 0.0
+                tol = float(config.get("dd_tol", 0.25))
+                return clamp(1.0 + dd / tol)          # dd is negative -> scales down
+
+            if pol == "volofvol":
+                # THEORY: what hurts is UNSTABLE vol, not high vol. A calm-but-high-vol regime
+                # is survivable; a regime where vol itself is jumping is where gaps happen.
+                w = int(config.get("vov_win", 20))
+                if len(recent_rets) < w * 2:
+                    return None
+                a = np.asarray(recent_rets, dtype=float)
+                roll = [float(a[i - w:i].std()) for i in range(w, len(a) + 1)]
+                if len(roll) < 10:
+                    return None
+                vov = float(np.std(roll[-w:])) if len(roll) >= w else float(np.std(roll))
+                base = float(np.mean(roll[-w:])) if len(roll) >= w else float(np.mean(roll))
+                if base <= 0:
+                    return None
+                ratio = vov / base                     # coefficient of variation of vol
+                thr = float(config.get("vov_thr", 0.35))
+                return clamp(1.0 if ratio < thr else float(config.get("vov_low", 0.6)))
+
+            if pol == "recovery":
+                # THEORY: the cost is being LATE to re-lever. After a de-lever, ramp exposure
+                # back on a fixed schedule instead of waiting for a trailing vol window to
+                # decay. Deliberately ignores whether vol has actually fallen.
+                if len(shadow_hist) < 20:
+                    return None
+                pk = max(shadow_hist)
+                dd = (shadow_hist[-1] - pk) / pk if pk > 0 else 0.0
+                trig = float(config.get("rec_trigger", -0.10))
+                if dd <= trig:
+                    return clamp(float(config.get("rec_low", 0.5)))
+                ramp = int(config.get("rec_ramp", 20))
+                since = 0
+                for v in reversed(shadow_hist):
+                    if (v - pk) / pk <= trig:
+                        break
+                    since += 1
+                return clamp(min(1.0, 0.5 + 0.5 * since / max(ramp, 1)))
+
+            return "invvol"
+
+        def _vol_scale_now():
+            """vol_scale under the configured estimator. None => leave leverage unchanged."""
+            if not vol_scaling or len(recent_rets) < 20:
+                return None
+            _pm = _policy_mult()
+            if _pm != "invvol":
+                return _pm                       # policy answered (possibly None = hold)
+            if vol_up_lb and vol_dn_lb:
+                # ASYMMETRIC: compare a short window to a long one to detect the DIRECTION of
+                # vol, then estimate on the short window when vol is falling (re-lever
+                # promptly) and the long window when rising (de-lever conservatively).
+                short = _rv(recent_rets, min(vol_up_lb, vol_dn_lb))
+                long_ = _rv(recent_rets, max(vol_up_lb, vol_dn_lb))
+                if short is None or long_ is None:
+                    return None
+                rv = short if short < long_ else long_
+            else:
+                rv = _rv(recent_rets, vol_lookback)
+            if not rv or rv <= 0:
+                return None
+            return min(config.get("vol_scale_cap", 1.5), max(0.3, vol_target / rv))
+        # --------------------------------------------------------------------------------
+
         cash = capital
         holdings = {}
         port_values = []
@@ -191,6 +329,8 @@ class LiveMirrorBacktester(FastBacktester):
             v = park_px_ser.get(d)
             return park_sh * float(v) if pd.notna(v) else 0.0
         self._sigexit_count = 0
+        self._levadj_count = 0        # research: off-cadence leverage re-scales performed
+        last_derisk = 1.0             # last credit-gate multiplier applied at a rebalance
         self._brk_seen = self._brk_dropped = self._brk_bind_dates = self._brk_reb = 0
         self._fin_paid = 0.0
         self._gross_path = []   # (date, realized gross / NAV) diagnostic
@@ -223,6 +363,7 @@ class LiveMirrorBacktester(FastBacktester):
                 if len(recent_rets) > vol_lookback:
                     recent_rets.pop(0)
                 shadow_nav += shadow_pnl
+                shadow_hist.append(shadow_nav)
                 shadow_gross_val *= (1 + pdr)
 
             # trailing stop (identical to live)
@@ -276,6 +417,41 @@ class LiveMirrorBacktester(FastBacktester):
                             self._sigexit_count += 1
                     nav = cash + sum(h["shares"] * today.get(s, h["entry_px"])
                                      for s, h in holdings.items()) + park_val(date)
+
+                # ---- research: OFF-CADENCE LEVERAGE RE-SCALE (APPLICATION-lag test) ----
+                # Deployed, vol_scale is applied ONLY on rebalance days, so a vol collapse the
+                # day after a rebalance leaves the book de-levered for up to `rebal_days` more
+                # sessions. This re-scales EVERY position by a single factor to hit the current
+                # vol target — no name changes, just leverage, which is what a live engine
+                # could actually do between rebalances. Full transaction costs are charged and
+                # shares stay integral, so any benefit has to survive the turnover it creates.
+                # `lev_band` suppresses churn on trivial adjustments.
+                if (lev_recheck and holdings and day_idx > 0
+                        and day_idx % lev_recheck == 0):
+                    _vs = _vol_scale_now()
+                    if _vs is not None:
+                        _cur = sum(h["shares"] * today.get(s, h["entry_px"])
+                                   for s, h in holdings.items())
+                        _tgt = nav * leverage * _vs * last_derisk
+                        if _cur > 0 and abs(_tgt / _cur - 1.0) > lev_band:
+                            _k = _tgt / _cur
+                            for _s, _h in list(holdings.items()):
+                                _px = today.get(_s)
+                                if not _px or _px <= 0:
+                                    continue
+                                _tsh = shr(_h["shares"] * _px * _k, _px)
+                                _d = _tsh - _h["shares"]
+                                if abs(_d * _px) < max(nav * 0.003, 1e-9):
+                                    continue
+                                _cost = abs(_d * _px) * cost_frac
+                                cash -= _d * _px + _cost
+                                _h["shares"] = _tsh
+                                if _h["shares"] < (1 if integer_shares else 0.01):
+                                    del holdings[_s]
+                            self._levadj_count += 1
+                            nav = cash + sum(h["shares"] * today.get(s, h["entry_px"])
+                                             for s, h in holdings.items()) + park_val(date)
+
                 prev_gross = _snapshot()
                 port_values.append((date, nav))
                 continue
@@ -406,11 +582,14 @@ class LiveMirrorBacktester(FastBacktester):
                     if w > 0:
                         combined[sym] = combined.get(sym, 0) + w * cap_pct
 
-            if vol_scaling and len(recent_rets) >= 20:
-                realized_vol = np.std(recent_rets) * np.sqrt(252)
-                if realized_vol > 0.01:
-                    vol_scale = min(config.get("vol_scale_cap", 1.5), max(0.3, vol_target / realized_vol))
-                    combined = {s: w * vol_scale for s, w in combined.items()}
+            # Uses the SHARED estimator so vol_mode / lookback / asymmetry apply identically
+            # here and in the off-cadence re-scale. With no research knobs set, _vol_scale_now()
+            # is simple 40d vol == the previous inline computation (parity-checked).
+            _vs_reb = _vol_scale_now()
+            _vs_applied = 1.0
+            if _vs_reb is not None:
+                _vs_applied = _vs_reb
+                combined = {s: w * _vs_reb for s, w in combined.items()}
 
             longs = {s: w for s, w in combined.items() if w > 0}
             for sym in list(longs):
@@ -429,6 +608,7 @@ class LiveMirrorBacktester(FastBacktester):
                 derisk = gate_derisk if off else 1.0
             else:
                 derisk = credit_derisk if (credit_pct and cr_pct >= credit_pct) else 1.0
+            last_derisk = derisk        # off-cadence re-scale must not undo the credit gate
             lev_t = leverage * derisk
             if strong_bull and bull_lever > 1.0:
                 lev_t *= bull_lever
@@ -450,8 +630,14 @@ class LiveMirrorBacktester(FastBacktester):
                 _tot_w = sum(combined.values())
                 _base = ({s: w / _tot_w for s, w in combined.items()} if _tot_w > 0
                          else dict(combined))
-                _tgt_gross = nav * lev_t
-                _m = lev_t
+                # vol_scale MUST enter through the multiplier here. It was applied to
+                # `combined` above, but renormalising to sum-1 divides it out again — live
+                # does target_gross = nav * LEV * vol_scale * derisk, i.e. it scales the
+                # MULTIPLIER, never the weights. Without this the whole vol overlay is
+                # silently disabled under live_sizing (caught 2026-08-13: every policy in
+                # threadDYN realised avgGross ~1.49 regardless of vol).
+                _tgt_gross = nav * lev_t * _vs_applied
+                _m = lev_t * _vs_applied
                 target_d = {}
                 for _p in range(4):
                     target_d, _g = {}, 0.0
@@ -542,6 +728,7 @@ class LiveMirrorBacktester(FastBacktester):
         return {"cagr": cagr, "sharpe": sharpe, "max_dd": max_dd,
                 "vol": dr.std() * np.sqrt(252), "final": vals.iloc[-1],
                 "fin_paid": self._fin_paid, "avg_gross": float(gp.mean()) if len(gp) else 0,
+                "levadj": self._levadj_count,
                 "brk_seen": self._brk_seen, "brk_dropped": self._brk_dropped,
                 "brk_bind_dates": self._brk_bind_dates, "brk_reb": self._brk_reb,
                 "daily_values": vals}
