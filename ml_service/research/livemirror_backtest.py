@@ -188,7 +188,11 @@ class LiveMirrorBacktester(FastBacktester):
             r = list(rets)
             if lb:
                 r = r[-int(lb):]
-            if len(r) < 20:
+            # min sample scales with the requested window. A hard `< 20` floor silently
+            # returned None for every short-window request, which made the asymmetric arm
+            # run completely UNSCALED (avgGross 1.4902, deltas exactly 0.000) while looking
+            # like a legitimate result. Caught 2026-08-13.
+            if len(r) < max(10, int(0.75 * (lb or 20))):
                 return None
             a = np.asarray(r, dtype=float)
             m = (mode or vol_mode)
