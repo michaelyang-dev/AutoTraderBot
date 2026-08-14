@@ -107,3 +107,32 @@ Both fixed and parity-verified: default path and counter path now both give exac
    credit-gate cron already pulls FRED, so the path exists.
 2. **`ibkr_engine` has no off-cadence path at all** — this is new live code, not a config flag.
 3. Cost margin on the 8yr is thin; re-audit at the measured 6.10 bps rather than the modelled 10.
+
+
+---
+
+# ADDENDUM (2026-08-14) — the many-start standard, and two corrections it forced
+
+`threadCANON` measured the per-start sigma of the DEPLOYED config over 12 monthly starts:
+**8yr CAGR sigma 7.07pp** (range +15.03%..+34.55%), 26yr 2.75pp. `threadCORE5` measured a
+DELTA's per-start sigma at ~2.30pp. The repo's documented "~0.6pp/start noise floor"
+understates both by roughly 4x.
+
+**Consequence: a 3-4 start A/B cannot distinguish ~2pp of edge from calendar luck.**
+Sign-consistency across >=12 starts is the only test with power. It has already separated a real
+effect from an artefact in both directions:
+
+| result | starts | verdict |
+|---|---|---|
+| value-weight change (CORE2/3/4) | 6/12 positive on Sharpe, range -3.91..+3.70pp | **RETRACTED — noise** |
+| off-cadence credit gate (DYN4-8) | **23/24** positive on Sharpe | **survives** |
+| gross_margin bound (threadGM) | 8yr 8/12, 26yr 11/12 positive | **helps — earlier -1.50pp was wrong** |
+
+**Correction to the gross_margin A/B.** threadGM reported the bound costing -1.50pp CAGR on the
+8yr from 3 starts. Over 12 starts it is **+1.17pp (median +1.37, 8/12 positive)** on the 8yr and
+**+0.48pp (median +0.54, 11/12 positive, sigma 0.35pp)** on the 26yr. The sign was wrong. The fix
+improves performance as well as correctness.
+
+**Honest canonical numbers:** 8yr **+22.75% +/-4.00pp**, Sharpe 0.79 +/-0.09; 26yr
+**+11.26% +/-1.56pp**, Sharpe 0.51 +/-0.05. Not biased — the old point estimates sit on the
+12-start means — but far less precise than two decimals imply.
