@@ -433,10 +433,24 @@ class LiveMirrorBacktester(FastBacktester):
                 if (lev_recheck and holdings and day_idx > 0
                         and day_idx % lev_recheck == 0):
                     _vs = _vol_scale_now()
+                    # The CREDIT GATE is also rebalance-only in the deployed engine, so in a
+                    # crisis it can act up to `rebal_days` LATE — and credit spreads blow out
+                    # in days, so that is precisely when lateness is most expensive. With
+                    # gate_offcadence the gate is re-evaluated here too, on the same causal
+                    # expanding-percentile maps (already shifted t+1, so no look-ahead).
+                    _dr = last_derisk
+                    if config.get("gate_offcadence"):
+                        if gate_cols:
+                            _dr = gate_derisk if any(
+                                gate_maps[c].get(date, 0.5) >= gate_pct for c in gate_cols) else 1.0
+                        elif credit_pct:
+                            _dr = credit_derisk if crmap.get(date, 0.5) >= credit_pct else 1.0
+                        if _vs is None:
+                            _vs = 1.0        # gate can act even when vol-scaling is idle
                     if _vs is not None:
                         _cur = sum(h["shares"] * today.get(s, h["entry_px"])
                                    for s, h in holdings.items())
-                        _tgt = nav * leverage * _vs * last_derisk
+                        _tgt = nav * leverage * _vs * _dr
                         if _cur > 0 and abs(_tgt / _cur - 1.0) > lev_band:
                             _k = _tgt / _cur
                             for _s, _h in list(holdings.items()):
