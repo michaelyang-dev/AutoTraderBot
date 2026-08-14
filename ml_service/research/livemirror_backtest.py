@@ -166,12 +166,26 @@ class LiveMirrorBacktester(FastBacktester):
         # off-cadence work adds turnover, so any benefit must survive costs being worse than
         # modelled — the backtest already charges 10 bps/leg vs 6.10 measured live, but a
         # finding that only works at the modelled cost is not a finding.
+        def _gate_on(d):
+            """Is the de-risk gate firing on date d? (causal maps, already shifted t+1)"""
+            if gate_cols:
+                return any(gate_maps[c].get(d, 0.5) >= gate_pct for c in gate_cols)
+            if credit_pct:
+                return crmap.get(d, 0.5) >= credit_pct
+            return False
+
         cost_frac = (COST_BPS + SLIPPAGE_BPS) / 10000 * float(config.get("cost_mult", 1.0))
         mom_w = config.get("mom_w", 0.60); val_w = config.get("val_w", 0.15)
         lv_w = config.get("lv_w", 0.15); sec_w = config.get("sec_w", 0.10)
         top_n = config.get("top_n", 8); cap = config.get("cap", 0.15)
         use_rp = config.get("use_rp", True); rp_power = config.get("rp_power", 1.0)
         rebal_days = config.get("rebal_days", 10)
+        # research: STRESS-CONDITIONAL REBALANCE CADENCE. The session's one robust result is
+        # that applying a rule 20 sessions late destroys it. The same lateness applies to the
+        # BOOK: during a crisis the holdings are up to `rebal_days` stale. rebal_stress uses a
+        # shorter cadence while the credit gate is ON. None = current behaviour exactly.
+        rebal_stress = config.get("rebal_stress")
+        _dsr = rebal_days      # days since rebalance; seeded so day 0 rebalances (== day_idx % rd == 0)
         trailing_stop = config.get("trailing_stop", None)
         vol_scaling = config.get("vol_scaling", False)
         vol_target = config.get("vol_target", 0.20); vol_lookback = config.get("vol_lookback", 40)
@@ -203,7 +217,7 @@ class LiveMirrorBacktester(FastBacktester):
             # returned None for every short-window request, which made the asymmetric arm
             # run completely UNSCALED (avgGross 1.4902, deltas exactly 0.000) while looking
             # like a legitimate result. Caught 2026-08-13.
-            if len(r) < max(10, int(0.75 * (lb or 20))):
+            if len(r) < max(10, min(20, int(0.75 * (lb or 20)))):
                 return None
             a = np.asarray(r, dtype=float)
             m = (mode or vol_mode)
@@ -410,7 +424,13 @@ class LiveMirrorBacktester(FastBacktester):
                     prev_sh[s] = h["shares"]; prev_px[s] = px; g += h["shares"] * px
                 return g
 
-            if day_idx % rebal_days != 0:
+            if rebal_stress:
+                _cad = rebal_stress if _gate_on(date) else rebal_days
+                _is_reb = _dsr >= _cad
+            else:
+                _is_reb = (day_idx % rebal_days == 0)      # unchanged default path
+            if not _is_reb:
+                _dsr += 1
                 # ---- mid-cycle SIGNAL-EXIT (research): sell a holding when NO sleeve
                 # currently wants it (user idea: don't wait out the 20d cadence). Cash
                 # waits until the next rebalance (recycle tested-dead). grace = tolerate
@@ -484,6 +504,7 @@ class LiveMirrorBacktester(FastBacktester):
                 prev_gross = _snapshot()
                 port_values.append((date, nav))
                 continue
+            _dsr = 1        # reset counts the rebalance day itself; 0 fires one day late
 
             # short interest ranks (identical)
             if self._si_months:
