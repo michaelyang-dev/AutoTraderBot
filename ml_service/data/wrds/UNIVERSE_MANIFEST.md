@@ -184,7 +184,27 @@ numbers *exactly* (+25.1/0.87/−39.5 and +10.4/0.48/−65.8), so the deltas are
 - Worst gm in either universe is ~12; **VIR live was 4,561.72 — 380x more extreme**, so the
   backtest never experienced the live failure mode at all.
 
-⇒ Keep the bound. Quote **+23.58% / 0.84 / −38.23%** (8yr) and **+11.29% / 0.51 / −64.75%** (26yr).
+⇒ Keep the bound (it removes definitionally-impossible values regardless of performance).
+
+## ⚠️ ERROR BARS (2026-08-14, `research/threadCANON_confidence.py`) — READ BEFORE QUOTING
+
+Those figures came from **3 and 2 starts**. Measured over **12 monthly starts** per horizon:
+
+| | quoted | mean | σ (per start) | range | 95% CI on mean |
+|---|---|---|---|---|---|
+| 8yr CAGR | +23.58% | **+22.75%** | **7.07pp** | +15.03% … +34.55% | **±4.00pp** |
+| 8yr Sharpe | 0.84 | 0.793 | 0.164 | 0.61 … 1.10 | ±0.093 |
+| 26yr CAGR | +11.29% | **+11.26%** | 2.75pp | +8.78% … +16.71% | **±1.56pp** |
+| 26yr Sharpe | 0.51 | 0.509 | 0.081 | 0.44 … 0.66 | ±0.046 |
+
+The quoted numbers are **not biased** — they sit on the 12-start means. But the 8yr CAGR spans
+**19.5pp on entry month alone**. Quote as **8yr +22.75% ±4.00pp** and **26yr +11.26% ±1.56pp**;
+two decimals off a handful of starts implies precision that does not exist. Prefer the 26yr
+(≈2.5× tighter) when the horizons disagree.
+
+**Consequence for A/B work:** a 3-start comparison cannot distinguish ~2pp of edge from calendar
+luck. Sign-consistency across ≥12 starts is the only test with power — that is what killed the
+value-weight finding (6/12) and validated the leverage one (23/24).
 
 ---
 
