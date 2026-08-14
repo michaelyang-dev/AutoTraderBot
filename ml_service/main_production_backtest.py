@@ -41,7 +41,17 @@ SLIPPAGE_BPS = 5
 class FastBacktester:
     """Backtester using exact production strategy code."""
 
-    def __init__(self, universe_path="data/wrds/complete_sp1500_universe.pkl"):
+    # Maps that are EMPTY in live but populated by the backtest universe/loaders. 10 of these
+    # 11 are read by the production sleeves, so leaving them populated silently changes the
+    # value sleeve (price_targets, fin_growth), momentum (earnings signals, short interest) AND
+    # lowvol (_ev appears 4x, _estimates). Verified live 2026-08-14: every one is 0 or absent.
+    # _insiders is the sole exception -- populated in backtest, unused by any v12 sleeve.
+    DEPLOYED_EMPTY_MAPS = ("_options", "_price_targets", "_fin_growth", "_ev", "_estimates",
+                           "_insiders", "_earnings_signals", "_revenue_surprise", "_beat_streak",
+                           "_short_interest_rank", "_si_change_rank")
+
+    def __init__(self, universe_path="data/wrds/complete_sp1500_universe.pkl",
+                 deployed_parity=True):
         t0 = time.time()
 
         with open(universe_path, "rb") as f:
@@ -149,7 +159,41 @@ class FastBacktester:
         except Exception as e:
             log.warning(f"Could not load short interest: {e}")
 
+        # ---- DEPLOYED PARITY, ON BY DEFAULT (2026-08-14) --------------------------------
+        # Previously the backtest loaded these and every research script had to remember to
+        # call clear_deployed(). That is a convention, not a guarantee: forgetting it silently
+        # bought backtest-only alpha the live engine cannot reproduce (measured: 19,765 short-
+        # interest multipliers over 2018-21 alone, plus the value/lowvol modifiers above).
+        # Now the SAFE state is the DEFAULT -- forgetting is harmless because there is nothing
+        # left to clear. Pass deployed_parity=False to deliberately study the extra data.
+        if deployed_parity:
+            self._enforce_deployed_parity()
+
         log.info(f"FastBacktester loaded in {time.time() - t0:.1f}s")
+
+    def _enforce_deployed_parity(self):
+        """Zero every map that is empty in live, so the backtest cannot use data live lacks."""
+        zeroed = {}
+        for k in self.DEPLOYED_EMPTY_MAPS:
+            o = getattr(self.uni, k, None)
+            try:
+                n = len(o) if o is not None else 0
+            except TypeError:
+                n = 0
+            if n:
+                zeroed[k] = n
+            setattr(self.uni, k, {})
+        # Short interest is re-applied PER DATE inside run() from _si_months, so zeroing the
+        # map alone is not enough -- the source has to go or run() re-populates it every cycle.
+        if getattr(self, "_si_months", None):
+            zeroed["_si_months(src)"] = len(self._si_months)
+        self._si_ranks_by_month = {}
+        self._si_change_ranks_by_month = {}
+        self._si_months = []
+        if zeroed:
+            log.info("deployed-parity: zeroed backtest-only inputs %s "
+                     "(live has none of these; pass deployed_parity=False to keep them)", zeroed)
+        return zeroed
 
     def _get_sp1500(self, date):
         if date not in self._sp1500_cache:
