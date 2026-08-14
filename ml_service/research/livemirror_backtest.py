@@ -162,7 +162,11 @@ class LiveMirrorBacktester(FastBacktester):
         bull_credit_calm = config.get("bull_credit_calm", None)   # pctile <= this = calm
         bull_lever = config.get("bull_lever", 1.0)       # extra leverage mult in strong bull
 
-        cost_frac = (COST_BPS + SLIPPAGE_BPS) / 10000
+        # cost_mult lets a variant be stress-tested at 2x/3x transaction cost. The
+        # off-cadence work adds turnover, so any benefit must survive costs being worse than
+        # modelled — the backtest already charges 10 bps/leg vs 6.10 measured live, but a
+        # finding that only works at the modelled cost is not a finding.
+        cost_frac = (COST_BPS + SLIPPAGE_BPS) / 10000 * float(config.get("cost_mult", 1.0))
         mom_w = config.get("mom_w", 0.60); val_w = config.get("val_w", 0.15)
         lv_w = config.get("lv_w", 0.15); sec_w = config.get("sec_w", 0.10)
         top_n = config.get("top_n", 8); cap = config.get("cap", 0.15)
