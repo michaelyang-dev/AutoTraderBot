@@ -157,6 +157,37 @@ date range via `BUILD_UNIVERSE_START/END`) after **8 defects** were found and fi
 +7.7pp of drawdown protection (−65.8% → −58.1%).** On the 8yr it is ~free (−0.6pp CAGR, +0.4pp DD)
 because that window contains no credit crisis — exactly as originally documented.
 
+---
+
+# 🔴 CANONICAL NUMBERS REVISED AGAIN (2026-08-11) — gross_margin bound
+
+The `[-1,1]` gross-margin bound (commit `74d57cb`) changes both horizons. Measured with
+`research/threadGM_gross_margin_ab.py` (live-mirror 1.49x, integer shares, $50k, 6.3%
+financing, `clear_deployed()`, 3-start 8yr / 2-start 26yr):
+
+| | pre-bound | **POST-BOUND (current)** |
+|---|---|---|
+| **8yr 2018-25** | +25.08% / 0.87 / −39.48% | **+23.58% / 0.84 / −38.23%** |
+| **26yr 2001-25** | +10.41% / 0.48 / −65.80% | **+11.29% / 0.51 / −64.75%** |
+
+**Harness validated:** the pre-bound arm reproduces the previously documented canonical
+numbers *exactly* (+25.1/0.87/−39.5 and +10.4/0.48/−65.8), so the deltas are real.
+
+**The 8yr −1.50pp is NOISE, not lost alpha** — established by decomposition + census:
+- `threadGM2` splits it: value-bound −0.91pp (8yr) / −0.32pp (26yr); lowvol-bound −0.70pp
+  (8yr) / **+1.19pp** (26yr). Additivity holds (−1.61 vs −1.50; +0.87 vs +0.88).
+- `threadGM3` census: the **entire** 8yr value cost is **4 picks across 101 rebalances from
+  2 distinct names (AMP, HBAN)**. On the 26yr sample (n=11) the effect **reverses** to
+  −0.85pp. Every affected name is a **financial** (AMP/HBAN/ZION/JPM), where
+  `(saleq-cogsq)/saleq` is undefined by construction.
+- The lowvol half carries **all** the drawdown gain (+1.16pp 8yr, +1.05pp 26yr).
+- Worst gm in either universe is ~12; **VIR live was 4,561.72 — 380x more extreme**, so the
+  backtest never experienced the live failure mode at all.
+
+⇒ Keep the bound. Quote **+23.58% / 0.84 / −38.23%** (8yr) and **+11.29% / 0.51 / −64.75%** (26yr).
+
+---
+
 ## Remaining known gap (one item)
 399 of 4,305 membership symbols (9.3%) never resolve to a CRSP ticker — mostly companies WRDS
 identifies ONLY by a post-bankruptcy ticker that never existed in CRSP (`AAMRQ` vs CRSP `AMR`),
