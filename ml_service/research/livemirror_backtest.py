@@ -118,6 +118,13 @@ class LiveMirrorBacktester(FastBacktester):
         curve), acts t+1. `win` re-derives rates_vol at a custom window from DGS10 if given."""
         base = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research")
         ms = pd.read_parquet(os.path.join(base, "_macro_stress.parquet"))
+        if col not in ms.columns:
+            # extra signals built from data already in the universe pickle but never used for
+            # leverage (see research/build_stress2.py): baa_aaa, term_inv, umd_crash, mkt_vol.
+            ms2 = pd.read_parquet(os.path.join(base, "_macro_stress2.parquet"))
+            if col not in ms2.columns:
+                raise KeyError(f"stress column {col!r} not in _macro_stress or _macro_stress2")
+            ms = ms2
         s = ms[col].dropna()
         idx = pd.DatetimeIndex(trading_dates)
         s = s.reindex(idx.union(s.index)).sort_index().ffill().reindex(idx)
