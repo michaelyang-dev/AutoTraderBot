@@ -1,0 +1,311 @@
+# IDEAS — ranked backlog of untested hypotheses
+
+Never let this fall below 15 entries. Each entry must state **why the edge would exist**
+(who is on the other side, or what structural inefficiency is being harvested). An idea with
+no mechanism gets downranked — it is almost certainly a fitting artefact.
+
+Status: `OPEN` | `RUNNING` | `KILLED` | `WON` (see `LOG.md` for the verdict and evidence).
+
+---
+
+## Tier 1 — structural / variance-reduction. No alpha claim required, so no alpha risk.
+
+These are the highest-EV entries precisely because they do not need a new edge to exist.
+They remove uncompensated risk that the current implementation takes for free.
+
+### I-01 · Rebalance-phase tranching · **PRELIMINARY WIN, audit incomplete (EXP-001)** · EV: HIGH
+Split capital into K sub-books, each running the identical strategy but rebalancing on a
+different phase of the 20-session cycle (phase 0, 4, 8, 12, 16).
+
+**Mechanism:** the rebalance date carries **zero information**. It is a pure nuisance
+parameter. Yet we measured 8yr CAGR σ = **7.07pp across entry month alone**
+(+15.03%…+34.55%) — that entire spread is phase risk, taken uncompensated. Averaging K
+weakly-correlated phases should shrink it by roughly √K and raise Sharpe with **no assumption
+that any signal works better**. This is the same logic as diversifying across names, applied
+to the time axis.
+
+**Predicted:** ΔCAGR ≈ 0 (maybe slightly +, from avoiding phase-specific bad luck), Δσ_start
+large and negative, ΔSharpe small and positive, ΔMaxDD positive.
+**Live constraint:** at $33k, 5 tranches × ~23 names = ~$290/position and integer shares bite
+hard. Must be tested WITH integer-share sizing at real capital. K=2 or K=4 may be the
+implementable answer.
+**Falsification:** if per-start σ does *not* fall by ≈√K, the phases are far more correlated
+than assumed and the idea is void.
+
+### I-02 · Fix cap-then-renormalize · **OPEN** · EV: MED-HIGH
+The 10%-of-book position cap is applied, then gross is renormalised to 1.0 — which pushes
+capped names straight back above the cap. Documented in `multi_strategy_engine`, never
+measured. Replace with iterative water-filling (cap, redistribute the excess to uncapped
+names, repeat to convergence).
+
+**Mechanism:** not alpha — the risk control we believe is in place is not in place. Expect
+lower single-name concentration, therefore lower idiosyncratic variance, therefore Sharpe up
+slightly and tail-DD down. If the measured effect is zero, the cap never binds and we can stop
+worrying about it.
+
+### I-03 · Ex-ante (holdings-based) portfolio-vol estimate instead of 40d realised · **OPEN** · EV: HIGH
+Current `vol_scale` divides the vol target by the **trailing 40-day realised vol of the book**.
+After a rebalance rotates into five different names, that estimate still describes the *old*
+book for up to 40 sessions.
+
+Replace with an ex-ante estimate from **current** holdings: individual name vols (already in
+the panel as `vol_20d`/`vol_60d`) plus a shrunk correlation estimate → predicted portfolio vol
+today.
+
+**Mechanism:** this is **not** a timing rule — every timing rule in `DYNAMIC_LEVERAGE_FINDINGS`
+is dead and must stay dead. This is an *estimator lag* fix: measuring the risk of the book you
+actually hold rather than the one you used to hold. The DYN program only ever varied the
+*window* on portfolio returns; it never changed *what is being estimated*.
+**Falsification:** must clear the matched-exposure control (score against a constant-leverage
+curve at its own realised avg_gross) or it is just running less exposure.
+
+### I-04 · Sleeve-level risk parity · **OPEN** · EV: MED
+Sleeve weights are fixed at 50/35/15 in *capital*. Momentum is structurally the highest-vol
+sleeve, so the book's *risk* is far more than 50% momentum, and that share swings with regime.
+Target constant *risk* contribution per sleeve instead.
+
+**Mechanism:** a fixed capital split delivers a time-varying risk split — an unintended,
+uncompensated regime bet. Note `use_rp` is inverse-vol *within* mom/val (a different thing) and
+tested dead; sleeve-level parity is untested.
+**Caution:** this WILL change avg_gross → matched-exposure control mandatory.
+
+### I-05 · Vol-normalised trailing stop · **OPEN** · EV: MED
+The stop is a flat 40% for every name. On a 20%-vol name that is a ~2σ annual event; on a
+60%-vol name it is ordinary noise. Replace with `k × annualised vol`, floored and capped
+(e.g. 25%…55%).
+
+**Mechanism:** a fixed stop applies a *different confidence level* to every name, so it fires
+on high-vol names for no informational reason and never protects low-vol ones. Normalising
+equalises the false-positive rate. Expect fewer whipsaw exits and lower turnover.
+
+---
+
+## Tier 2 — structural flows. There is an identifiable forced participant on the other side.
+
+### I-06 · Exclude recent index ADDITIONS from the momentum sleeve · **OPEN** · EV: MED-HIGH
+Do not buy a name that entered SP500/400/600 within the last N sessions (test N = 20/60/120).
+
+**Mechanism:** index funds are **forced buyers** into the effective date. The pop is mechanical
+and reverses; the classic addition effect has decayed but the *reversal* is the durable half.
+Our momentum sleeve is structurally attracted to exactly these names — a name that just popped
+on index demand scores well on 12-1 momentum for a reason that carries no future return.
+We hold PIT membership dicts, so additions are observable **at the time**, no new data needed.
+**Who loses:** index funds, by construction — they must buy at the deadline regardless of price.
+**Falsification:** if excluded names' forward 20d returns match the rest of the pool, void.
+
+### I-07 · Earnings-date variance avoidance · **KILLED (EXP-002)** · see LOG cycle 2
+Down-weight (or skip) a name whose `rdq` announcement falls inside the coming holding window.
+`compustat_quarterly` has `rdq` + `LPERMNO`, so this is PIT-honest and needs no new feed.
+
+**Mechanism:** we deliberately zeroed every earnings-surprise boost (B4) — meaning we assert
+**no edge in predicting the print**. A holding therefore takes a ±8% idiosyncratic gamble at
+zero expected return: pure uncompensated variance. Removing it should raise Sharpe with a small
+CAGR cost.
+**Falsification:** if names reporting inside the window have the *same* realised variance as
+those that do not, the premise is wrong. Check that first — it is one cheap cross-section.
+**Leak risk:** `rdq` is a *reported* field and can be revised. Must confirm it is never in the
+future relative to the decision date, and lag it by 1 day defensively.
+
+### I-08 · Turn-of-month rebalance anchoring · **OPEN** · EV: LOW-MED
+Anchor the rebalance to a calendar day-of-month rather than a rolling 20-session counter.
+
+**Mechanism:** 401(k)/pension inflows cluster at month start; index rebalances at quarter end.
+Trading *into* known flow is adverse selection; trading with it is not.
+**Interacts strongly with I-01** — if phase tranching wins, this is subsumed. Test after I-01.
+
+---
+
+## Tier 3 — signal construction. Same anomaly, less estimation noise.
+
+### I-09 · Multi-horizon momentum rank ensemble · **OPEN** · EV: MED
+Score = average of *ranks* on 12-1, 6-1 and 9-1 momentum instead of 12-1 alone.
+
+**Mechanism:** the same argument as I-01, on the signal axis. Any single lookback is an
+arbitrary choice, and the sampling error in a single-horizon ranking is large. Averaging ranks
+across horizons is variance reduction on the *estimator*, not a new bet.
+**Not** a parameter sweep — the claim is that the ensemble beats *every* member, which is a
+falsifiable structural claim rather than a best-of-N pick.
+
+### I-10 · 52-week-high proximity as the momentum functional form · **OPEN** · EV: MED
+Replace / blend `ret_252d − ret_20d` with `price / 52w-high`.
+
+**Mechanism:** George–Hwang. Anchoring on the 52-week high is a documented behavioural
+mechanism, and the nearness measure is far more robust to a single outlier month than a raw
+12-month return. Different functional form, same underlying anomaly — so it is not a new edge
+claim, it is a less noisy estimator of the one we already trade.
+
+### I-11 · Harder idiosyncratic-vol screen inside the momentum pool · **OPEN** · EV: MED
+The AUDIT01 forward-IC sweep found `vol_60d` the **single strongest** feature in the panel
+(IC −0.050, i.e. low vol → high forward return) — stronger than any return feature. The
+momentum sleeve currently gives only a soft ×1.15 nudge for `vol_20d < 0.25`.
+Test a hard screen: rank the momentum pool, drop the top vol tercile, take top-5 of the rest.
+
+**Mechanism:** the low-vol anomaly (leverage-constrained investors bid up high-beta names) is
+one of the most replicated effects in the literature and it is *already visible in our own data*
+without being properly harvested. Momentum and low-vol are known to combine well.
+
+### I-12 · Residual (beta/sector-adjusted) momentum · **OPEN** · EV: MED
+Rank on momentum of the residual after removing market and sector returns.
+
+**Mechanism:** raw 12-1 momentum is partly a bet on whichever sector ran; residual momentum
+isolates the firm-specific continuation and is documented to have a higher information ratio.
+Previously logged "GFC hedge not worth cost" — but on **3–4 starts and the pre-audit poisoned
+universe** (see BUGS F6). Not safely dead.
+
+### I-13 · Cross-sleeve overlap: conviction or concentration? · **OPEN** · EV: LOW-MED
+A name selected by two sleeves currently receives the sum of both weights, then gets capped.
+Test three arms: as-is / boost overlap / neutralise overlap to a single sleeve's weight.
+
+**Mechanism:** if the sleeves are genuinely different views, agreement is information and should
+be overweighted. If they share inputs (both read `roe`, `gross_margin`), agreement is just
+correlated error and the current behaviour silently concentrates the book. We do not know which,
+and the answer determines whether a risk control is needed.
+
+---
+
+## Tier 4 — exposure / external data. Highest prior of failure; every neighbour is dead.
+
+### I-14 · VIX term structure (VIX3M/VIX) as a gross-exposure gate · **OPEN** · EV: LOW-MED
+Backwardation (VIX > VIX3M) → de-gross.
+
+**Mechanism:** the only genuinely **forward-looking** risk measure available free. Everything
+killed in the DYN program was *backward*-looking (realised vol, equity curve, distance from
+peak, vol-of-vol) or slow (credit spreads). Options-implied term structure prices *expected*
+near-term stress and inverts days before realised vol moves.
+**Prior of failure: high** — the whole family is dead. Must clear matched-exposure AND
+event-concentration. VIX3M starts ~2004, so the 26yr test is truncated, which weakens the
+strongest horizon. Downranked for that reason.
+
+### I-15 · Financing-spread-aware leverage · **OPEN** · EV: LOW-MED
+Scale 1.49× by where `(SP500 earnings yield − 3M T-bill)` sits in its own expanding percentile.
+
+**Mechanism:** we borrow at 6.3% to hold equities. Leverage is worth taking only when the
+expected equity risk premium exceeds the borrow. Holding leverage *constant* while the spread
+you earn on it varies 400bp is an unintended bet. This is a slow-moving valuation quantity, not
+a vol-timing rule, so it is not obviously in the dead family.
+**Caution:** valuation scoring already failed the both-period bar (`threadV`) — it was a regime
+bet. High risk of the same outcome. Data: `fred_interest_rates_spreads_daily`, Compustat.
+
+### I-16 · Convex tail overlay funded from the equity book · **OPEN** · EV: LOW
+A small permanent allocation (1-3%) to a convex payoff (VIXM or a put spread), continuously
+funded from the equity sleeve.
+
+**Mechanism:** the real problem with this strategy is **MaxDD −64.8% on the 26yr at 1.49×** —
+near-ruinous, and the reason leverage cannot be raised. A convex overlay reshapes drawdown
+*geometry* rather than trying to time it, so it does not depend on any prediction. Cost is the
+whole question: variance risk premium means you pay ~1-3%/yr for it.
+`gld_pct`/`vixm_pct` hooks already exist in the harness — check whether they were ever tested
+at the 12-start standard before spending on this.
+
+---
+
+## Tier 5 — parameters. Lowest value. Do not spend time here unless something above points at it.
+
+### I-17 · `top_n` concentration sweep (3/5/8/10) · **OPEN** · EV: LOW
+Only interesting for its *interaction* with the 10% cap and integer-share granularity at $33k,
+not as a standalone tweak.
+
+### I-18 · `rebal_days` re-confirmation at the 12-start standard · **OPEN** · EV: LOW
+"20d optimal" was established pre-audit on few starts (BUGS F6). Cheap to re-run; mostly a
+sanity check that the deployed cadence is not a fitted artefact.
+
+---
+
+## Tier 6 — re-tests forced by BUGS F6 (verdicts reached on ≤4 starts and/or poisoned universes)
+
+### I-19 · Re-run `threadREVIVE_dead_ideas.py` batch at the 12-start, two-horizon standard · **OPEN** · EV: MED
+Vol-managed momentum, risk parity, sector cap, momentum quality filters, signal-exit cadence,
+cash parking, bull-lever. All have config hooks, so **no new modelling risk is introduced —
+only the measurement standard changes.** Cheapest possible way to convert "probably dead" into
+"known dead", and it has already flipped one sign in this repo.
+
+### I-20 · Re-test the deployed inverse-vol overlay itself · **OPEN** · EV: MED
+`DYNAMIC_LEVERAGE_FINDINGS` says the deployed overlay has **~no timing skill** (+0.018 8yr /
++0.001 26yr, negative with more starts) and that its value is a pure *level* effect.
+If true, the overlay could be replaced by simply running lower constant leverage — identical
+risk, less turnover, fewer moving parts. **Simplification is a legitimate win.** Test:
+constant-leverage curve at the overlay's realised avg_gross vs the overlay, 12 starts, both
+horizons.
+
+---
+
+---
+
+## Tier 0 — promoted above everything else by what cycles 0-2 measured
+
+### I-21 · Decompose the sleeve edge into FILTER vs RANKING · **RUNNING (EXP-003)** · EV: VERY HIGH
+The 26yr shuffle says all of "stock selection" is worth **+4.5pp CAGR / +0.13 Sharpe** through a
+full cycle (it is worth +20pp / +0.58 on the 8yr — the recent window flatters it ~4×). But
+"selection" is two different machines bolted together: cheap mechanical **filters**
+(`dist_sma200 > 0`, valid 12-1 momentum, bear-regime sector exclusion, the value sleeve's quality
+screens) and the **ranking** that orders the survivors.
+
+**Mechanism:** none required — this is a measurement, not a bet. It decides where every remaining
+hour of this program goes. If the ranking is worth ~nothing over a *sticky random draw from the
+filtered pool*, then years of cross-sectional scoring work has been rediscovering a trend filter,
+and the productive direction is filtering / risk / construction. If the ranking carries it, the
+opposite.
+
+**Design note that makes it fair:** the random arm must be **sticky** (keep names still eligible,
+replace only drop-outs). A naive random re-pick turns over ~100% every rebalance, so a plain
+A-vs-random gap silently prices *turnover*, not ranking.
+
+### I-23 · Partial-adjustment rebalancing as the deployable form of I-01 · **KILLED (EXP-007)** · see LOG cycle 5
+EXP-001 shows phase risk is **7.92pp of 8yr CAGR** and that averaging 4 phases removes ~half of
+it. But 4 phases means 4 target books netted inside one IBKR account — substantial new live code.
+
+Cheaper approximation with the same intent: keep **one** book, rebalance every 5 sessions, and
+move only ~25% of the way toward the new target each time.
+
+**Mechanism:** identical — it spreads execution across the cycle so no single arbitrary day
+determines the book. It is *not* mathematically the same as tranching (it smooths toward a moving
+target rather than running independent sub-books), so it must be measured, not assumed. If it
+captures most of the variance reduction it is far and away the better thing to deploy.
+
+### I-24 · Is the strategy actually beating a passive alternative over 26yr? · **RUNNING (EXP-004)** · EV: VERY HIGH
+Nowhere in this repo is the deployed strategy compared to levered SPY or equal-weight SP1500 on
+matched terms — same leverage, same 6.3% financing, same period, same price matrix.
+
+**Mechanism:** none — again a measurement, and the one that determines whether this program should
+be improving the strategy or replacing its core thesis (escalation ladder level 10). A first pass
+put 26yr strategy (+11.26% / 0.51 / −64.8%) *behind* buy-and-hold equal-weight SP1500. That first
+pass used a **daily-rebalanced** equal-weight index, which harvests an unimplementable rebalancing
+premium; it is being recomputed as monthly/quarterly reconstitution with buy-and-hold in between
+before any conclusion is drawn.
+
+---
+
+## Tier 3b — generated by the cycles above
+
+### I-26 · Concentration gradient: does top-3 beat top-5 on the 26yr? · **OPEN** · EV: MED
+EXP-007 showed that *diluting* the book (partial adjustment → a long tail of stale half-positions)
+drags returns toward the equal-weight index. The gradient therefore runs the other way too:
+more concentration → more of whatever edge the selection has.
+
+**Mechanism:** if the momentum ranking carries real information, its top name is better than its
+fifth, and holding 5 dilutes it. If EXP-003 finds the ranking is worth little, this should do
+nothing — so the two experiments cross-validate each other, which is why this is worth running
+regardless of outcome.
+**The catch, and why it is only MED:** EXP-004 says the axis we actually need is **drawdown**,
+and concentration almost certainly makes drawdown worse. Judge this on Sharpe and MaxDD, not
+CAGR. A CAGR-only win here is not a win.
+
+### I-22 · Earnings gaps as a DRAWDOWN channel, not a variance channel · **OPEN** · EV: LOW-MED
+EXP-002 killed the mean-variance version of earnings avoidance (real effect ≈ +0.016 Sharpe,
+below our detection floor). But it only tested the *average*. Untested: an earnings gap can trip
+the **40% trailing stop** in a levered book, forcing a realised loss and a re-entry.
+
+**Mechanism:** stops convert a temporary idiosyncratic gap into a permanent loss. The question is
+not "does earnings add variance" (yes, 1.39× — too small to matter in a 23-name book) but "what
+share of trailing-stop exits are earnings gaps, and do those exits lose money relative to holding
+through". That is a tail question and needs `log_stops` + `rdq`, not a Sharpe A/B.
+
+---
+
+## Parked — mechanism understood, blocked on something external
+
+- **Off-cadence credit-gate application** — real defect (BUGS B6), but KILLED by
+  event-concentration (99.6% of 26yr excess from 5 days). Would need a mechanism argument that
+  survives the 2001/2022 losses. Also needs new `ibkr_engine` code.
+- **WRDS membership re-download with PERMNO/GVKEY** (~Sept 2026) — closes the 9.3% join gap and
+  un-blinds EDGAR go-forward reconciliation. Blocks nothing here but improves every 26yr number.

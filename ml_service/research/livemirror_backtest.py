@@ -113,6 +113,82 @@ class LiveMirrorBacktester(FastBacktester):
         tot = sum(tgt[s] for s in keep)
         return {s: tgt[s] / tot for s in keep} if tot > 0 else {s: tgt[s] for s in keep}
 
+    def _hi52(self):
+        """Rolling 252-session max of the price matrix, cached. Trailing and INCLUSIVE of the
+        current bar -- same convention as every other feature here (see BUGS A1)."""
+        if getattr(self, "_hi52_cache", None) is None:
+            self._hi52_cache = self.prices.rolling(252, min_periods=200).max()
+        return self._hi52_cache
+
+    def _rescore(self, date, syms, kind):
+        """Alternative momentum ORDERINGS (research I-09/I-10). EXP-003 established that the
+        ranking carries 100% of the selection edge and the filters carry none, so this varies
+        only the ordering -- every filter, boost and regime rule in strategy1 still produced
+        the pool these names came from.
+
+        All variants are causal: they read the same trailing feature panel the sleeve reads.
+        Returns {sym: score}; larger is better. Missing inputs drop the name."""
+        fm = self.uni.get_feature_map
+        r252 = fm(date, "ret_252d"); r126 = fm(date, "ret_126d")
+        r60 = fm(date, "ret_60d"); r20 = fm(date, "ret_20d")
+        v60 = fm(date, "vol_60d")
+        out = {}
+        if kind == "orig":
+            # CONTROL: keep the deployed ordering exactly, changing only the weighting to
+            # equal. Isolates "is the ordering good" from "is signal-proportional sizing good".
+            return {s: 1.0 for s in syms}
+        if kind == "multi":
+            # rank-average of three skip-month horizons. Any single lookback is arbitrary and
+            # its sampling error is large; averaging RANKS is variance reduction on the
+            # estimator, not a new bet. Claim: the ensemble beats every member (falsifiable).
+            legs = []
+            for long_, lbl in ((r252, "12-1"), (r126, "6-1"), (r60, "3-1")):
+                d = {s: long_[s] - r20[s] for s in syms if s in long_ and s in r20}
+                if len(d) >= 3:
+                    order = sorted(d, key=d.get)
+                    legs.append({s: i / (len(order) - 1) for i, s in enumerate(order)})
+            if not legs:
+                return {}
+            common = set.intersection(*[set(l) for l in legs])
+            return {s: float(np.mean([l[s] for l in legs])) for s in common}
+        if kind == "hi52":
+            # George-Hwang: proximity to the 52-week high. Anchoring is a documented
+            # behavioural mechanism, and nearness is far more robust to a single outlier month
+            # than a raw 12-month return. Same anomaly, less noisy estimator.
+            hi = self._hi52()
+            if date not in hi.index:
+                return {}
+            row = hi.loc[date]
+            for s in syms:
+                px = self.prices.at[date, s] if s in self.prices.columns else None
+                h = row.get(s)
+                if px and h and np.isfinite(px) and np.isfinite(h) and h > 0:
+                    out[s] = float(px / h)
+            return out
+        if kind == "voladj":
+            # risk-adjusted momentum: (12-1) / vol. AUDIT01 found vol_60d the single strongest
+            # feature in the whole 29-feature panel (IC -0.050, stronger than any return
+            # feature), and the sleeve harvests it only via a soft x1.15 nudge.
+            for s in syms:
+                if s in r252 and s in r20 and s in v60 and v60[s] > 0.01:
+                    out[s] = (r252[s] - r20[s]) / v60[s]
+            return out
+        if kind == "blend":
+            a = self._rescore(date, syms, "multi")
+            b = self._rescore(date, syms, "hi52")
+            if not a or not b:
+                return a or b
+            common = set(a) & set(b)
+            if len(common) < 3:
+                return {}
+            for d in (a, b):
+                pass
+            ra = sorted(common, key=lambda s: a[s]); rb = sorted(common, key=lambda s: b[s])
+            pa = {s: i / (len(ra) - 1) for i, s in enumerate(ra)}
+            pb = {s: i / (len(rb) - 1) for i, s in enumerate(rb)}
+            return {s: 0.5 * pa[s] + 0.5 * pb[s] for s in common}
+        raise KeyError(f"unknown mom_rescore {kind!r}")
+
     def _stress_pctile_map(self, trading_dates, col, win=None):
         """date -> causal expanding percentile of a _macro_stress column (hy_oas/rates_vol/
         curve), acts t+1. `win` re-derives rates_vol at a custom window from DGS10 if given."""
@@ -146,6 +222,22 @@ class LiveMirrorBacktester(FastBacktester):
         leverage = float(config.get("leverage", 1.0))
         integer_shares = bool(config.get("integer_shares", False))
         fin_rate = float(config.get("financing_rate", 0.0))
+        # ---- research: TIME-VARYING FINANCING (research/build_financing_curve.py) --------
+        # Every backtest here charges a FLAT 6.3%/yr on the margin debit across 2001-2025.
+        # That is roughly right today (IBKR Pro small-balance = benchmark + ~1.5%, fed funds
+        # ~4.3%) and badly wrong historically: fed funds was ~0-0.25% through most of
+        # 2009-2015 and again in 2020-21. Measured: the flat rate OVERCHARGES by 3.05pp/yr on
+        # the debit over 2001-2025 (actual mean 3.25%) and 2.44pp/yr over 2018-2025.
+        # It therefore biases every leverage conclusion AGAINST leverage. financing_curve=True
+        # charges DFF_t + 1.5pp instead. DFF is published same-day, so no look-ahead.
+        _fin_ser = None
+        if config.get("financing_curve"):
+            _fp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "research", "_fin_rate.parquet")
+            _fs = pd.read_parquet(_fp)["fin_rate"].dropna()
+            _idx = pd.DatetimeIndex(trading_dates)
+            _fin_ser = _fs.reindex(_idx.union(_fs.index)).sort_index().ffill().reindex(_idx)
+            _fin_ser = _fin_ser.ffill().bfill()
         credit_pct = config.get("credit_pct", None)      # down-gate percentile (e.g. 0.95)
         credit_derisk = config.get("credit_derisk", 0.5)
         crmap = self._credit_pctile_map(trading_dates, config.get("credit_col", "hy_oas")) \
@@ -185,8 +277,21 @@ class LiveMirrorBacktester(FastBacktester):
         # BOOK: during a crisis the holdings are up to `rebal_days` stale. rebal_stress uses a
         # shorter cadence while the credit gate is ON. None = current behaviour exactly.
         rebal_stress = config.get("rebal_stress")
+        # research (I-01): REBALANCE PHASE. The rebalance date carries no information, yet the
+        # measured per-start CAGR sigma is 7.07pp (8yr) -- that spread IS phase risk, taken
+        # uncompensated. `rebal_phase` shifts which day of the rebal_days cycle trades, so K
+        # sub-books can be run on different phases and combined. phase 0 == previous behaviour
+        # BIT-FOR-BIT. The sleeves gate internally on `day_idx % their_rebal_days`, so they are
+        # handed the PHASE-ADJUSTED index (`_didx`) -- otherwise a phase of e.g. 4 makes
+        # strategy5 (rebal_days=10) return None forever and the lowvol sleeve silently empties.
+        _ph = int(config.get("rebal_phase", 0)) % max(int(rebal_days), 1)
         _dsr = rebal_days      # days since rebalance; seeded so day 0 rebalances (== day_idx % rd == 0)
         trailing_stop = config.get("trailing_stop", None)
+        stop_mode = config.get("stop_mode", "flat")       # flat | vol   (research I-05)
+        stop_k = float(config.get("stop_k", 1.2))         # threshold = k * annualised name vol
+        stop_lo = float(config.get("stop_lo", 0.25))
+        stop_hi = float(config.get("stop_hi", 0.60))
+        stop_feat = config.get("stop_feat", "vol_60d")
         vol_scaling = config.get("vol_scaling", False)
         vol_target = config.get("vol_target", 0.20); vol_lookback = config.get("vol_lookback", 40)
         recent_rets = []
@@ -207,6 +312,48 @@ class LiveMirrorBacktester(FastBacktester):
         vol_dn_lb = config.get("vol_dn_lookback")        # asym: window used when vol is RISING
         lev_recheck = config.get("lev_recheck_every")    # off-cadence gross re-scale, in days
         lev_band = float(config.get("lev_band", 0.0))    # only act if |target/current - 1| > band
+
+        # ---- research (I-03): EX-ANTE, HOLDINGS-BASED portfolio-vol estimate -------------
+        # Deployed vol_scale divides the target by the trailing 40d REALISED vol of the book.
+        # After a rebalance rotates into five different names that estimate still describes the
+        # OLD book for up to 40 sessions. This is NOT another timing rule -- every timing rule
+        # in DYNAMIC_LEVERAGE_FINDINGS is dead and stays dead. It is an ESTIMATOR-LAG fix:
+        # measure the risk of the book you actually hold. The DYN program only ever varied the
+        # WINDOW on portfolio returns; it never changed WHAT is being estimated.
+        exante = config.get("exante_vol")                 # None | "pure" | "blend"
+        exante_rho = float(config.get("exante_rho", 0.35))
+        exante_feat = config.get("exante_vol_feat", "vol_60d")
+        _ante = {"w": None, "date": None}                 # book the estimate should describe
+
+        def _exante_vol(date_, wmap):
+            """Predicted annualized vol of the CURRENT book from per-name vols plus a single
+            average pairwise correlation (single-factor approximation):
+
+                sigma_p^2 = rho * (sum_i w_i sigma_i)^2 + (1 - rho) * sum_i (w_i sigma_i)^2
+
+            rho is held FIXED because correlation is slow-moving while book composition is
+            fast -- the whole point is to react to composition. Sensitivity to rho is swept in
+            the experiment. Names with no vol estimate are dropped and the rest renormalised."""
+            if not wmap:
+                return None
+            vm = self.uni.get_feature_map(date_, exante_feat)
+            ws, ss = [], []
+            for _s2, _w2 in wmap.items():
+                _v2 = vm.get(_s2)
+                if _v2 is None or not np.isfinite(_v2) or _v2 <= 0:
+                    continue
+                ws.append(float(_w2)); ss.append(float(_v2))
+            if len(ws) < 3:
+                return None
+            ws = np.asarray(ws); ss = np.asarray(ss)
+            t2 = ws.sum()
+            if t2 <= 0:
+                return None
+            ws = ws / t2
+            lin = float((ws * ss).sum())
+            quad = float(((ws * ss) ** 2).sum())
+            var = exante_rho * lin ** 2 + (1.0 - exante_rho) * quad
+            return var ** 0.5 if var > 0 else None
 
         def _rv(rets, lb=None, mode=None):
             """Annualized realized vol from the shadow (unlevered) return series."""
@@ -317,6 +464,14 @@ class LiveMirrorBacktester(FastBacktester):
             _pm = _policy_mult()
             if _pm != "invvol":
                 return _pm                       # policy answered (possibly None = hold)
+            if exante and _ante["w"]:
+                _ev = _exante_vol(_ante["date"], _ante["w"])
+                if _ev and _ev > 0:
+                    if exante == "blend":
+                        _rv0 = _rv(recent_rets, vol_lookback)
+                        if _rv0:
+                            _ev = 0.5 * _ev + 0.5 * _rv0
+                    return min(config.get("vol_scale_cap", 1.5), max(0.3, vol_target / _ev))
             if vol_up_lb and vol_dn_lb:
                 # ASYMMETRIC: compare a short window to a long one to detect the DIRECTION of
                 # vol, then estimate on the short window when vol is falling (re-lever
@@ -396,22 +551,36 @@ class LiveMirrorBacktester(FastBacktester):
                 shadow_gross_val *= (1 + pdr)
 
             # trailing stop (identical to live)
+            # research (I-05): VOL-NORMALISED STOP. A flat 40% stop is a ~2-sigma annual event
+            # on a 20%-vol name and ordinary noise on a 60%-vol one, so it applies a DIFFERENT
+            # confidence level to every holding -- firing on high-vol names for no informational
+            # reason and never protecting low-vol ones. stop_mode="vol" sets the threshold to
+            # clamp(stop_k * name vol, stop_lo, stop_hi) using the panel's causal vol feature.
+            # Unset => flat `trailing_stop`, bit-for-bit unchanged.
+            _stop_vm = (self.uni.get_feature_map(date, stop_feat)
+                        if (trailing_stop and stop_mode == "vol") else None)
             if trailing_stop:
                 for sym in list(holdings):
                     px = today.get(sym)
                     if px:
+                        _thr = abs(trailing_stop)
+                        if _stop_vm is not None:
+                            _nv = _stop_vm.get(sym)
+                            if _nv is not None and np.isfinite(_nv) and _nv > 0:
+                                _thr = min(stop_hi, max(stop_lo, stop_k * float(_nv)))
                         if "peak_px" not in holdings[sym]:
                             holdings[sym]["peak_px"] = px
                         if px > holdings[sym]["peak_px"]:
                             holdings[sym]["peak_px"] = px
                         dd = (px - holdings[sym]["peak_px"]) / holdings[sym]["peak_px"]
-                        if dd < -abs(trailing_stop):
+                        if dd < -_thr:
                             cash += holdings[sym]["shares"] * px * (1 - cost_frac)
                             del holdings[sym]
 
             # ---- LIVEMIRROR: daily financing on the margin debit ----
-            if fin_rate and cash < 0:
-                chg = (-cash) * (fin_rate / 252.0)
+            _fr = float(_fin_ser.get(date, fin_rate)) if _fin_ser is not None else fin_rate
+            if _fr and cash < 0:
+                chg = (-cash) * (_fr / 252.0)
                 cash -= chg; self._fin_paid += chg
 
             nav = cash + sum(h["shares"] * today.get(s, h["entry_px"]) for s, h in holdings.items()) + park_val(date)
@@ -428,7 +597,8 @@ class LiveMirrorBacktester(FastBacktester):
                 _cad = rebal_stress if _gate_on(date) else rebal_days
                 _is_reb = _dsr >= _cad
             else:
-                _is_reb = (day_idx % rebal_days == 0)      # unchanged default path
+                _is_reb = (day_idx >= _ph and (day_idx - _ph) % rebal_days == 0)  # _ph=0 => unchanged
+            _didx = day_idx - _ph                          # what the sleeves' own gates see
             if not _is_reb:
                 _dsr += 1
                 # ---- mid-cycle SIGNAL-EXIT (research): sell a holding when NO sleeve
@@ -463,6 +633,10 @@ class LiveMirrorBacktester(FastBacktester):
                 # `lev_band` suppresses churn on trivial adjustments.
                 if (lev_recheck and holdings and day_idx > 0
                         and day_idx % lev_recheck == 0):
+                    if exante:
+                        _ante["w"] = {s_: h_["shares"] * (today.get(s_) or h_["entry_px"])
+                                      for s_, h_ in holdings.items()}
+                        _ante["date"] = date
                     _vs = _vol_scale_now()
                     # The CREDIT GATE is also rebalance-only in the deployed engine, so in a
                     # crisis it can act up to `rebal_days` LATE — and credit spreads blow out
@@ -517,10 +691,12 @@ class LiveMirrorBacktester(FastBacktester):
 
             # ---- strategy signals (EXACT production code) ----
             mom_qual = config.get("mom_quality_filter")   # e.g. "gp_assets"/"roe": keep top-N by quality
+            mom_rescore = config.get("mom_rescore")       # research I-09/I-10: alternative ORDERING
             sector_cap = config.get("sector_cap")         # max names per 2-digit SIC among top_n
             mom_brk = config.get("mom_broken")            # research: narrow broken-company EXCLUSION
             pool = config.get("mom_pool", config.get("mom_quality_pool", 2.0))
-            _tn = int(round(top_n * pool)) if (mom_qual or sector_cap or mom_brk) else top_n
+            _tn = (int(round(top_n * pool)) if (mom_qual or sector_cap or mom_brk or mom_rescore)
+                   else top_n)
             # ---- F1 AUDIT REPLICA: live mom/s5 sleeves select from SP500-only membership
             #      (PIT via self.sp500_mem); value/breadth stay SP1500. mom_pool_sp500=True ----
             _restore_pool = None
@@ -535,13 +711,33 @@ class LiveMirrorBacktester(FastBacktester):
                     i = bisect.bisect_right(__k, d) - 1
                     return set(__m[__k[i]]) if i >= 0 else set()
                 self.uni.get_sp500 = _sp500_pit
-            t1 = strategy1_momentum_reversal(date, self.uni, day_idx, top_n=_tn, rebal_days=rebal_days)
+            t1 = strategy1_momentum_reversal(date, self.uni, _didx, top_n=_tn, rebal_days=rebal_days)
             if t1 is None:
                 t1 = last_targets.get("mom", {})
             elif mom_brk:
                 if len(t1) > top_n:
                     t1 = self._apply_broken_filter(t1, date, top_n, mom_brk)
                 self._brk_reb += 1
+            elif mom_rescore and len(t1) > top_n:
+                _sc = self._rescore(date, list(t1.keys()), mom_rescore)
+                if _sc:
+                    _rk = sorted(_sc, key=_sc.get, reverse=True)[:top_n]
+                    # WEIGHTING MUST MATCH THE SELECTOR. Inheriting t1's weights would size the
+                    # variant's picks by the ORIGINAL momentum score -- and when the pool is
+                    # wide, a name chosen by e.g. 52w-high proximity can carry a near-zero
+                    # momentum score, so it would be selected and then given ~no capital. The
+                    # book silently collapses to 3-4 names and the variant is tested unfairly.
+                    # Default is EQUAL weight; "orig" reproduces the earlier (unfair) behaviour.
+                    if config.get("mom_rescore_weight", "equal") == "orig":
+                        _tt = sum(t1[s] for s in _rk)
+                        t1 = ({s: t1[s] / _tt for s in _rk} if _tt > 0
+                              else {s: 1.0 / len(_rk) for s in _rk})
+                    else:
+                        t1 = {s: 1.0 / len(_rk) for s in _rk}
+                else:
+                    t1 = dict(sorted(t1.items(), key=lambda kv: kv[1], reverse=True)[:top_n])
+                    _tt = sum(t1.values())
+                    t1 = {s: w / _tt for s, w in t1.items()} if _tt > 0 else t1
             elif mom_qual and len(t1) > top_n:
                 qmap = self.uni.get_feature_map(date, mom_qual)
                 ranked = sorted(t1.keys(),
@@ -566,12 +762,12 @@ class LiveMirrorBacktester(FastBacktester):
                         picked.append(s)
                 tot = sum(t1[s] for s in picked)
                 t1 = {s: t1[s] / tot for s in picked} if tot > 0 else {s: t1[s] for s in picked}
-            t5 = strategy5_lowvol_quality(date, self.uni, day_idx)   # s5 under the (possibly SP500) pool
+            t5 = strategy5_lowvol_quality(date, self.uni, _didx)   # s5 under the (possibly SP500) pool
             if _restore_pool is not None:
                 self.uni.get_sp500 = _restore_pool                   # value/breadth back to SP1500
             members = self.uni.get_sp500(date)
             t_val = strategy_value(self.uni, date, members, top_n=10)
-            t3 = strategy3_sector_rotation(date, self.uni, day_idx)
+            t3 = strategy3_sector_rotation(date, self.uni, _didx)
             if t3 is None:
                 t3 = last_targets.get("s3", {})
             if t5 is None:
@@ -635,6 +831,7 @@ class LiveMirrorBacktester(FastBacktester):
             # Uses the SHARED estimator so vol_mode / lookback / asymmetry apply identically
             # here and in the off-cadence re-scale. With no research knobs set, _vol_scale_now()
             # is simple 40d vol == the previous inline computation (parity-checked).
+            _ante["w"], _ante["date"] = dict(combined), date   # book the ex-ante est. describes
             _vs_reb = _vol_scale_now()
             _vs_applied = 1.0
             if _vs_reb is not None:
@@ -706,6 +903,31 @@ class LiveMirrorBacktester(FastBacktester):
             else:
                 budget = nav * lev_t
                 target_d = {s: w * budget for s, w in combined.items()}
+
+            # ---- research (I-23): PARTIAL-ADJUSTMENT REBALANCE --------------------------
+            # The deployable approximation of phase tranching (EXP-001). Rather than K
+            # sub-books on K phases -- which needs new live code to net K target books inside
+            # one IBKR account -- keep ONE book, rebalance more often, and move only
+            # `move_frac` of the way to each new target. Same intent: no single arbitrary
+            # session determines the book. It is NOT mathematically the same as tranching
+            # (it smooths toward a MOVING target instead of averaging independent sub-books),
+            # so it has to be measured, never assumed equivalent.
+            # Names dropped from the target must stay in target_d at their residual value,
+            # otherwise the exit loop below liquidates them in FULL and the partial move is
+            # applied to buys only -- which would look like a free lunch.
+            # move_frac = 1.0 is the untouched path, bit-for-bit.
+            _mf = float(config.get("move_frac", 1.0))
+            if _mf < 1.0:
+                _cur_val = {s: h["shares"] * (today.get(s) or h["entry_px"])
+                            for s, h in holdings.items()}
+                _blend = {}
+                for _s in set(target_d) | set(_cur_val):
+                    _c0 = _cur_val.get(_s, 0.0)
+                    _t0 = target_d.get(_s, 0.0)
+                    _v = _c0 + _mf * (_t0 - _c0)
+                    if _v > 0:
+                        _blend[_s] = _v
+                target_d = _blend
 
             # exit names no longer targeted (integer -> sell whole position)
             for sym in list(holdings):
