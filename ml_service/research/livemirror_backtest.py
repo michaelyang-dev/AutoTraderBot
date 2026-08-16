@@ -198,9 +198,19 @@ class LiveMirrorBacktester(FastBacktester):
             # extra signals built from data already in the universe pickle but never used for
             # leverage (see research/build_stress2.py): baa_aaa, term_inv, umd_crash, mkt_vol.
             ms2 = pd.read_parquet(os.path.join(base, "_macro_stress2.parquet"))
-            if col not in ms2.columns:
-                raise KeyError(f"stress column {col!r} not in _macro_stress or _macro_stress2")
-            ms = ms2
+            if col in ms2.columns:
+                ms = ms2
+            else:
+                # _macro_stress3: signals built from the local FRED mirror that have never been
+                # tested as leverage gates (research/EXP029). ccc_bb = CCC-and-lower yield minus
+                # BB yield = the QUALITY spread INSIDE high yield, i.e. how concentrated distress
+                # is, which the aggregate HY-OAS level does not show (corr 0.779, so ~22% of its
+                # variation is independent of the deployed signal). tedrate is included for
+                # reference only -- see the note in EXP029, it is NOT deployable.
+                ms3 = pd.read_parquet(os.path.join(base, "_macro_stress3.parquet"))
+                if col not in ms3.columns:
+                    raise KeyError(f"stress column {col!r} not in _macro_stress/2/3")
+                ms = ms3
         s = ms[col].dropna()
         idx = pd.DatetimeIndex(trading_dates)
         s = s.reindex(idx.union(s.index)).sort_index().ffill().reindex(idx)
@@ -699,7 +709,38 @@ class LiveMirrorBacktester(FastBacktester):
                    else top_n)
             # ---- F1 AUDIT REPLICA: live mom/s5 sleeves select from SP500-only membership
             #      (PIT via self.sp500_mem); value/breadth stay SP1500. mom_pool_sp500=True ----
+            # ---- research I-28: MOMENTUM-SLEEVE UNIVERSE TIER --------------------------
+            # Momentum's premium is documented to be larger in smaller, less-covered names
+            # (slower information diffusion, tighter limits to arbitrage). The sleeve currently
+            # picks top-5 from all ~1,100 eligible SP1500 names. mom_universe restricts ONLY the
+            # momentum (and lowvol) sleeve's membership to a size tier, using the same PIT
+            # membership dicts the backtest already trades on -- no new data, no new universe
+            # file, so no new survivorship risk. value/breadth stay SP1500.
+            # Known prior: SP500-only was the B1 live bug, measured -15.7pp CAGR, so the
+            # gradient already says BROADER beats narrower at the large-cap end. This tests the
+            # other end.
+            _mu = config.get("mom_universe")
             _restore_pool = None
+            if _mu and _mu != "sp1500":
+                import bisect as _bs
+                _mems = {"sp500": [self.sp500_mem], "sp400": [self.sp400_mem],
+                         "sp600": [self.sp600_mem],
+                         "sp400_600": [self.sp400_mem, self.sp600_mem],
+                         "sp500_400": [self.sp500_mem, self.sp400_mem]}[_mu]
+                _keys = [sorted(m.keys()) for m in _mems]
+
+                def _tier_pit(d, __m=_mems, __k=_keys):
+                    out = set()
+                    for _mm, _kk in zip(__m, __k):
+                        if d in _mm:
+                            out |= set(_mm[d])
+                        else:
+                            _i = _bs.bisect_right(_kk, d) - 1
+                            if _i >= 0:
+                                out |= set(_mm[_kk[_i]])
+                    return out
+                _restore_pool = self.uni.get_sp500
+                self.uni.get_sp500 = _tier_pit
             if config.get("mom_pool_sp500"):
                 _restore_pool = self.uni.get_sp500
                 _mem = self.sp500_mem
@@ -819,14 +860,83 @@ class LiveMirrorBacktester(FastBacktester):
             if strong_bull and bull_w:
                 blended = dict(bull_w)
 
-            combined = {}
-            for name, cap_pct in blended.items():
-                tgt = last_targets.get(name, {})
-                if use_rp and name in ("mom", "val"):
-                    tgt = self._apply_rp(tgt, date, power=rp_power)
-                for sym, w in tgt.items():
-                    if w > 0:
-                        combined[sym] = combined.get(sym, 0) + w * cap_pct
+            # ---- research I-04: SLEEVE-LEVEL RISK PARITY -------------------------------
+            # Sleeve weights are fixed in CAPITAL (50/35/15). Momentum is structurally the
+            # highest-vol sleeve, so the book's RISK split is far from 50/35/15 and it drifts
+            # with regime -- an unintended, uncompensated, time-varying bet. This rescales the
+            # blended capital weights by inverse sleeve volatility (predicted from the panel's
+            # causal per-name vol, equal-weight within sleeve), then renormalises to the same
+            # total so gross is unchanged and the comparison is not a leverage change in
+            # disguise. Note `use_rp` is inverse-vol WITHIN mom/val -- a different thing, and
+            # already tested dead. Sleeve-level parity is untested.
+            _blended0 = dict(blended)          # pre-adjustment, for the gross-neutrality rescale
+            if config.get("sleeve_rp"):
+                _vm = self.uni.get_feature_map(date, config.get("sleeve_rp_feat", "vol_60d"))
+                _sv = {}
+                for _n in blended:
+                    _t = last_targets.get(_n, {})
+                    _vs2 = [_vm[x] for x in _t if x in _vm and np.isfinite(_vm[x]) and _vm[x] > 0]
+                    _sv[_n] = float(np.mean(_vs2)) if len(_vs2) >= 2 else None
+                _ok = {n: v for n, v in _sv.items() if v}
+                if len(_ok) >= 2:
+                    _pw = float(config.get("sleeve_rp_power", 1.0))
+                    _inv = {n: (1.0 / v) ** _pw for n, v in _ok.items()}
+                    _tot0 = sum(blended[n] for n in _ok)
+                    _tot1 = sum(_inv[n] * blended[n] for n in _ok)
+                    if _tot1 > 0 and _tot0 > 0:
+                        blended = dict(blended)
+                        for _n in _ok:
+                            blended[_n] = _inv[_n] * blended[_n] * (_tot0 / _tot1)
+
+            # Renormalising the SLEEVE weights to a constant sum does NOT hold realised gross
+            # constant: sleeves contain different numbers of names with different weight
+            # distributions, so shifting capital between them changes sum(combined) and hence
+            # the book's exposure. Measured: sleeveRP p=1.0 moved avgGross 1.1117 -> 1.1723,
+            # which would have made a pure leverage change look like a construction result.
+            # Build `combined` under BOTH weightings and rescale to the unmodified total.
+            def _mix(bw):
+                out, seen = {}, {}
+                for _n, _cp in bw.items():
+                    _t = last_targets.get(_n, {})
+                    if use_rp and _n in ("mom", "val"):
+                        _t = self._apply_rp(_t, date, power=rp_power)
+                    for _s3, _w3 in _t.items():
+                        if _w3 > 0:
+                            out[_s3] = out.get(_s3, 0) + _w3 * _cp
+                            seen[_s3] = seen.get(_s3, 0) + 1
+                return out, seen
+
+            combined, _seen = _mix(blended)
+            if blended is not _blended0 and combined:
+                _ref = sum(_mix(_blended0)[0].values())
+                _cur = sum(combined.values())
+                if _cur > 0 and _ref > 0:
+                    combined = {k: v * (_ref / _cur) for k, v in combined.items()}
+            # ---- research I-13: CROSS-SLEEVE OVERLAP ----------------------------------
+            # A name selected by two sleeves currently receives the SUM of both weights. If the
+            # sleeves are genuinely different views, agreement is information and deserves the
+            # overweight. If they share inputs (mom and lowvol both read roe/gross_margin),
+            # agreement is correlated error and the current behaviour silently concentrates the
+            # book. overlap_mode: "boost" scales duplicates up, "flat" removes the doubling
+            # entirely (weight = max sleeve weight, not sum). Gross is renormalised to the
+            # pre-adjustment total in both cases so this is not a leverage change.
+            _om = config.get("overlap_mode")
+            if _om and combined:
+                _tot0 = sum(combined.values())
+                if _om == "flat":
+                    _c2 = {}
+                    for name, cap_pct in blended.items():
+                        for sym, w in last_targets.get(name, {}).items():
+                            if w > 0:
+                                _c2[sym] = max(_c2.get(sym, 0.0), w * cap_pct)
+                    combined = _c2
+                elif _om == "boost":
+                    _k = float(config.get("overlap_boost", 1.25))
+                    combined = {s: w * (_k ** (_seen.get(s, 1) - 1))
+                                for s, w in combined.items()}
+                _t1 = sum(combined.values())
+                if _t1 > 0 and _tot0 > 0:
+                    combined = {s: w * (_tot0 / _t1) for s, w in combined.items()}
 
             # Uses the SHARED estimator so vol_mode / lookback / asymmetry apply identically
             # here and in the off-cadence re-scale. With no research knobs set, _vol_scale_now()
@@ -839,9 +949,37 @@ class LiveMirrorBacktester(FastBacktester):
                 combined = {s: w * _vs_reb for s, w in combined.items()}
 
             longs = {s: w for s, w in combined.items() if w > 0}
-            for sym in list(longs):
-                if longs[sym] > cap:
-                    longs[sym] = cap
+            # ---- research I-02: CAP MODE ------------------------------------------------
+            # Deployed behaviour truncates anything above `cap` and keeps the excess NOWHERE --
+            # gross simply falls. "waterfill" instead redistributes the truncated excess
+            # proportionally across the names still under the cap and repeats to convergence,
+            # so the position limit is respected AND the intended exposure is preserved. That
+            # is what the live engine's closed-loop sizing effectively does, so this is also a
+            # backtest-vs-live parity question, not only a risk-control one.
+            if config.get("cap_mode") == "waterfill" and longs:
+                _tot0 = sum(longs.values())
+                for _ in range(24):
+                    _over = {k: v for k, v in longs.items() if v > cap}
+                    if not _over:
+                        break
+                    _excess = sum(v - cap for v in _over.values())
+                    for k in _over:
+                        longs[k] = cap
+                    _room = {k: v for k, v in longs.items() if v < cap}
+                    _rsum = sum(cap - v for v in _room.values())
+                    if _rsum <= 1e-12 or _excess <= 1e-12:
+                        break
+                    for k in _room:
+                        longs[k] += _excess * (cap - longs[k]) / _rsum
+                _t1 = sum(longs.values())
+                if _t1 > 0 and _tot0 > 0:
+                    longs = {k: v * (_tot0 / _t1) for k, v in longs.items()}
+                    for k in list(longs):
+                        longs[k] = min(longs[k], cap)
+            else:
+                for sym in list(longs):
+                    if longs[sym] > cap:
+                        longs[sym] = cap
             gross = sum(longs.values())
             if gross > 1.0:
                 for sym in longs:

@@ -59,7 +59,14 @@ actually hold rather than the one you used to hold. The DYN program only ever va
 **Falsification:** must clear the matched-exposure control (score against a constant-leverage
 curve at its own realised avg_gross) or it is just running less exposure.
 
-### I-04 · Sleeve-level risk parity · **OPEN** · EV: MED
+### I-04 · Sleeve-level risk parity · **FAILS two-horizon bar, but NOT for the reason first logged** · EV: LOW
+26yr: Sharpe-neutral (+0.001/+0.002, 9/12) with a monotone **drawdown** gain (+1.19 / +2.53 /
++4.16pp at parity power 0.5 / 1.0 / 1.5) for −0.12 to −0.49pp of CAGR.
+8yr: clearly harmful (−0.015 / −0.032 / −0.053 Sharpe, 0-2/12).
+Horizons disagree on Sharpe ⇒ not promoted. But it is a **CAGR-for-drawdown trade**, not a
+mistake, and it belongs in the same family as lower constant leverage. Re-open only if a
+drawdown-first mandate is ever chosen; then test it exposure-matched (the arms above run 4-6%
+more gross).
 Sleeve weights are fixed at 50/35/15 in *capital*. Momentum is structurally the highest-vol
 sleeve, so the book's *risk* is far more than 50% momentum, and that share swings with regime.
 Target constant *risk* contribution per sleeve instead.
@@ -152,7 +159,7 @@ isolates the firm-specific continuation and is documented to have a higher infor
 Previously logged "GFC hedge not worth cost" — but on **3–4 starts and the pre-audit poisoned
 universe** (see BUGS F6). Not safely dead.
 
-### I-13 · Cross-sleeve overlap: conviction or concentration? · **OPEN** · EV: LOW-MED
+### I-13 · Cross-sleeve overlap · **KILLED (EXP-020)** — neither boosting nor flattening moves Sharpe by more than 0.008; agreement carries no information and the current doubling is harmless. Question closed.
 A name selected by two sleeves currently receives the sum of both weights, then gets capped.
 Test three arms: as-is / boost overlap / neutralise overlap to a single sleeve's weight.
 
@@ -299,6 +306,50 @@ the **40% trailing stop** in a levered book, forcing a realised loss and a re-en
 not "does earnings add variance" (yes, 1.39× — too small to matter in a 23-name book) but "what
 share of trailing-stop exits are earnings gaps, and do those exits lose money relative to holding
 through". That is a tail question and needs `log_stops` + `rdq`, not a Sharpe A/B.
+
+---
+
+### I-27 · Tilt HARDER into momentum (the inverse of sleeve risk parity) · **OPEN** · EV: MED
+EXP-020 found a clean dose-response: the more the book is tilted toward equal RISK across
+sleeves, the worse it gets (−0.015 / −0.032 / −0.053 Sharpe at parity power 0.5 / 1.0 / 1.5,
+0-2/12 sign). The gradient therefore points the other way.
+
+**Mechanism:** EXP-003 established the ranking carries 100% of the selection edge, and momentum
+is the ranked sleeve — value and lowvol behave close to random draws from a filtered pool. If
+that is right, capital should be tilted *toward* momentum, not away.
+**Why only MED, and the specific danger:** sleeve-weight changes have been RETRACTED as noise in
+this repo before (CORE2/3/4 at 6/12), and momentum is the highest-vol sleeve so any tilt raises
+drawdown — the axis EXP-004/022 says matters. Judge on Sharpe AND MaxDD, ≥9/12 on both horizons,
+and expect this to fail the drawdown test even if Sharpe improves.
+
+---
+
+### I-29 · Mid-cycle signal exit as a DRAWDOWN instrument · **OPEN** · EV: MED-HIGH
+`signal_exit_every=5`: sell a holding as soon as no sleeve still wants it, instead of waiting out
+the 20-session cadence. EXP-021 (26yr, 12 starts): **MaxDD −64.1% → −52.7% (+11.39pp)**,
+Sharpe +0.020 (8/12), CAGR −1.14pp.
+
+**Mechanism:** the deployed book holds a name for up to 20 sessions after the signal that bought
+it has gone. In a fast decline that is 20 sessions of holding something the model no longer
+wants. Exiting promptly is cheap (a sale, not a re-pick) — and EXP-007 established exactly this
+distinction: *cheap adjustments can be prompt, expensive ones cannot*. Re-picking the book
+mid-cycle was catastrophic (−7 to −10pp); merely *exiting* is a different operation.
+**Why not higher EV:** −1.14pp of CAGR is a real cost, sign consistency is only 8/12, and it
+needs new live code (a daily exit check between rebalances). Test the exit cadence (3/5/10) and
+the grace parameter, on both horizons, before believing it.
+
+### I-30 · Why does `roe` work when `gp_assets` is catastrophic? · **ANSWERED — (a) LUCKY DRAW (EXP-025)**
+Family test: 1/5 positive on 26yr, **0/5 on 8yr**; family mean −0.012 / −0.210; no income-vs-gross
+split. `roe` is one lucky draw out of nine EXP-021 arms. See LOG cycle 27. Closed.
+EXP-021: same hook, same pool, same mechanism — `roe` +0.021 Sharpe (10/12), `gp_assets` −0.072
+(0/12). Both are profitability measures. That asymmetry is either (a) the tell that `roe` is a
+lucky draw, or (b) informative about *which* profitability signal matters.
+
+**Why it is worth its own experiment:** it is a cheap, decisive test of the ROE result. If a
+third and fourth profitability metric (`net_margin`, `operating_margin` — both already in the
+panel) side with `roe`, the mechanism is real and `gp_assets` is the outlier. If they side with
+`gp_assets`, `roe` is noise and EXP-024 should not be believed no matter what its own audit says.
+This is the multiple-testing question asked constructively rather than just deflating a p-value.
 
 ---
 

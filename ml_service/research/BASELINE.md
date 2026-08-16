@@ -2,6 +2,25 @@
 
 **Last updated 2026-08-14.** Update ONLY after a result clears the full audit gate in `LOG.md`.
 
+## 🔴 2026-08-14 — `DEPLOYED` OMITS THE CREDIT GATE. Measured, corrected, RESOLVED (BUGS A9).
+
+`evalkit.DEPLOYED` has no `credit_pct`, but the live `ibkr_engine` halves gross leverage while
+HY-OAS ≥ its p95 expanding percentile (`credit_gate.PCT=0.95`, `DERISK=0.5`, live since
+2026-07-18). Cycles 1-19 therefore compared everything against a baseline weaker than the real
+system. **Measured (EXP-022, 26yr, 12 starts, live_sizing, real financing): the gate is worth
++0.61pp CAGR / +0.021 Sharpe / +8.54pp MaxDD, 12/12 on all three.**
+
+**HONEST 26yr baseline (gate ON, real financing, live sizing): +12.72% / 0.549 / −55.9%**
+(worst −64.2%). NOT the +11.26% / 0.509 / −64.8% quoted through cycles 1-19.
+
+`DEPLOYED` is deliberately left unchanged so the 19 prior cycles stay reproducible. **From here
+on pass `credit_pct: 0.95, credit_derisk: 0.5` explicitly**, and quote the gate-ON figures.
+
+**The risk I flagged did not materialise.** I expected the gate and constant-lower-leverage to be
+substitutes, shrinking the EXP-017/018 finding. Measured substitution is **−1.86pp on MaxDD** —
+they are **complements**. Removing the overlay helps *more* with the gate on (+4.11pp of drawdown
+vs +2.25pp without).
+
 ## Champion config (= what is deployed live, v12)
 
 ```python
@@ -37,7 +56,22 @@ Never quote a point estimate from fewer than 12 starts.
 8yr range across entry month alone: **+15.03% … +34.55%**. Prefer the 26yr number when the two
 horizons disagree — it is ~2.5× tighter and spans dot-com + GFC + COVID + 2022.
 
-### 🔴 CORRECTION 2026-08-14 — the 26yr numbers above UNDERSTATE the strategy
+### 🔴 CORRECTION 2026-08-14 (b) — the strategy BEATS passive over 26yr; cycle 3 was wrong
+
+Cycle 3 (EXP-004) concluded the strategy was "at parity with passive EW SP1500 and behind on
+risk". That used a baseline missing **both** the credit gate and honest financing. Corrected:
+
+| | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| passive EW SP1500, quarterly buy&hold, **cost-free** | +11.17% | **0.590** | −58.5% |
+| **deployed as actually run** | **+12.72%** | 0.549 | **−55.9%** |
+| deployed minus the vol overlay (const 1.10×) | **+12.93%** | 0.584 | **−51.8%** |
+| const 1.00×, no overlay | +12.27% | **0.592** | **−48.1%** |
+
+Deployed beats passive by **+1.55pp CAGR and +2.6pp drawdown**, losing 0.04 of Sharpe — against a
+benchmark paying zero costs and holding 1,500 names. Removing the overlay beats it outright.
+
+### 🔴 CORRECTION 2026-08-14 (a) — the 26yr numbers above UNDERSTATE the strategy
 
 Every figure in this repo charges a **flat 6.3%/yr** on the margin debit. Actual broker financing
 (DFF + 1.5pp = IBKR Pro small-balance tier) averaged **3.25%** over 2001-2025 and **1.63%** over
@@ -133,6 +167,45 @@ target books netted into one IBKR account with per-tranche holdings tracked. The
 single-book approximation (partial adjustment) was tested and **destroys the strategy**
 (EXP-007: −7 to −10pp CAGR), so this cost cannot be avoided. **K=2 captures ~half the benefit
 (dSharpe +0.041 at $33k) for half the complexity** and is the sensible first step.
+
+---
+
+## ★ AUDITED CANDIDATE 3 (STRONGEST) — TRANCHING + CONSTANT LEVERAGE, NO VOL OVERLAY
+
+**= candidates 1 and 2 combined.** `research/EXP019_stack_candidates.py`,
+`EXP027_combined_audit.py`. K=4 phase sub-books · `vol_scaling: False` · `leverage: 1.00`
+(or 1.10 for the CAGR-preferring version). Gate ON, honest financing, live sizing.
+
+**They stack additively** (EXP-019 interaction: CAGR +0.024, Sharpe +0.001) — one fixes a
+*timing* nuisance, the other a *sizing* nuisance. Independent problems.
+
+| horizon | dCAGR | dSharpe | dMaxDD | **MATCHED dSharpe** | sd ratio |
+|---|---|---|---|---|---|
+| **26yr** | +0.08 → +0.90pp | **+0.074 (10/12)** | +7.74pp (12/12) | **+0.032 … +0.035** | 0.397 |
+| **8yr** | +0.31 → +1.02pp | **+0.096 (8/12)** | +4.76pp (9/12) | **+0.076 … +0.084** | 0.555 |
+
+Absolute (26yr, $50k): deployed +12.72% / 0.549 / −55.9% → **arm E +12.79% / 0.623 / −48.2%**
+(worst −64.2% → **−51.4%**).
+
+**Audit gate — 12 cells (2 horizons × 2 capitals × 3 cost levels), all passed:**
+- **real $33k size ≡ $50k** in every cell (the constraint most likely to kill it: it doesn't)
+- **cost:** dCAGR **improves** with cost, dSharpe flat — it trades less
+- **matched exposure:** positive in all 12 cells (EXP-008 died here at −0.099)
+- **stability:** sd ratio 0.397-0.399 / 0.537-0.556 across every cell
+
+**⚠️ Misses one bar: 8yr Sharpe sign consistency is 8/12 vs the ≥9/12 rule** (26yr 10/12).
+Marginal-to-strong, **not a clean pass**. Rule not relaxed.
+
+**⚠️ The drawdown gain is a LEVEL EFFECT.** Matched dMaxDD ≈ 0 (−0.37 to +0.36pp) — it is what
+any book at ~0.99× gross instead of ~1.22× would get. **Exposure-independent** are: the Sharpe
+residual (+0.03 to +0.08) and the ~60% dispersion cut.
+
+**The precise claim:** *the drawdown of running ~1.0× leverage at NO CAGR cost* (plain
+de-levering costs −2.60pp, EXP-010), plus ~+0.03-0.08 of exposure-independent Sharpe.
+
+**Blocker:** needs four target books netted in one IBKR account. The cheap single-book
+approximation was tested and **destroys** the strategy (EXP-007, −7 to −10pp). Candidate 2 alone
+is two config values and captures the sizing half.
 
 ---
 

@@ -96,6 +96,36 @@ rate so every previously logged number stays reproducible.
 IS levered) — the strategy's true historical returns were higher than reported. It is still a
 defect, because it silently distorts every leverage *comparison*.
 
+### A9. 🔴 MY RESEARCH BASELINE OMITS THE CREDIT GATE THAT THE LIVE ENGINE RUNS
+
+`evalkit.DEPLOYED` has no `credit_pct` key, so every A/B in this program (cycles 1-19) compared
+challengers against a baseline **without** the HY-OAS credit gate. The live engine **does** run
+it: `ibkr_engine.compute_credit_derisk()` reads `credit_gate.gate_status()` and halves the
+gross-leverage target while HY-OAS sits at or above its p95 expanding percentile
+(`credit_gate.PCT = 0.95`, `DERISK = 0.5`, deployed 2026-07-18).
+
+**Why this matters, concretely.** Per `UNIVERSE_MANIFEST.md`, the gate is worth roughly
++0.5pp CAGR / +0.02 Sharpe / **+7.7pp MaxDD** on the 26yr. So:
+- the 26yr baseline drawdown I have been quoting (−64.1%) should be nearer **−58%** with the
+  gate on;
+- **EXP-017/EXP-018's headline is the one at risk.** Its central claim is that removing the vol
+  overlay and running constant leverage improves drawdown 12/12 on both horizons. The credit
+  gate ALSO buys crisis drawdown protection, so a meaningful part of what constant-lower-leverage
+  appears to add may already be supplied by a control the real system has and my baseline lacks.
+  The two could be substitutes.
+
+**This is the same class of error as the `clear_deployed()` footgun** (section C): the research
+baseline silently diverging from the deployed configuration. It is exactly the failure this
+program was set up to catch, and I introduced it myself by building `DEPLOYED` from
+`main_production_backtest`'s config defaults rather than from the live engine.
+
+**Not yet corrected, deliberately.** Changing `DEPLOYED` mid-program would silently invalidate
+every logged comparison. Plan: measure the gate's effect on the baseline, then re-run the two
+audited candidates against a gate-ON baseline, and only then decide whether to switch the
+canonical baseline. Until that is done, **treat the EXP-017/018 drawdown claim as provisional**,
+and note that EXP-014 (tranching) is far less exposed — tranching is a variance-reduction result
+that does not compete with the gate for the same job.
+
 ### A8. ⚠️ TWO DEFECTS IN MY OWN MEASUREMENT TOOLING (found in EXP-017, both mine)
 
 **A8a — `event_concentration` is meaningless when total excess ≈ 0.**

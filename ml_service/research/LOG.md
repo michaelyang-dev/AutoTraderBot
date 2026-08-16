@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 734 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 1,850 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -1150,6 +1150,826 @@ one — the opposite of the tranching candidate, which needs real new engine wor
 **NOT DEPLOYED.** Recorded in BASELINE.md as the second audited candidate. The choice between
 1.00× (max drawdown protection, −0.6 to −1.8pp CAGR) and 1.10× (CAGR-neutral, smaller
 protection) is the owner's.
+
+---
+
+## Cycle 20 — EXP-022 · CREDIT-GATE BASELINE FIX (BUGS A9) — **corrects my own record**
+
+**The defect I found in my own program.** `evalkit.DEPLOYED` had no `credit_pct`, so cycles 1-19
+compared every challenger against a baseline **without** the HY-OAS credit gate — while the live
+`ibkr_engine.compute_credit_derisk()` halves gross leverage whenever HY-OAS sits at or above its
+p95 expanding percentile (`credit_gate.PCT=0.95`, `DERISK=0.5`, live since 2026-07-18). I built
+`DEPLOYED` from the backtester's config defaults instead of from the live engine. Same class as
+the `clear_deployed()` footgun.
+
+**26yr, 12 starts, live_sizing, REAL time-varying financing:**
+
+| arm | CAGR | Sharpe | Sortino | MaxDD | worst DD |
+|---|---|---|---|---|---|
+| A0 baseline **as I had been using it** (gate OFF) | +12.10% | 0.528 | 0.742 | −64.5% | −71.4% |
+| **A1 baseline AS ACTUALLY DEPLOYED (gate ON)** | **+12.72%** | **0.549** | **0.769** | **−55.9%** | −64.2% |
+| C0 const 1.10× no-overlay, gate OFF | +12.25% | 0.555 | 0.791 | −62.2% | −70.1% |
+| **C1 const 1.10× no-overlay, gate ON** | **+12.93%** | **0.584** | **0.833** | **−51.8%** | −63.4% |
+| **B1 const 1.00× no-overlay, gate ON** | +12.27% | **0.592** | **0.845** | **−48.1%** | −59.7% |
+| T1 tranching K=4, gate ON | +13.24% | 0.577 | 0.814 | −55.6% | **−57.3%** |
+
+| paired delta | dCAGR | dSharpe | dMaxDD | +CAGR | +Sharpe | +DD |
+|---|---|---|---|---|---|---|
+| **GATE effect on baseline (A1−A0)** | **+0.61pp** | **+0.021** | **+8.54pp** | **12/12** | **12/12** | **12/12** |
+| C const 1.10× vs HONEST base | +0.21pp | **+0.035** | **+4.11pp** | 7/12 | **12/12** | **12/12** |
+| B const 1.00× vs HONEST base | −0.45pp | **+0.043** | **+7.84pp** | 4/12 | **12/12** | **12/12** |
+| T tranching K=4 vs HONEST base | +0.52pp | +0.028 | +0.32pp | 7/12 | 9/12 | 5/12 |
+| C vs the OLD (wrong) base | +0.15pp | +0.027 | +2.25pp | 7/12 | 12/12 | 12/12 |
+
+### 1. The risk I flagged did NOT materialise — and it went the other way
+
+I predicted the credit gate and constant-lower-leverage might be **substitutes**, which would
+have shrunk or killed the EXP-017/018 finding. Measured substitution `(C0−A0) − (C1−A1)`:
+**−0.06pp CAGR, −0.008 Sharpe, −1.86pp MaxDD.** Negative — they are **complements**.
+Removing the overlay helps *more* when the gate is present (+4.11pp of drawdown vs +2.25pp
+without it), because with a genuine crisis control already in place the overlay's contribution is
+even more redundant while its ~1pp/yr CAGR drag is unchanged. **The EXP-017/018 result is
+strengthened, not weakened.**
+
+### 2. 🔴 CORRECTION to cycle 3 (EXP-004): the strategy does NOT lose to passive over 26yr
+
+Cycle 3 concluded the deployed strategy was "at parity with passive EW SP1500 on return and
+behind on risk". That comparison used a baseline missing **both** the credit gate **and** honest
+financing. Corrected:
+
+| | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| passive EW SP1500, quarterly, cost-free | +11.17% | **0.590** | −58.5% |
+| **deployed as actually run (A1)** | **+12.72%** | 0.549 | **−55.9%** |
+| **C1 (deployed minus the vol overlay)** | **+12.93%** | 0.584 | **−51.8%** |
+| **B1 (const 1.00×, no overlay)** | +12.27% | **0.592** | **−48.1%** |
+
+The deployed system **beats passive on CAGR by +1.55pp and on drawdown by +2.6pp**, losing only
+0.04 of Sharpe — against a benchmark that pays zero costs and holds 1,500 names nobody could hold
+directly. And **B1 beats it on all three axes.** My cycle-3 framing was wrong and is corrected
+here rather than left to stand.
+
+### 3. Tranching's drawdown contribution mostly disappears — as I predicted it would
+
+Against the honest gate-ON baseline, tranching gives **+0.32pp mean MaxDD at 5/12** — essentially
+nothing — while keeping **+0.52pp CAGR and +0.028 Sharpe (9/12)**. That is the expected result and
+I said so before running it: tranching is variance reduction across rebalance phase, and does not
+compete with a credit gate for tail protection.
+
+One thing survives: **worst-case drawdown across starts −64.2% → −57.3% (+6.9pp)** even though
+the *mean* is flat. Tranching compresses the dispersion of drawdown outcomes rather than lowering
+the average, which is exactly what a variance-reduction mechanism should do.
+
+**Net effect on the two candidates:**
+- **Remove-the-overlay: STRENGTHENED.** vs the honest baseline C is +0.035 Sharpe / +4.11pp DD,
+  both **12/12**; B is +0.043 / +7.84pp, both **12/12**.
+- **Tranching: NARROWED.** Still +0.028 Sharpe (9/12) and +0.52pp CAGR, but its drawdown claim
+  against a correctly-specified baseline is ~zero. Given it needs substantial new engine code
+  while the overlay change is two config values, **its priority drops below the overlay change.**
+
+### 4. 8yr confirmation — and it narrows BOTH candidates
+
+| arm | CAGR | Sharpe | MaxDD | worst |
+|---|---|---|---|---|
+| A0 base gate-OFF | +23.85% | 0.799 | −40.4% | −45.5% |
+| **A1 base gate-ON (honest)** | **+23.88%** | **0.802** | **−38.5%** | −45.5% |
+| C1 const 1.10× no-overlay, gate ON | +23.45% | 0.812 | −37.3% | −41.5% |
+| B1 const 1.00× no-overlay, gate ON | +22.09% | **0.825** | **−34.2%** | **−37.1%** |
+| T1 tranching K=4, gate ON | **+26.56%** | **0.892** | −37.6% | −42.4% |
+
+| paired vs the HONEST 8yr base | dCAGR | dSharpe | dMaxDD | +CAGR | +Sharpe | +DD |
+|---|---|---|---|---|---|---|
+| gate effect (A1−A0) | +0.02pp | +0.003 | +1.87pp | 3/12 | 4/12 | 6/12 |
+| C const 1.10× | −0.43pp | +0.010 | +1.25pp | 6/12 | 8/12 | 6/12 |
+| **B const 1.00×** | −1.78pp | +0.023 | **+4.32pp** | 2/12 | 8/12 | **11/12** |
+| T tranching K=4 | **+2.68pp** | **+0.090** | +0.91pp | 7/12 | 7/12 | 6/12 |
+
+**The gate does essentially nothing on the 8yr** (+0.02pp CAGR, 3/12) — 2018-2025 contains no
+genuine credit crisis. That is exactly as documented, and it means the 8yr baseline barely moved,
+so the 8yr verdicts below are a real re-test rather than an artefact of the correction.
+
+### Both candidates, re-scored against the HONEST baseline on both horizons
+
+| | 26yr dSharpe | 8yr dSharpe | 26yr dMaxDD | 8yr dMaxDD |
+|---|---|---|---|---|
+| **B const 1.00×, no overlay** | **+0.043 (12/12)** | +0.023 (8/12) | **+7.84pp (12/12)** | **+4.32pp (11/12)** |
+| C const 1.10×, no overlay | **+0.035 (12/12)** | +0.010 (8/12) | **+4.11pp (12/12)** | +1.25pp (6/12) |
+| T tranching K=4 | +0.028 (9/12) | +0.090 (7/12) | +0.32pp (5/12) | +0.91pp (6/12) |
+
+**Neither candidate clears ≥9/12 on Sharpe on BOTH horizons.** B and C reach 12/12 on the 26yr
+and 8/12 on the 8yr; tranching reaches 9/12 and 7/12. I am not relaxing the bar — both stay
+**marginal-to-strong, not clean passes.**
+
+**One claim DOES clear cleanly on both horizons: B's drawdown.** +7.84pp at 12/12 (26yr) and
++4.32pp at 11/12 (8yr). Running constant 1.00× with no vol overlay is a genuine, two-horizon,
+sign-consistent drawdown improvement, costing −0.45pp (26yr) / −1.78pp (8yr) of CAGR. That is
+the most robust deployable result this program has produced, and it is a *config change that
+deletes code*.
+
+**Tranching is narrowed and reprioritised.** Against a correctly-specified baseline its drawdown
+claim is ~zero (5/12, 6/12); what survives is CAGR/Sharpe (+0.52pp/+0.028 on 26yr, +2.68pp/+0.090
+on 8yr) at 7-9/12. Since it needs substantial new engine code (four books netted in one IBKR
+account) while the overlay change is two config values, **its priority drops below the overlay
+change.**
+
+**BASELINE.md corrected.** `DEPLOYED` is left unchanged so the 19 prior cycles stay reproducible;
+the gate-ON numbers are recorded alongside as the honest reference, and `credit_pct`/`credit_derisk`
+must be passed explicitly from here on.
+
+---
+
+## Cycle 21 — EXP-020 · portfolio construction (I-04 sleeve risk parity, I-13 overlap) — **both DEAD**
+
+Escalation-ladder level 5. Neither adds a signal; both change how existing signals are combined.
+Parity gate passed (hooks off ≡ untouched path, bit-for-bit).
+
+**8yr, 12 starts, REAL financing. Base +23.03% / 0.800 / −39.2%, avgGross 1.1117.**
+
+| arm | CAGR | Sharpe | MaxDD | avgGross | dCAGR | dSharpe | +Sharpe | verdict |
+|---|---|---|---|---|---|---|---|---|
+| sleeveRP p=0.5 | +21.89% | 0.784 | −39.3% | 1.1428 | −1.14pp | −0.015 | 2/12 | dead |
+| sleeveRP p=1.0 | +20.79% | 0.768 | −39.2% | 1.1723 | −2.25pp | −0.032 | 1/12 | dead |
+| sleeveRP p=1.5 | +19.55% | 0.747 | −38.9% | 1.1956 | −3.48pp | −0.053 | 0/12 | dead |
+| overlap flat (no doubling) | +22.85% | 0.808 | −39.8% | 1.1232 | −0.19pp | +0.008 | 8/12 | marginal |
+| overlap boost ×1.25 | +23.25% | 0.799 | −38.5% | 1.0973 | +0.21pp | −0.000 | 6/12 | dead |
+| overlap boost ×1.50 | +23.33% | 0.799 | −38.0% | 1.0822 | +0.30pp | −0.001 | 7/12 | marginal |
+| sleeveRP + flat | +20.35% | 0.772 | −39.8% | 1.1829 | −2.68pp | −0.028 | 4/12 | dead |
+
+### I-04 sleeve risk parity — DEAD, and the monotonicity is the finding
+
+Sharpe degrades **monotonically in the parity power**: −0.015 → −0.032 → −0.053 at p = 0.5 → 1.0
+→ 1.5, with 2/12 → 1/12 → **0/12** sign consistency. A clean dose-response, not noise.
+
+**And it loses while running MORE exposure.** avgGross rises 1.1117 → 1.1956 as the tilt
+strengthens (shifting capital toward the 10-name lowvol sleeve flattens the weight distribution,
+so the 10% cap binds less often and realised gross goes up). More gross normally *raises* CAGR;
+this loses 3.48pp anyway. The direction is unambiguous despite the exposure mismatch.
+
+**Why: momentum's outsized risk contribution is EARNED, not accidental.** EXP-003 showed the
+ranking carries 100% of the selection edge, and momentum is the ranked sleeve. Equalising risk
+across sleeves deliberately moves capital *away* from the only sleeve that has an edge and toward
+sleeves that are, on that evidence, close to random draws from a filtered pool. The fixed
+50/35/15 capital split is better precisely because it is *not* risk-balanced.
+
+**⚠️ Caveat on my own implementation, stated rather than buried.** I tried to make this
+gross-neutral by renormalising the sleeve weights to a constant sum, and it did not work — the
+10% position cap and the 0.5% minimum-weight filter both act *after* that rescale, so changing
+the weight *distribution* changes realised gross even when the pre-cap sum is held fixed. The
+arms are still interpretable (they lose while running more exposure), but a clean version would
+have to rescale post-cap or be scored through `matched_exposure_curve`. Flagged in the output as
+"GROSS MOVED, discard" rather than quietly reported.
+
+### I-13 cross-sleeve overlap — DEAD, and that is a useful answer
+
+All three arms sit within ±0.008 of base Sharpe. Boosting duplicates does nothing (−0.000,
+−0.001); removing the doubling entirely does nothing (+0.008, 8/12).
+
+**So cross-sleeve agreement carries no information — and the current double-counting is not
+harmful either.** That closes the open question: no risk control is needed there, and the
+sleeves' shared inputs (momentum and lowvol both read `roe`; value and lowvol both read
+`gross_margin`) are not silently concentrating the book in any way that costs money. This is the
+outcome I flagged as worth knowing regardless of sign, and it is.
+
+**Generated:** the sleeve-RP dose-response says the book is *under*-weighted to momentum on a
+risk basis, not over. The opposite tilt — deliberately raising the momentum sleeve's share — is
+the untested direction that dose-response implies → **I-27**.
+
+### 🔴 CORRECTION — the 26yr does NOT reproduce the 8yr dose-response. My write-up above was
+### drawn from one horizon and overstated.
+
+26yr, 12 starts (base +11.97% / 0.531 / −64.1%, gross 1.1939):
+
+| arm | CAGR | Sharpe | MaxDD | gross | dCAGR | **dSharpe** | **dMaxDD** | +Sharpe |
+|---|---|---|---|---|---|---|---|---|
+| sleeveRP p=0.5 | +11.85% | 0.532 | −62.9% | 1.2209 | −0.12pp | **+0.001** | **+1.19pp** | 9/12 |
+| sleeveRP p=1.0 | +11.68% | 0.532 | −61.6% | 1.2442 | −0.29pp | **+0.002** | **+2.53pp** | 9/12 |
+| sleeveRP p=1.5 | +11.48% | 0.531 | −59.9% | 1.2627 | −0.49pp | **+0.001** | **+4.16pp** | 9/12 |
+| overlap flat | +11.75% | 0.527 | −63.3% | 1.2028 | −0.22pp | −0.004 | +0.81pp | 6/12 |
+| overlap boost ×1.25 | +12.12% | 0.534 | −64.4% | 1.1815 | +0.15pp | +0.004 | −0.27pp | 6/12 |
+| overlap boost ×1.50 | +12.26% | 0.539 | −64.6% | 1.1688 | +0.29pp | +0.008 | −0.45pp | 10/12 |
+| sleeveRP + flat | +11.57% | 0.533 | −60.2% | 1.2534 | −0.40pp | +0.002 | +3.85pp | 7/12 |
+
+**On the 26yr, sleeve risk parity is Sharpe-NEUTRAL (+0.001 to +0.002, 9/12), not harmful.** The
+monotone dose-response I reported is real but it lives in **drawdown**, not Sharpe:
+**+1.19 → +2.53 → +4.16pp of MaxDD** as the tilt strengthens, at −0.12 → −0.29 → −0.49pp of CAGR.
+
+**So the honest verdict changes: sleeve RP is not "dead with a clean dose-response against it".
+It is a CAGR-for-drawdown trade that is roughly free on the 26yr and costly on the 8yr**
+(8yr: −0.015 → −0.032 → −0.053 Sharpe, 0-2/12). The two horizons disagree on Sharpe, so it still
+**fails the two-horizon bar** and is not promoted — but my stated reason was wrong and the
+mechanism story I wrote ("momentum's risk share is earned") is supported only by the 8yr.
+
+**Also note it improves drawdown while running MORE gross** (1.1939 → 1.2627). That is not a
+contradiction: shifting capital toward the 10-name lowvol sleeve genuinely lowers risk per
+dollar, and flattening the weight distribution makes the 10% cap bind less often so realised
+gross rises. More dollars in lower-risk names. It does mean the arms are not exposure-matched
+and the flag says so.
+
+**Overlap remains dead on both horizons** (|dSharpe| ≤ 0.008 everywhere; boost ×1.50 reaches
+10/12 on the 26yr but −0.001/7 out of 12 on the 8yr, and +0.008 is inside the noise floor).
+The conclusion that agreement between sleeves carries no information stands.
+
+---
+
+## Cycle 22 — EXP-021 · REVIVE BATCH (I-19) — **one idea comes back from the dead**
+
+BUGS F6: most "dead" verdicts in this repo were reached on 3-4 starts AND on the pre-audit
+poisoned universes — a combination that has already produced a wrong sign once and a retracted
+win. Every idea here has an existing config hook, so **no new modelling risk is introduced; only
+the measurement standard changes.**
+
+**26yr, 12 starts, honest financing. Base +11.97% / 0.531 / −64.1%, avgGross 1.1939.**
+(Note: gate OFF here — this batch was queued before the BUGS A9 correction landed. Deltas are
+still valid, since base and variants share the same baseline.)
+
+| arm | CAGR | Sharpe | MaxDD | gross | dCAGR | dSharpe | dMaxDD | +CAGR | +Shrp | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| vol-managed mom 0.20 | +10.69% | 0.522 | −60.2% | 1.126 | −1.28pp | −0.009 | +3.90pp | 0/12 | 6/12 | dead |
+| vol-managed mom 0.30 | +11.26% | 0.522 | −62.7% | 1.171 | −0.71pp | −0.008 | +1.44pp | 0/12 | 6/12 | dead |
+| risk parity in-sleeve | +11.82% | 0.538 | −62.5% | 1.213 | −0.15pp | +0.007 | +1.59pp | 5/12 | 7/12 | marginal |
+| sector cap 2/sleeve | +11.72% | 0.522 | −64.0% | 1.196 | −0.25pp | −0.008 | +0.11pp | 2/12 | 2/12 | dead |
+| mom quality **gp_assets** | +9.30% | 0.458 | −63.7% | 1.213 | **−2.67pp** | **−0.072** | +0.45pp | **0/12** | **0/12** | dead |
+| **mom quality `roe`** | **+12.24%** | **0.551** | **−60.3%** | 1.212 | **+0.27pp** | **+0.021** | **+3.81pp** | **9/12** | **10/12** | **SURVIVES** |
+| **signal-exit every 5d** | +10.83% | 0.550 | **−52.7%** | 1.146 | −1.14pp | +0.020 | **+11.39pp** | 5/12 | 8/12 | marginal |
+| park idle cash IEF | +11.97% | 0.531 | −64.1% | 1.194 | +0.00pp | +0.000 | +0.00pp | 0/12 | 0/12 | **VOID — see below** |
+
+### `park idle cash IEF` tested NOTHING — reporting it as "dead" would be wrong
+
+Every metric returned **exactly 0.000**. That is the suspicious-roundness tell from BUGS section
+E (4 of 6 harness bugs in this repo announced themselves as a number that was too clean). Traced
+it: `park_target = max(0.0, nav_now * (1.0 - lev_t))` — the hook only funds a bond position when
+the leverage target drops **below 1.0×**, which at `leverage=1.49` with `vol_scale_cap=1.0` and
+`derisk=0.5` never happens (floor is 0.745×… and even then `1−lev_t` is negative). The arm is
+**inert by construction**. Logged as VOID, not dead: "we tested it and it did nothing" and "the
+code path never executed" are different claims and only one of them is true.
+
+### The revival: `mom_quality_filter="roe"` — take top-15 by momentum, keep top-5 by ROE
+
+**+0.27pp CAGR, +0.021 Sharpe, +3.81pp MaxDD, 9/12 and 10/12.** Previously logged dead.
+It improves drawdown **while running MORE gross** (1.2115 vs 1.1939) — exposure normally makes
+drawdown worse, so the sign of that is encouraging rather than suspicious.
+
+**Mechanism:** quality-momentum interaction (Novy-Marx). Among names that have already run, the
+profitable ones are the ones whose run reflects improving fundamentals; the unprofitable ones
+reverse. It refines the **ordering**, which EXP-003 showed is the only part of selection carrying
+any edge — so it acts on the right axis rather than bolting on a new one.
+
+**THE STRONGEST ARGUMENT AGAINST IT, stated plainly:** `gp_assets` — the *other* quality metric,
+same mechanism, same hook, same pool size — was **catastrophic** (−2.67pp, −0.072 Sharpe, 0/12
+and 0/12). If quality-momentum were a robust mechanism, a closely-related profitability measure
+should not be that bad. That asymmetry is real evidence this is a lucky draw. Also: `roe` is one
+arm of nine here, and Bonferroni on 9 tests turns a nominal p≈0.03 into ≈0.24.
+
+**And `roe` is a FUNDAMENTAL**, so unlike every price-based arm it is exposed to period-vs-release
+timestamping. **The shift test is the one that matters** and it leads the audit gate.
+
+**EXP-024 queued:** 8yr confirmation, shift test, pool sweep (2/3/4/6 — a real effect should not
+need exactly 15 candidates), cost pairing at matched multipliers, guarded event concentration,
+matched-exposure residual. **Status: PRELIMINARY — UNAUDITED.**
+
+### Also worth a follow-up: mid-cycle signal exit
+
+`signal_exit_every=5` (sell a holding when no sleeve still wants it, without waiting out the
+20-day cadence) gives **+11.39pp of MaxDD** (−64.1% → −52.7%) and +0.020 Sharpe (8/12) for
+−1.14pp of CAGR. Marginal on the sign test, but that is the largest single drawdown improvement
+any arm has produced — on the axis EXP-004/022 identified as the one that matters. → **I-29**.
+
+**Everything else stays dead**, now on the better standard rather than on 3-4 starts: vol-managed
+momentum, in-sleeve risk parity, sector caps, gp_assets quality. That is cheap negative knowledge
+and it stops these being re-proposed.
+
+---
+
+## Cycle 23 — EXP-019 · DO THE TWO CANDIDATES STACK? — **yes, additively. Best combined arm yet.**
+
+**The specific worry.** Both candidates reduce variance from a nuisance: tranching averages away
+the rebalance-phase lottery, removing the overlay stops leverage lurching on a stale 40-day
+estimate. If a large part of what tranching fixes *is* the overlay's staleness — four sub-books
+each carrying their own vol estimate, so averaging them smooths exactly the noise the overlay
+injects — then doing both should deliver much less than the sum, and the right advice would be
+"do the cheap config change, skip the expensive engine work". Worth knowing **before** anyone
+builds four-book netting into `ibkr_engine`.
+
+**26yr, 12 starts, REAL financing, live_sizing:**
+
+| arm | CAGR | **sd CAGR** | Sharpe | Sortino | MaxDD | **worst DD** |
+|---|---|---|---|---|---|---|
+| A deployed | +12.10% | 2.75pp | 0.528 | 0.742 | −64.5% | −71.4% |
+| B tranching K=4 only | +12.67% | 1.17pp | 0.557 | 0.787 | −64.7% | −65.3% |
+| C const 1.10× only | +12.25% | 2.30pp | 0.555 | 0.791 | −62.2% | −70.1% |
+| **D BOTH @1.10×** | **+12.84%** | **1.06pp** | **0.584** | **0.830** | −62.5% | −63.2% |
+| **E BOTH @1.00×** | +12.21% | **0.96pp** | **0.594** | **0.845** | **−58.5%** | **−59.1%** |
+
+| paired vs A | dCAGR | dSharpe | dMaxDD | +CAGR | +Sharpe | +DD | sd ratio |
+|---|---|---|---|---|---|---|---|
+| B tranching | +0.57pp | +0.028 | −0.20pp | 8/12 | 8/12 | 5/12 | 0.427 |
+| C const 1.10× | +0.15pp | +0.027 | +2.25pp | 7/12 | **12/12** | **12/12** | 0.836 |
+| **D BOTH @1.10×** | **+0.74pp** | **+0.056** | +1.99pp | 8/12 | **10/12** | 8/12 | **0.383** |
+| **E BOTH @1.00×** | +0.11pp | **+0.066** | **+5.99pp** | 8/12 | **10/12** | **12/12** | **0.350** |
+
+### Stacking: `(D−A) − [(B−A)+(C−A)]`
+
+| | additive prediction | actual | **interaction** |
+|---|---|---|---|
+| D CAGR | +0.713pp | +0.738pp | **+0.024** |
+| D Sharpe | +0.055 | +0.056 | **+0.001** |
+| D MaxDD | +2.051pp | +1.993pp | **−0.058** |
+
+**Almost perfectly additive.** The interaction terms are ~1-4% of the effects. **My overlap
+worry was wrong: the two candidates fix genuinely independent problems** — one is a *timing*
+nuisance (which day of the cycle you trade), the other a *sizing* nuisance (a stale vol estimate
+moving leverage). Doing both gets both.
+
+**And at 1.00× the drawdown interaction is strongly SUPER-additive:**
+
+| E BOTH @1.00× | additive | actual | interaction |
+|---|---|---|---|
+| CAGR | +0.713pp | +0.111pp | −0.602 |
+| Sharpe | +0.055 | +0.066 | +0.011 |
+| **MaxDD** | **+2.051pp** | **+5.994pp** | **+3.942** |
+
+Combining tranching with constant 1.00× buys **~4pp MORE drawdown protection than the sum of the
+parts**, at the cost of most of the CAGR gain. Plausible mechanism: staggered sub-books enter a
+crisis at four different exposure points, and without the overlay chasing a stale estimate none
+of them is caught over-levered at the wrong moment — the tail improvement compounds rather than
+overlapping. That is a hypothesis fitted after the fact and is labelled as such.
+
+### The best arms, against the deployed system
+
+**E (both, 1.00×) improves ALL THREE axes:** CAGR +0.11pp, **Sharpe +0.066 (10/12)**,
+**MaxDD +5.99pp (12/12)**, worst-case DD **−71.4% → −59.1% (+12.3pp)**, and cuts outcome
+dispersion by 65% (sd ratio 0.350).
+**D (both, 1.10×)** is the CAGR-preferring version: +0.74pp CAGR, +0.056 Sharpe (10/12).
+
+**Status: PRELIMINARY — UNAUDITED.** Outstanding: 8yr confirmation (queued), cost sensitivity,
+and a re-run against the gate-ON baseline (BUGS A9 — this used gate OFF, so A is the *old*
+baseline; EXP-022 showed the gate and constant leverage are complements, which should preserve
+these deltas, but "should" is not "measured").
+
+**Concentration reads `n/a(0/12)`** — the guarded metric (BUGS A8a) correctly refuses to report a
+share when the net excess is small relative to the gross daily movement. That is the guard
+working, not a pass. It means these arms differ from the baseline slowly and steadily rather
+than through a few events — which is what a variance-reduction result should look like — but it
+is not the same as passing a concentration test, and I am not recording it as one.
+
+---
+
+## Cycle 24 — EXP-019 8yr, gate-ON · the combined arm confirmed on the second horizon
+
+Re-run with the **honest gate-ON baseline** (BUGS A9). Earlier I wrote that the gate-OFF deltas
+"should hold, but 'should' is not 'measured'." Now measured.
+
+**8yr, 12 starts, gate ON, REAL financing, live_sizing:**
+
+| arm | CAGR | sd CAGR | Sharpe | Sortino | MaxDD | worst DD |
+|---|---|---|---|---|---|---|
+| A deployed | +23.88% | 7.05pp | 0.802 | 1.153 | −38.5% | −45.5% |
+| B tranching K=4 | **+26.56%** | 4.05pp | 0.892 | 1.306 | −37.6% | −42.4% |
+| C const 1.10× | +23.45% | 6.67pp | 0.812 | 1.193 | −37.3% | −41.5% |
+| D BOTH @1.10× | +25.92% | 4.42pp | 0.888 | 1.311 | −37.1% | −40.9% |
+| **E BOTH @1.00×** | +24.19% | **3.92pp** | **0.898** | **1.325** | **−33.8%** | **−37.1%** |
+
+| paired vs A | dCAGR | dSharpe | dMaxDD | +Sharpe | +DD | sd ratio |
+|---|---|---|---|---|---|---|
+| B tranching | +2.68pp | +0.090 | +0.91pp | 7/12 | 6/12 | 0.574 |
+| C const 1.10× | −0.43pp | +0.010 | +1.25pp | 8/12 | 6/12 | 0.946 |
+| D BOTH @1.10× | +2.05pp | +0.086 | +1.45pp | 8/12 | 6/12 | 0.626 |
+| **E BOTH @1.00×** | **+0.31pp** | **+0.096** | **+4.76pp** | 8/12 | **9/12** | 0.555 |
+
+### Arm E across BOTH horizons, versus the deployed system
+
+| | dCAGR | dSharpe | dMaxDD | worst DD | sd ratio |
+|---|---|---|---|---|---|
+| **26yr** | **+0.11pp** | **+0.066 (10/12)** | **+5.99pp (12/12)** | −71.4% → **−59.1%** | 0.350 |
+| **8yr** | **+0.31pp** | **+0.096 (8/12)** | **+4.76pp (9/12)** | −45.5% → **−37.1%** | 0.555 |
+
+**Positive on all three axes on both horizons.** Drawdown clears the ≥9/12 bar on both (12/12,
+9/12). **Sharpe clears on the 26yr (10/12) and MISSES on the 8yr (8/12)** — stated plainly rather
+than smoothed over. CAGR is positive on both but at 6-8/12, i.e. incidental rather than a claim.
+
+### The drawdown super-additivity replicates
+
+| interaction `(E−A) − [(B−A)+(C−A)]` | 26yr | 8yr |
+|---|---|---|
+| CAGR | −0.602pp | −1.944pp |
+| Sharpe | +0.011 | −0.003 |
+| **MaxDD** | **+3.942pp** | **+2.598pp** |
+
+Sharpe stacking is essentially additive on both horizons (|interaction| ≤ 0.013). The **drawdown
+interaction is super-additive on both** — combining tranching with constant 1.00× protects the
+tail by 2.6-3.9pp *more* than the sum of the parts, while giving up most of the CAGR gain.
+A replicated interaction across two independent horizons is much harder to dismiss than the
+single-horizon version I flagged as "fitted after the fact" last cycle, though the mechanism
+(four staggered sub-books entering a crisis at four exposure points, none caught over-levered by
+a stale estimate) remains a story told after seeing the number.
+
+**Status: PRELIMINARY — UNAUDITED.** EXP-027 now running the full gate: matched-exposure control
+(the decisive one — arm E runs ~1.00× against the deployed ~1.19×, and de-levering improves
+drawdown by arithmetic alone; this is exactly how EXP-008 died), cost ×1/×2/×3 paired at matched
+multipliers, real $33k account size, and guarded event concentration.
+
+---
+
+## Cycle 25 — EXP-024 · ROE-QUALITY AUDIT GATE — **no leak, real, but a SUBSTITUTE not an addition**
+
+26yr, 12 starts, honest gate-ON baseline (+12.57% / 0.552 / −55.5%, gross 1.1821).
+
+### B. SHIFT TEST — **PASSES**, and this was the one that mattered
+
+`roe` is the first FUNDAMENTAL-driven arm in this program, so unlike every price-based result it
+is exposed to period-vs-release timestamping. Lagging every signal one full bar:
+
+| | dCAGR | dSharpe | dMaxDD | +Sharpe |
+|---|---|---|---|---|
+| unshifted | +0.39pp | +0.026 | +6.47pp | 10/12 |
+| **SHIFTED +1 bar** | **+0.73pp** | **+0.035** | +4.95pp | **10/12** |
+
+The shifted arm is if anything **stronger** on Sharpe. A period-vs-release leak dies or flips
+here. **No look-ahead.**
+
+### C. POOL SWEEP — positive everywhere, but NON-MONOTONE. The headline must not be the peak.
+
+| pool | top-N by momentum | dSharpe | dMaxDD | +Sharpe |
+|---|---|---|---|---|
+| 2 | 10 | +0.020 | +5.95pp | 7/12 |
+| 3 | 15 | +0.026 | +6.47pp | 10/12 |
+| **4** | **20** | **+0.080** | **+6.74pp** | **11/12** |
+| 6 | 30 | +0.020 | +4.29pp | 9/12 |
+
+**pool=4 is a spike, not a plateau** — 3× its neighbours on Sharpe. That is the signature of a
+fitted parameter, and quoting +0.080 would be exactly the "best of N configurations without
+deflating for N" trap. **The honest number is the plateau: ~+0.020 to +0.026.** Recorded here so
+the +0.080 is never lifted out of context.
+
+What *is* encouraging: the sign is positive at **every** pool size, and the **drawdown gain is
+large and stable across all four** (+4.29 to +6.74pp). The drawdown effect looks like the robust
+part; the Sharpe effect is small and noisy.
+
+### D. COST (paired at matched multipliers, BUGS A8b) — survives, degrading gracefully
+
+| cost | dCAGR | dSharpe | dMaxDD | +Sharpe |
+|---|---|---|---|---|
+| ×1 | +0.39pp | +0.026 | +6.47pp | 10/12 |
+| ×2 | +0.27pp | +0.020 | +6.37pp | 10/12 |
+| ×3 | +0.16pp | +0.014 | +6.14pp | 10/12 |
+
+Sharpe decays with cost (a turnover-adding change, unlike the overlay removal whose advantage
+*grew*), but stays positive and **10/12 at every level**, and the drawdown gain barely moves.
+
+### E. gp_assets — still catastrophic: −2.73pp CAGR, −0.073 Sharpe, **0/12**
+
+The contradiction is unresolved and remains the strongest argument that `roe` is a lucky draw.
+EXP-025 (three more profitability metrics) settles it.
+
+### F. 🔴 MATCHED EXPOSURE — **dSharpe −0.003 (8/12), dCAGR −0.75pp.** The important caveat.
+
+Against a constant-leverage curve at its own realised gross, the ROE arm's Sharpe advantage is
+**zero**. Reading it correctly: the ROE arm still carries the vol overlay, and EXP-015 showed the
+overlay is worth about **−0.024 Sharpe** versus constant leverage. So ROE's +0.026 over the
+deployed baseline is **the same size as simply deleting the overlay**, and it does not beat that
+alternative.
+
+**⇒ ROE quality and overlay-removal look like SUBSTITUTES, not complements.** Both deliver
+~+0.02-0.03 Sharpe and several pp of drawdown; neither obviously adds on top of the other. That
+is a materially weaker claim than "a new independent edge", and it is what the control was for.
+
+**VERDICT: PRELIMINARY, real but redundant.** Clean on leakage, consistent in sign across pools
+and costs, with a robust drawdown effect — but it buys roughly what the far simpler config change
+already buys, and its Sharpe magnitude was overstated by the pool=4 spike.
+
+**Not promoted.** Two things decide it → **EXP-025** (is the mechanism real, or is `roe` one
+lucky draw among profitability metrics?) and **EXP-028** (does ROE add anything ON TOP of
+overlay-removal, or are they redundant?).
+
+---
+
+## Cycle 26 — EXP-027 · COMBINED-ARM AUDIT — matched exposure PASSES, and separates two claims
+## I had been conflating
+
+**26yr, $50k, cost ×1, gate ON. Base +12.72% / 0.549 / −55.9% (worst −64.2%), gross 1.2206.**
+
+| arm | CAGR | Sharpe | MaxDD | worst | gross | dCAGR | dSharpe | dMaxDD | +Shrp | +DD | sd ratio | **MATCHED dSharpe / dMaxDD** |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **E both @1.00×** | +12.79% | **0.623** | **−48.2%** | **−51.4%** | 0.987 | +0.08pp | **+0.074** | **+7.74pp** | 10/12 | **12/12** | **0.397** | **+0.035 / −0.11pp** |
+| D both @1.10× | **+13.48%** | 0.612 | −52.0% | −55.4% | 1.086 | +0.77pp | +0.063 | +3.94pp | 10/12 | **12/12** | 0.443 | **+0.029 / −0.20pp** |
+
+### The matched-exposure test — the one that killed EXP-008 — PASSES
+
+Arm E runs 0.987× gross against the deployed 1.221×, so a large part of its drawdown gain could
+be pure de-levering. Scored against a constant-leverage curve at its **own** realised gross:
+
+**MATCHED dSharpe = +0.035 (E), +0.029 (D).** For contrast, EXP-008's ex-ante vol estimator
+showed raw dMaxDD up to +12.29pp and a matched dSharpe of **−0.099** — it was entirely a level
+effect. This is not.
+
+### 🔴 But the same control splits the result in two, and I had been reporting them as one
+
+| | matched dSharpe | matched dMaxDD |
+|---|---|---|
+| E both @1.00× | **+0.035** | **−0.11pp** |
+| D both @1.10× | **+0.029** | **−0.20pp** |
+
+**The Sharpe gain is real. The DRAWDOWN gain is almost entirely a level effect.** Matched dMaxDD
+is ≈0 (slightly negative), meaning the +7.74pp of drawdown improvement is what *any* book running
+0.99× instead of 1.22× would get. It is not a tail-protection skill.
+
+That matters for how this is described. Through cycles 23-24 I reported "+5.99pp / +4.76pp of
+drawdown, 12/12 on both horizons" as if it sat alongside the Sharpe gain as independent evidence.
+It does not. The honest split:
+
+- **Genuine, exposure-independent:** +0.029 to +0.035 Sharpe, from phase diversification plus
+  removing a demonstrably harmful overlay. Also the **sd-ratio 0.397** — outcome dispersion cut
+  ~60% — which is a real, exposure-independent property.
+- **A level effect anyone can have:** the drawdown improvement. Available just as cheaply by
+  running lower leverage, and already quantified as such in EXP-010.
+
+Neither is worthless — de-levering is a legitimate choice and this arm delivers it at **no CAGR
+cost** (+0.08pp), which plain de-levering does not (EXP-010: 1.49×→1.00× costs −2.60pp). That
+combination is the actual finding: **the same drawdown as de-levering, without the CAGR bill,
+plus ~+0.03 of exposure-independent Sharpe.**
+
+**Still outstanding:** $33k account size, cost ×2/×3, and the 8yr. Running.
+
+---
+
+## Cycle 27 — EXP-025 · PROFITABILITY FAMILY — **KILLS the ROE result. Pre-registration did its job.**
+
+EXP-024 had cleared ROE on leakage (shift test came back *stronger*), on cost (10/12 at ×1/×2/×3)
+and on pool robustness (positive at every pool size). This is the test that kills it anyway.
+
+**Pre-registered criterion, written before running:** *"≥3/5 positive with a clean
+income-vs-grossprofit split → MECHANISM, roe is real. Scattered, ~half positive, noise-sized →
+LUCKY DRAW, do not believe EXP-024."*
+
+**26yr, 12 starts, gate ON:**
+
+| metric | numerator | dCAGR | dSharpe | dMaxDD | +Sharpe | verdict |
+|---|---|---|---|---|---|---|
+| **roe** | income/equity | +0.39pp | **+0.026** | +6.47pp | 10/12 | survives |
+| net_margin | income/sales | −1.70pp | **−0.040** | +0.88pp | 1/12 | dead |
+| operating_margin | opinc/sales | −1.16pp | **−0.021** | +2.08pp | 7/12 | marginal |
+| gp_assets | grossprofit/assets | −2.73pp | **−0.073** | −0.18pp | 0/12 | dead |
+| gross_margin | grossprofit/sales | −2.46pp | **−0.064** | −0.70pp | 1/12 | dead |
+
+income-based mean dSharpe **−0.012**; gross-profit mean **−0.069**. **1/5 positive.**
+
+**8yr, 12 starts — worse still:**
+
+| metric | dCAGR | dSharpe | +Sharpe |
+|---|---|---|---|
+| roe | **−7.40pp** | **−0.160** | **2/12** |
+| net_margin | −9.14pp | −0.211 | 0/12 |
+| operating_margin | −10.64pp | −0.257 | 0/12 |
+| gp_assets | −9.44pp | −0.221 | 0/12 |
+| gross_margin | −9.45pp | −0.221 | 0/12 |
+
+**0/5 positive.** income-based mean −0.210, gross-profit mean −0.221.
+
+### VERDICT: ROE QUALITY IS DEAD. Killed on three independent grounds.
+
+1. **Family test (the pre-registered one): 1/5 on the 26yr, 0/5 on the 8yr, no income-vs-gross
+   split, family mean negative on both horizons.** By the criterion I wrote in advance, that is
+   **LUCKY DRAW**, not mechanism.
+2. **Two-horizon bar: −0.160 Sharpe at 2/12 on the 8yr.** Not marginal — catastrophic.
+3. **Matched exposure: −0.003 (26yr) and −0.175 at 0/12 (8yr).** It never beat constant leverage.
+
+**This is the most instructive kill of the program.** ROE passed a clean shift test, survived
+3× costs, held its sign across four pool sizes, and reached 10/12 on the 26yr. **A signal can be
+leak-free, cost-robust, sign-consistent on one horizon, and still be noise.** Nine arms were
+tested in EXP-021; one came back positive; four sibling metrics measuring the same construct
+came back negative. That is what one lucky draw out of nine looks like, and only the family test
+and the second horizon could see it.
+
+**IDEAS I-30 answered: (a), the lucky draw.** No follow-up. `roe` stays out of the momentum pool.
+EXP-028 (does ROE add on top of overlay-removal?) is now moot and is **removed from the queue**
+rather than run — there is nothing left to add.
+
+---
+
+## Cycle 28 — EXP-027 · COMBINED-ARM AUDIT GATE, both horizons — **PASSES on everything but one bar**
+
+Arm **E = tranching K=4 + `vol_scaling` OFF + constant 1.00×**, vs the deployed system, gate ON,
+honest financing, live sizing. Six cells per horizon (capital × cost).
+
+| horizon | cell | dCAGR | dSharpe | dMaxDD | +Shrp | +DD | sd ratio | **MATCHED dSharpe** | matched dMaxDD |
+|---|---|---|---|---|---|---|---|---|---|
+| 26yr | $50k ×1 | +0.08pp | +0.074 | +7.74pp | 10/12 | 12/12 | 0.397 | **+0.035** | −0.11pp |
+| 26yr | $50k ×3 | +0.87pp | +0.075 | +8.35pp | 10/12 | 12/12 | 0.398 | **+0.032** | +0.00pp |
+| 26yr | **$33k ×1** | +0.12pp | +0.074 | +7.86pp | 10/12 | 12/12 | 0.398 | **+0.035** | +0.03pp |
+| 26yr | $33k ×3 | +0.90pp | +0.076 | +8.46pp | 10/12 | 12/12 | 0.399 | **+0.033** | +0.21pp |
+| 8yr | $50k ×1 | +0.31pp | +0.096 | +4.76pp | 8/12 | 9/12 | 0.555 | **+0.079** | +0.36pp |
+| 8yr | $50k ×3 | +0.89pp | +0.097 | +4.67pp | 8/12 | 9/12 | 0.552 | **+0.076** | +0.04pp |
+| 8yr | **$33k ×1** | +0.41pp | +0.097 | +3.95pp | 8/12 | 8/12 | 0.537 | **+0.084** | −0.23pp |
+| 8yr | $33k ×3 | +1.02pp | +0.098 | +4.16pp | 8/12 | 8/12 | 0.556 | **+0.081** | −0.37pp |
+
+**Every attack passed:**
+- **Real account size:** $33k ≡ $50k to two decimals in every cell. The constraint I most
+  expected to kill this does not bite.
+- **Cost:** dCAGR **improves** with cost (26yr +0.08 → +0.87pp; 8yr +0.31 → +0.89pp) and dSharpe
+  is flat. The combined arm trades less, so higher costs favour it — the same mechanism that
+  validated overlay-removal, now confirmed on the combination.
+- **Matched exposure — the decisive one:** **+0.032 to +0.035 (26yr), +0.076 to +0.084 (8yr).**
+  Positive in all twelve cells. EXP-008 died here at −0.099; this does not.
+- **Stability:** sd ratio 0.397-0.399 (26yr) and 0.537-0.556 (8yr) across every capital and cost.
+
+**The one bar it misses: Sharpe sign consistency on the 8yr is 8/12, against my ≥9/12 rule.**
+(26yr is 10/12.) I am not relaxing the rule. It is **marginal-to-strong, not a clean pass.**
+
+**And the honest decomposition stands:** matched dMaxDD is ≈0 in every cell (−0.37 to +0.36pp),
+so the headline drawdown improvement remains a **level effect** — what any book at ~0.99× gross
+instead of ~1.22× would get. What is exposure-independent is the **Sharpe residual and the
+dispersion collapse**.
+
+**The claim, stated precisely:** this arm delivers the drawdown of running ~1.0× leverage **at no
+CAGR cost** (+0.08 to +1.02pp, improving with cost), whereas plain de-levering costs −2.60pp
+(EXP-010) — plus **+0.03 to +0.08 of exposure-independent Sharpe** and a **~60% cut in outcome
+dispersion**. **Concentration reads n/a**: the guard (BUGS A8a) refuses to report a share when
+net excess is small relative to gross daily movement — the arms diverge slowly and steadily,
+which is consistent with variance reduction, but it is **not a passed concentration test.**
+
+---
+
+## Cycle 29 — EXP-026 · MID-CYCLE SIGNAL EXIT (I-29) — **a real drawdown instrument that costs Sharpe**
+
+`signal_exit_every=N`: sell a holding as soon as no sleeve still wants it, instead of waiting out
+the 20-session cadence. EXP-021 had flagged it with the largest single drawdown improvement in
+the program (+11.39pp). This runs the cadence sweep with the matched-exposure control.
+
+**26yr, 12 starts, gate ON. Base +12.57% / 0.552 / −55.5% (worst −63.7%), gross 1.1821.**
+
+| arm | CAGR | Sharpe | MaxDD | worst | gross | dCAGR | dSharpe | dMaxDD | +Shrp | +DD | **MATCHED dSharpe / dMaxDD** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| exit 3d | +10.28% | 0.550 | **−46.1%** | −54.2% | 1.118 | −2.29pp | −0.001 | **+9.49pp** | 6/12 | 11/12 | **−0.037 / +7.84pp** |
+| exit 5d | +11.23% | 0.568 | −48.2% | −56.3% | 1.134 | −1.34pp | +0.016 | **+7.39pp** | 8/12 | 11/12 | **−0.018 / +6.31pp** |
+| exit 10d | +12.07% | 0.568 | −49.7% | −57.5% | 1.155 | −0.50pp | +0.017 | **+5.89pp** | 7/12 | 10/12 | **−0.016 / +5.56pp** |
+| exit 5d grace10 | +11.11% | 0.553 | −48.3% | −55.9% | 1.136 | −1.46pp | +0.001 | +7.23pp | 8/12 | 11/12 | −0.033 / +6.22pp |
+
+### This is the OPPOSITE profile to the combined arm, and the contrast is the finding
+
+For the combined arm (EXP-027) the matched control said: **Sharpe gain real, drawdown gain a
+level effect.** Here it says exactly the reverse:
+
+- **matched dMaxDD = +5.56 to +7.84pp** — the drawdown gain **SURVIVES exposure matching**. It is
+  not merely "holding less". Exiting a name the model has abandoned genuinely protects the tail.
+- **matched dSharpe = −0.016 to −0.037** — negative at every cadence. On a risk-adjusted basis,
+  exposure-matched, it **loses**.
+
+So signal-exit is a *genuine* tail-risk instrument that is *paid for* in Sharpe and CAGR
+(−0.50 to −2.29pp). A clean monotone trade: shorter cadence → more drawdown protection → more
+CAGR given up (3d: +9.49pp DD for −2.29pp CAGR; 10d: +5.89pp for −0.50pp).
+
+**Verdict: NOT PROMOTED, but not dead either — it is a preference instrument, not an improvement.**
+It fails the Sharpe bar (6-8/12, negative matched) so it cannot be called a win. But it is the
+only mechanism found in this program whose drawdown benefit is *exposure-independent*, which
+makes it the right tool if a drawdown-first mandate is ever chosen — and the wrong tool for
+maximising risk-adjusted return.
+
+**Mechanism confirmed as stated in I-29:** EXP-007 showed re-picking the book mid-cycle is
+catastrophic (−7 to −10pp) while merely *exiting* is cheap. That distinction holds: exit-only
+costs 0.5-2.3pp, an order of magnitude less than re-picking, and buys real tail protection.
+
+**The grace parameter adds nothing** (grace10 ≈ plain 5d on drawdown, worse on Sharpe), so
+tolerating names still inside the momentum top-K is not the useful part.
+
+---
+
+## Cycle 30 — EXP-030 · CAP MECHANICS + MOMENTUM TILT (I-02, I-27) — one clean dose-response
+
+**8yr, 12 starts, gate ON. Base +23.02% / 0.802 / −37.7%, gross 1.1077.**
+
+| arm | CAGR | Sharpe | MaxDD | gross | dCAGR | dSharpe | dMaxDD | +CAGR | +Shrp |
+|---|---|---|---|---|---|---|---|---|---|
+| cap waterfill | +23.41% | 0.808 | −37.9% | **1.1332** | +0.39pp | +0.005 | −0.15pp | 10/12 | 7/12 |
+| cap 0.15 (looser) | +24.48% | 0.818 | −40.1% | 1.1034 | +1.45pp | +0.016 | −2.36pp | 10/12 | 9/12 |
+| cap 0.07 (tighter) | +21.79% | 0.800 | −34.8% | 1.0984 | −1.24pp | −0.003 | +2.89pp | 2/12 | 5/12 |
+| tilt 40/42/18 (**inverse**) | +21.86% | 0.784 | −37.4% | 1.1366 | **−1.17pp** | **−0.018** | +0.34pp | 1/12 | 2/12 |
+| *base 50/35/15* | *+23.02%* | *0.802* | *−37.7%* | *1.1077* | — | — | — | — | — |
+| tilt 60/28/12 | +23.93% | 0.815 | −37.1% | 1.0739 | +0.91pp | +0.013 | +0.61pp | 11/12 | 8/12 |
+| tilt 70/21/9 | +24.70% | 0.826 | −36.3% | 1.0350 | +1.67pp | +0.023 | +1.39pp | 10/12 | 8/12 |
+| tilt 80/14/6 | +24.91% | 0.827 | −35.6% | 0.9882 | **+1.89pp** | **+0.024** | +2.12pp | 8/12 | 7/12 |
+
+### I-02 CAP MECHANICS — the docstring caveat is REAL but immaterial
+
+`cap_mode="waterfill"` raises realised gross **1.1077 → 1.1332** (+2.3%), which proves the 10%
+cap **does** bind and the deployed code really does discard the truncated excess, leaving the
+book under-invested on those days. Worth **+0.39pp CAGR / +0.005 Sharpe** to fix — real, and too
+small to matter. **The long-standing docstring caveat can be closed as measured-and-negligible**
+rather than left as an open unknown. (It is also a live-vs-backtest parity item: the live engine's
+closed-loop sizing effectively redistributes, so the *backtest* was the under-invested one.)
+
+### I-27 MOMENTUM TILT — a clean monotone dose-response THROUGH the baseline
+
+CAGR runs −1.17 → *0* → +0.91 → +1.67 → +1.89pp and Sharpe −0.018 → *0* → +0.013 → +0.023 →
++0.024 as capital moves from value/lowvol into momentum. **Monotone in both directions**, with
+the inverse tilt clearly worse. That is a dose-response, not a lucky cell, and it independently
+confirms EXP-003: **the ranking carries 100% of the selection edge and momentum is the ranked
+sleeve** — value and lowvol behave close to random draws from a filtered pool, so capital in them
+is capital not earning the one edge the system has.
+
+**My pre-registered fear was wrong.** I predicted "momentum is the highest-vol sleeve, so every
+tilt raises drawdown — expect this to fail the drawdown test." Drawdown **improves** monotonically
+too (+0.61 → +1.39 → +2.12pp). But the reason is mundane: **avgGross falls monotonically**
+(1.1077 → 1.0350 → 0.9882) because the momentum sleeve holds only 5 names, so the 10% cap binds
+harder and the book ends up less invested. The drawdown gain is largely that level effect again.
+What is NOT a level effect is the CAGR: it **rises while gross falls**, which leverage cannot
+explain.
+
+**NOT PROMOTED — 7-8/12 on Sharpe, below the ≥9/12 bar, and 26yr not yet in.** Sleeve-weight
+changes have been retracted as noise in this repo before (CORE2/3/4 at 6/12), which is exactly
+why the dose-response matters more here than any single cell. 26yr queued.
+
+---
+
+## Cycle 31 — EXP-023 · MOMENTUM UNIVERSE TIER (I-28) — **DEAD, and the size story is inverted**
+
+**8yr, 12 starts, gate ON. Base (SP1500) +23.02% / 0.802 / −37.7%.**
+
+| momentum-sleeve universe | CAGR | Sharpe | MaxDD | dCAGR | dSharpe | +CAGR | +Shrp |
+|---|---|---|---|---|---|---|---|
+| sp500 only (**correctness check**) | +13.78% | 0.616 | −34.9% | **−9.24pp** | **−0.187** | 1/12 | 1/12 |
+| sp500+sp400 | +14.86% | 0.635 | −37.3% | −8.16pp | −0.167 | 1/12 | 1/12 |
+| sp400 only (mid) | +8.47% | 0.431 | −41.0% | **−14.56pp** | **−0.372** | 0/12 | 0/12 |
+| sp600 only (small) | **+25.58%** | 0.786 | −39.8% | **+2.56pp** | **−0.016** | 7/12 | 5/12 |
+| sp400+sp600 (mid+small) | +18.43% | 0.675 | −40.0% | −4.59pp | −0.127 | 0/12 | 0/12 |
+
+**The built-in correctness check passes.** sp500-only returns −9.24pp CAGR / −0.187 Sharpe,
+reproducing the known B1 live bug (measured −15.7pp / −0.38 on a clean 8yr A/B against a
+different baseline config that also restricted the lowvol sleeve). Same sign, same order of
+magnitude — the hook is wired correctly, so the rest of the table is trustworthy.
+
+**Every restriction loses.** Small-cap-only is the only arm with positive CAGR (+2.56pp) and even
+it is **negative on Sharpe (−0.016) at 5/12** — the extra return is fully paid for in volatility
+and 2.05pp more drawdown.
+
+**The mechanism I proposed is not supported.** I argued momentum's premium should be larger in
+smaller, less-covered names, and that our $33k size uniquely lets us harvest it. The data says
+the **breadth of the selection pool matters more than its size tier**: SP1500 beats every subset,
+including combinations. Mid-caps alone are catastrophic (−14.56pp), which no size-premium story
+predicts.
+
+**Reading it correctly:** the momentum ranking works by finding the best 5 names out of ~1,100
+eligible. Any restriction shrinks that pool and the top-5 gets worse — and that cost exceeds
+whatever size premium exists. Consistent with EXP-012 (concentration is load-bearing) and with
+B1's original −15.7pp. **The pool should be as wide as the data allows.**
+
+**Generated → I-32:** the one direction not yet tested is a pool WIDER than SP1500 (Russell 3000).
+The gradient says wider is better, and the repo has `expanded_r3000_universe.pkl` — but that file
+is **not in the audited set** (`UNIVERSE_MANIFEST` lists it research-only, built pre-audit), so
+using it would reintroduce exactly the survivorship and look-ahead defects the 2026-07 rebuild
+fixed. **Blocked on a clean R3000 build, not on compute.**
+
+---
+
+## Cycle 32 — EXP-029 · ALTERNATIVE CREDIT-GATE SIGNALS (I-31) — **all dead; the deployed gate is not improvable from this data**
+
+Escalation-ladder level 9. The deployed gate uses HY-OAS *level* ≥ p95 expanding percentile and
+EXP-022 measured it at +0.61pp CAGR / +0.021 Sharpe / +8.54pp MaxDD, 12/12 on all three — the
+single most valuable risk control in the system. The question: is the aggregate spread level the
+best available credit signal, or merely the first one tried?
+
+**Implementability was checked BEFORE building**, which saved testing a signal that could never
+ship:
+- `tedrate` (LIBOR−T-bill funding stress): only **0.348** correlated with hy_oas — genuinely
+  independent — but the series **ends 2022-01-21 because LIBOR was discontinued.** Not
+  computable live. Included as a research-only bound.
+- `ccc_bb` (CCC-and-lower yield − BB yield, the quality spread *inside* high yield): **0.779**
+  correlated, so ~22% new information, and both legs are still published daily by FRED.
+  Mechanism: aggregate HY-OAS rises both for benign broad repricing and for distress
+  *concentrating* in the worst credits; `ccc_bb` isolates the second, which is what precedes
+  defaults and forced selling.
+
+**8yr, 12 starts, vs the DEPLOYED hy_oas p95 gate:**
+
+| arm | CAGR | Sharpe | MaxDD | dCAGR | dSharpe | +Shrp | **matched dSharpe** |
+|---|---|---|---|---|---|---|---|
+| ccc_bb p95 | +22.02% | 0.779 | −40.0% | −1.01pp | −0.024 | 1/12 | −0.044 |
+| ccc_bb p90 | +22.04% | 0.781 | −39.9% | −0.98pp | −0.022 | 2/12 | −0.042 |
+| OR(hy_oas, ccc_bb) | +22.31% | 0.789 | −38.7% | −0.71pp | −0.014 | 3/12 | −0.034 |
+| tedrate p95 *[not deployable]* | +22.69% | 0.791 | −39.2% | −0.33pp | −0.011 | 0/12 | −0.028 |
+| OR(hy, ted) *[not deployable]* | +22.96% | 0.801 | −37.9% | −0.06pp | −0.002 | 0/12 | −0.019 |
+
+**Every arm is negative, at 0-3/12, with negative matched-exposure residuals.** Neither replacing
+the deployed signal nor OR-ing a second one with it helps. Even the genuinely-independent funding
+signal (tedrate, corr 0.35) adds nothing — which is the more informative result, because it was
+the best case: if an orthogonal stress measure cannot improve on HY-OAS, the gate is not
+signal-starved.
+
+**Caveat, stated: the 8yr contains no genuine credit crisis** (2020 was brief), so this is the
+weak horizon for a crisis gate and the 26yr is queued. But the direction is uniform across five
+arms and two independent signals.
+
+**Verdict: the deployed HY-OAS p95 gate is not improvable from the credit data available
+locally.** That is worth knowing — it closes level 9 for credit and says the gate should be left
+alone rather than tuned.
+
+---
+
+## STILL RUNNING at hand-off (serial queue, one job at a time under the memory guard)
+
+`EXP030_cap_and_tilt.py 26yr` · `EXP023_universe_tier.py 26yr` · `EXP029_new_stress_gates.py 26yr`
+· `EXP026_signal_exit.py 8yr`. Each is a second-horizon confirmation of a result already logged
+above; none can promote a candidate on its own, and none of the conclusions in BASELINE.md
+depends on them.
 
 ---
 
