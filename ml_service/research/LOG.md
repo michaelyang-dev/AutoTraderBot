@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 2,066 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 2,282 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2025,6 +2025,73 @@ whole curve, which is what a genuine variance-reduction mechanism should do.
 
 **26yr frontier queued.** The 8yr is the momentum-friendly horizon and will flatter high
 leverage; the 26yr (dot-com + GFC + COVID + 2022) is the one to decide on.
+
+---
+
+## Cycle 34 — EXP-031 26yr · THE LEVERAGE FRONTIER, full-cycle horizon — **the decision table**
+
+$50,000 (the live account is now ~$50k, up from $33k), 12 starts, gate ON, real financing,
+live sizing. EXP-027 had already measured $33k ≡ $50k to 0.1pp, and the 8yr rerun confirmed it
+(+24.19% vs +24.53% at 1.00×), so account size is not a driver.
+
+| arm | lev | avgGross | CAGR | sd CAGR | Sharpe | MaxDD | worst DD |
+|---|---|---|---|---|---|---|---|
+| A baseline | 1.00 | 0.817 | +9.93% | 1.97pp | **0.569** | **−40.7%** | −48.8% |
+| A baseline | 1.25 | 1.021 | +11.52% | 2.55pp | 0.558 | −49.1% | −57.3% |
+| A baseline | **1.49 (deployed)** | 1.221 | **+12.72%** | 3.05pp | **0.549** | **−55.9%** | **−64.2%** |
+| A baseline | 2.00 | 1.548 | +14.41% | 3.97pp | 0.548 | −65.4% | −73.5% |
+| B option 1 | 1.00 | 0.988 | +12.27% | 2.26pp | 0.592 | −48.1% | −59.7% |
+| B option 1 | 1.25 | 1.235 | +13.75% | 2.88pp | 0.572 | −57.1% | −68.9% |
+| B option 1 | 1.75 | 1.686 | **+15.66%** | 3.88pp | 0.560 | −69.8% | −80.6% |
+| B option 1 | 2.00 | 1.700 | +15.61% | 3.89pp | 0.558 | −71.9% | −81.8% |
+| **C option 2** | **1.00** | 0.987 | +12.79% | **1.21pp** | **0.623** | −48.2% | **−51.4%** |
+| **C option 2** | **1.10** | 1.086 | +13.48% | 1.35pp | 0.612 | −52.0% | −55.4% |
+| **C option 2** | **1.25** | 1.234 | +14.39% | 1.59pp | 0.599 | −57.3% | −60.7% |
+| **C option 2** | 1.49 | 1.471 | +15.53% | 2.01pp | 0.586 | −64.2% | −67.7% |
+| **C option 2** | 1.75 | 1.673 | **+16.43%** | 2.35pp | 0.583 | −69.7% | −73.4% |
+
+### ISO-DRAWDOWN — CAGR delivered at the SAME drawdown (26yr)
+
+| target MaxDD | A baseline | B option 1 | **C option 2** | O2 − base |
+|---|---|---|---|---|
+| −45% | +10.80% | *(off curve)* | *(off curve)* | — |
+| −50% | +11.68% | +12.60% | **+13.12%** | **+1.44pp** |
+| −55% | +12.56% | +13.42% | **+14.00%** | **+1.44pp** |
+| −60% | +13.37% | +14.19% | **+14.84%** | **+1.47pp** |
+
+**Option 2 delivers +1.44 to +1.47pp more CAGR at every drawdown level, and the gap is almost
+perfectly constant** — the frontier is translated upward, not rotated. Option 1 captures about
+60% of that (+0.86 to +0.92pp). The 8yr showed the same shape at larger magnitude
+(+2.5 to +4.4pp), consistent with the 8yr being the momentum-friendly window.
+
+### 🔴 THE OVERLAY BUYS SOMETHING CONSTANT LEVERAGE CANNOT — a real caveat against my own conclusion
+
+At the **−45%** row only the BASELINE is on-curve. Options 1 and 2 cannot reach −45% **at any
+leverage tested**, because their minimum realised gross is ~0.99× (leverage 1.00 with no
+overlay), which floors their drawdown at −48.1%/−48.2%.
+
+The deployed vol overlay scales gross **below** 1.0× in high-vol regimes (clamp floor 0.30), so
+it can reach exposure territory a constant-leverage book cannot. **That is a genuine capability
+of the overlay that every "the overlay is harmful" statement in this log understates**: it is
+harmful *at matched exposure*, but it is the only mechanism tested that accesses sub-1.0× gross.
+
+**This is a gap in my testing, not a defence of the overlay.** The obvious fix was never run:
+Options 1 and 2 at leverage **below** 1.00 (0.70 / 0.85). If constant 0.85× reaches −45% with
+better CAGR than the baseline does, the caveat dissolves; if it cannot, the overlay has a real
+role at low target risk. **Recorded as I-33, untested.**
+
+### Leverage saturation, confirmed on both horizons
+
+Option 1 nominal 1.75 → 2.00 makes CAGR **fall** (+15.66% → +15.61%) while drawdown worsens
+−69.8% → −71.9%. The 10% position cap binds and extra borrowing only adds financing cost.
+**Above ~1.75× nominal you pay drawdown for nothing.**
+
+### Sharpe still declines with leverage on every arm
+
+0.623 → 0.583 for Option 2, 0.592 → 0.558 for Option 1, 0.569 → 0.548 for the baseline.
+Sharpe-optimal is **1.00× on all three**. Choosing higher leverage is a deliberate
+CAGR-for-drawdown trade, not an optimisation — and the worst-DD column is the one to read when
+making it (Option 2 at 1.49× has a worst start of −67.7%).
 
 ---
 

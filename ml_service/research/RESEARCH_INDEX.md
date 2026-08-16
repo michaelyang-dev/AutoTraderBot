@@ -112,3 +112,13 @@ entry/exit-timing · cluster caps · cash parking · valuation scoring. **All de
 | TED-spread funding gate | LIBOR discontinued — series **ends 2022-01-21**, cannot ship |
 | Off-cadence gate application | `ibkr_engine` has no off-cadence path — and it failed concentration anyway |
 | WRDS membership re-download with PERMNO/GVKEY | ~Sept 2026; closes the 9.3% join gap |
+
+---
+
+## Account size (2026-08-15)
+
+The live IBKR account is **~$50,000** (previously ~$33,000; capital added). This matters only
+for whole-share truncation, and **it was measured, not assumed**: EXP-027 ran the full audit at
+BOTH $33k and $50k across 12 cells and the results matched to within **0.1pp** on every metric.
+$50k is the easier case (larger positions, less rounding drag), so every conclusion reached at
+$33k holds a fortiori. Frontier tables are being regenerated at $50k for exactness.

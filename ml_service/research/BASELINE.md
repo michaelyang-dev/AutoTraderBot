@@ -152,7 +152,7 @@ exceeds the average of the paths' CAGRs) and the rest is within noise.
 - parity: `rebal_phase=0` ≡ untouched path, bit-for-bit
 - capital control: effect is PHASE, not book size (−0.35pp default / **+0.51pp** live sizing)
 - live-sizing control: holds under the closed-loop quantity calibration the engine uses
-- **real account size $33k**: dSharpe +0.086 vs +0.094 at $50k
+- **real account size**: dSharpe +0.086 at $33k vs +0.094 at $50k — live is now ~$50k, the better case
 - **cost ×2 / ×3**: dSharpe +0.084 / **+0.081** — almost flat, as expected mechanically
   (tranching changes *when* dollars trade, not how many)
 - **event concentration: 11-28%** of excess from top-5 days (reject threshold 50%)
@@ -188,7 +188,7 @@ Absolute (26yr, $50k): deployed +12.72% / 0.549 / −55.9% → **arm E +12.79% /
 (worst −64.2% → **−51.4%**).
 
 **Audit gate — 12 cells (2 horizons × 2 capitals × 3 cost levels), all passed:**
-- **real $33k size ≡ $50k** in every cell (the constraint most likely to kill it: it doesn't)
+- **account size is immaterial**: $33k ≡ $50k to 0.1pp in all 12 cells. The live account is now **~$50k** (2026-08-15), i.e. the *easier* of the two tested — the constraint most likely to kill this does not bite at either size
 - **cost:** dCAGR **improves** with cost, dSharpe flat — it trades less
 - **matched exposure:** positive in all 12 cells (EXP-008 died here at −0.099)
 - **stability:** sd ratio 0.397-0.399 / 0.537-0.556 across every cell

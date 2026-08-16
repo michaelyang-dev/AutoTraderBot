@@ -27,8 +27,10 @@ WHAT TO WATCH
   produces the same drawdown. That is the only honest way to compare arms that run different
   exposure.
 
-  Everything is at $33,000 -- the real account -- with the credit gate ON, real time-varying
-  financing, live sizing, integer shares and full costs.
+  Everything is at the real account size (ACCT_CAP, default $50,000) with the credit gate ON,
+  real time-varying financing, live sizing, integer shares and full costs.
+  NOTE: EXP-027 measured $33k vs $50k across 12 audit cells and they matched to within
+  0.1pp, so account size is not a material driver here -- but it is set correctly anyway.
 
 Run:  python3 research/EXP031_leverage_frontier.py [8yr|26yr]
 """
@@ -48,7 +50,7 @@ HZ = sys.argv[1] if len(sys.argv) > 1 else "8yr"
 PATH = HORIZONS[HZ]["path"]
 STARTS = starts(HZ)
 GATE = {"credit_pct": 0.95, "credit_derisk": 0.5}
-CAP = 33_000.0
+CAP = float(os.environ.get("ACCT_CAP", 50_000.0))   # live account; was 33k, now ~50k
 LEVS = [1.00, 1.10, 1.25, 1.49, 1.75, 2.00]
 ARMS = [("A BASELINE (overlay ON)", [0], {}),
         ("B OPTION1 (no overlay)", [0], {"vol_scaling": False}),

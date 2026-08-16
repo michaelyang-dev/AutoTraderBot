@@ -353,6 +353,23 @@ This is the multiple-testing question asked constructively rather than just defl
 
 ---
 
+### I-33 · Options 1 and 2 at leverage BELOW 1.00× · **OPEN** · EV: MED-HIGH
+EXP-031's 26yr iso-drawdown table has a hole: at a −45% target **only the baseline is on-curve**.
+Options 1/2 cannot reach −45% at any leverage tested because their minimum realised gross is
+~0.99× (leverage 1.00, no overlay), flooring drawdown at −48%.
+
+**Mechanism:** the deployed vol overlay scales gross *below* 1.0× in high-vol regimes (clamp
+floor 0.30), so it reaches exposure territory constant leverage cannot. Every "the overlay is
+harmful" claim in LOG.md is true *at matched exposure* and understates this.
+**The test:** run Options 1/2 at leverage 0.70 / 0.85. If constant 0.85× reaches −45% with more
+CAGR than the baseline's +10.80%, the caveat dissolves and the overlay has no remaining role.
+If it cannot, the overlay is genuinely useful at low target risk and should be kept for anyone
+wanting drawdown below ~−48%.
+**Why it matters:** it is the last open question separating "delete the overlay" from "delete the
+overlay unless you want low-risk operation", and it is one cheap sweep.
+
+---
+
 ## Parked — mechanism understood, blocked on something external
 
 - **Off-cadence credit-gate application** — real defect (BUGS B6), but KILLED by
