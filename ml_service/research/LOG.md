@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 1,850 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 2,066 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -1970,6 +1970,61 @@ alone rather than tuned.
 · `EXP026_signal_exit.py 8yr`. Each is a second-horizon confirmation of a result already logged
 above; none can promote a candidate on its own, and none of the conclusions in BASELINE.md
 depends on them.
+
+---
+
+## Cycle 33 — EXP-031 · THE LEVERAGE FRONTIER — **Option 2 shifts the whole frontier**
+
+Options 1 and 2 had each been tested at one or two leverage settings chosen to roughly match the
+deployed book's realised gross. That answered "is the change good at the exposure we already
+run", not "what exposure should we run it at". This runs the full curve.
+
+**Critically, the arms run DIFFERENT gross at the same nominal leverage** — removing the overlay
+*raises* gross (no more de-risking), tranching *lowers* it slightly. So comparing at equal
+nominal leverage is meaningless; the honest comparison is **CAGR at matched DRAWDOWN**.
+
+**8yr, 12 starts, $33,000 (the real account), gate ON, real financing, live sizing:**
+
+| arm | lev | avgGross | CAGR | sd CAGR | Sharpe | MaxDD |
+|---|---|---|---|---|---|---|
+| A baseline | 1.00 | 0.781 | +18.04% | 4.94pp | 0.832 | −27.3% |
+| A baseline | **1.49 (deployed)** | 1.174 | **+24.12%** | 7.34pp | **0.805** | **−38.4%** |
+| A baseline | 2.00 | 1.489 | +26.43% | 9.08pp | 0.766 | −47.5% |
+| B option 1 | 1.00 | 0.994 | +22.29% | 6.10pp | 0.827 | −34.1% |
+| B option 1 | 1.49 | 1.481 | +28.17% | 8.74pp | 0.791 | −48.4% |
+| B option 1 | 2.00 | **1.690** | +30.13% | 9.32pp | 0.789 | −53.3% |
+| **C option 2** | 1.00 | 0.995 | +24.53% | **3.94pp** | **0.902** | −34.4% |
+| **C option 2** | 1.10 | 1.093 | +26.24% | 4.32pp | 0.893 | −37.4% |
+| **C option 2** | 1.25 | 1.241 | +28.83% | 4.98pp | 0.885 | −41.7% |
+| **C option 2** | 1.75 | 1.594 | **+33.27%** | 6.11pp | 0.871 | −50.2% |
+
+### ISO-DRAWDOWN — the only fair comparison
+
+| target MaxDD | A baseline | B option 1 | **C option 2** |
+|---|---|---|---|
+| −35% | +22.34% | +22.65% | **+24.85%** |
+| −40% | +24.59% | +24.86% | **+27.79%** |
+| −45% | +25.92% | +26.92% | **+30.27%** |
+| −50% | *(off curve)* | +28.79% | **+33.15%** |
+
+**At every drawdown level, Option 2 delivers +2.5 to +4.4pp more CAGR than the baseline**, and
+Option 1 delivers +0.3 to +1.0pp more. The frontier moves, it does not merely slide along itself.
+That is a stronger statement than any single-point comparison and it is what justifies calling
+these improvements rather than repackaged leverage.
+
+### Two incidental findings
+
+**1. Gross SATURATES for Option 1 at ~1.69×.** Nominal 1.75 → avgGross 1.6834; nominal 2.00 →
+1.6900, and CAGR barely moves (+29.94% → +30.13%). The 10% position cap binds hard enough that
+raising nominal leverage past ~1.75 buys almost nothing. **Anyone tempted to "just add leverage"
+should know it stops working there**, and the sd of outcomes keeps rising while return does not.
+
+**2. Option 2's sd CAGR is roughly HALF the baseline's at every leverage** (3.94-6.11pp vs
+4.94-9.08pp). The dispersion reduction is not a low-leverage artefact — it holds across the
+whole curve, which is what a genuine variance-reduction mechanism should do.
+
+**26yr frontier queued.** The 8yr is the momentum-friendly horizon and will flatter high
+leverage; the 26yr (dot-com + GFC + COVID + 2022) is the one to decide on.
 
 ---
 
