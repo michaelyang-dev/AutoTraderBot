@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 2,354 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 2,738 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2192,6 +2192,142 @@ metrics, which is not.
 **Net effect on the recommendation:** Option 2's 26yr case is unchanged. Its 8yr CAGR edge is
 gone (−0.24pp vs baseline) while its 8yr Sharpe (+0.085) and drawdown (+4.6pp) edges remain.
 **Option 2 is a risk improvement on the 8yr and a both-axes improvement on the 26yr.**
+
+---
+
+## Cycles 36-38 — IMPROVING OPTION 2 (EXP-034/035/036/037)
+
+### The gap the year-by-year exposed, and what was aimed at it
+EXP-033: Option 2 @1.00× has drawdown better in **25/25 years** but **no return edge** (13/25,
+arithmetic sum −20.4%); its equal CAGR comes from compounding a smoother path. At 1.25× the
+return appears but crisis drawdown goes worse (2008 −4.7pp, 2020 −2.9pp). So the leverage dial
+trades away the one thing it is good at. Target: **the smoothness of 1.00× with the return of
+1.25×.**
+
+### Idea 1 — MORE TRANCHES: monotone but SATURATING
+
+| K | sd CAGR | Sharpe |
+|---|---|---|
+| LIVE | 3.05% | 0.549 |
+| 2 | 1.31% | 0.618 |
+| **4** | **1.16%** | **0.625** |
+| 5 | 1.04% | 0.622 |
+| 10 | 1.01% | 0.623 |
+
+The falsifiable shape held — sd falls monotonically, confirming the variance mechanism is real
+rather than a K=4 fluke. **But it saturates:** K=5→10 buys 0.03pp of sd for 2.5× the operational
+complexity, and Sharpe is flat throughout. **K=4 is the right build.** Useful negative: no reason
+to engineer 10 sub-books.
+
+### Idea 2 — HARDER CREDIT GATE: the actual win
+
+Replace the vol overlay's permanent ~1pp/yr tax with a conditional one that only pays when credit
+is stressed. Monotone in derisk on the 26yr:
+
+| derisk @1.25× | CAGR | Sharpe | MaxDD | crisis ddn |
+|---|---|---|---|---|
+| 0.50 | +14.46% | 0.602 | −57.4% | −34.1% |
+| 0.30 | +14.74% | 0.612 | −52.8% | −33.3% |
+| **0.20** | **+14.87%** | **0.616** | **−51.2%** | **−32.8%** |
+
+Cutting *harder* raises return AND lowers drawdown — avoiding more of a crash compounds better.
+Not a fresh fit: the DYN walk-forward independently chose derisk 0.30 in all 22 OOS years.
+
+### Idea A — MOMENTUM TILT: aggregate looked great, YEAR-BY-YEAR KILLED IT at 1.00×
+
+| tilt @1.00× | CAGR | Sharpe |
+|---|---|---|
+| 50/35/15 | +12.83% | 0.625 |
+| 60/28/12 | +13.11% | 0.622 |
+| 70/21/9 | +13.44% | 0.619 |
+| 80/14/6 | +13.82% | 0.615 |
+
+Clean monotone dose-response across four levels, matching the independent 8yr result in EXP-030.
+**And `tilt80 @1.00` FAILED the year-by-year: 11/25 years won, and the excess DIES on dropping
+its best year (−1.6%) and collapses on the best two (−12.3%).** Carried by 2020 (+16.0%) and
+2005 (+10.7%).
+
+**⚠️ Lesson recorded: a monotone dose-response is NOT protection against a one-year artefact.**
+I had been treating that shape as strong evidence. It is evidence the *parameter* behaves
+sensibly, not that the *edge* is broad. Only the year-by-year separated them.
+
+`tilt70 @1.25` DID pass (15/25 years, +25.5% after dropping the best two), so the tilt is not
+dead — it is only validated at the leverage where it was tested.
+
+### Idea B — signal exit: VOID, never executed (my bug)
+
+`signal_exit_every=5` with `tranche_stride=5` gates on the same days, so the exit could **never
+fire**: 0 of 200 days. All three arms returned numbers **byte-identical** to the no-exit
+reference (+14.46% / 0.602 / −57.4%). Caught by the suspicious-roundness heuristic — the same
+tell that caught `park idle cash IEF` in EXP-021. Fixed with a guard that now RAISES if the exit
+cadence is coarser than the stride, instead of silently doing nothing.
+
+### EXP-037 — the matched-exposure result
+
+Two arms landed at the SAME realised gross as LIVE (1.221), making these true like-for-like
+comparisons rather than leverage re-picks:
+
+| arm | gross | CAGR | Sharpe | MaxDD | crisis |
+|---|---|---|---|---|---|
+| **LIVE** | **1.221** | **+12.72%** | **0.549** | **−55.9%** | **−33.1%** |
+| O2 @1.25 d0.20 | **1.218** | +14.87% | 0.616 | −51.2% | −32.8% |
+| O2+T70 @1.25 d0.20 | **1.212** | **+15.47%** | 0.618 | −52.7% | −33.0% |
+
+**+2.15pp / +2.75pp of CAGR at identical exposure, with better Sharpe and better drawdown.**
+
+**Best arm on BOTH horizons — `O2 + tilt70 + d0.20 @1.00×`:**
+
+| | dCAGR | dSharpe | dMaxDD | crisis | gross vs LIVE |
+|---|---|---|---|---|---|
+| 26yr | +1.05pp | +0.083 | +11.6pp | −27.1% vs −33.1% | 0.974 vs 1.221 |
+| 8yr | +2.26pp | +0.107 | +5.4pp | −24.8% vs −30.3% | 0.979 vs 1.175 |
+
+Better on all four, both horizons, at ~20% LESS exposure.
+
+**Horizon disagreement noted:** the harder gate alone helps on the 26yr (+12.83→+13.17%) and
+hurts on the 8yr (+23.64→+23.37%) — 2018-25 has no genuine credit crisis, so cutting harder is
+pure cost there. The combination with the tilt is positive on both.
+
+### Outstanding — NOT yet validated
+- **d0.10 / d0.00 edge check:** on the 8yr all three are identical (+27.27 / +27.25 / +27.18),
+  but that horizon **cannot discriminate** — the gate barely fires, so every derisk converges.
+  The 26yr is the discriminating run and is queued.
+### 🔴 EXP-036b — the year-by-year KILLED the arm that looked best in aggregate
+
+| candidate | yrs won | ddn won | sum diff | drop best | **drop 2** | crisis avg | verdict |
+|---|---|---|---|---|---|---|---|
+| **O2+T70 @1.00 d0.20** | 12/25 | **24/25** | +7.4% | **−8.2%** | **−17.0%** | +7.3% | **FAIL** |
+| **O2 @1.00 d0.20** | 15/25 | **25/25** | −12.8% | −27.3% | −37.4% | +7.0% | **FAIL** |
+| O2+T70 @1.10 d0.20 | 13/25 | 22/25 | +38.5% | +21.6% | **+5.7%** | +6.0% | PASS |
+| **O2+T70 @1.25 d0.20** | 15/25 | 14/25 | **+77.2%** | +52.8% | **+35.4%** | +4.4% | **PASS** |
+
+**`O2+T70 @1.00 d0.20` was the best arm on BOTH horizons in aggregate** (+1.05pp / +2.26pp CAGR,
++0.083 / +0.107 Sharpe, better drawdown, at 20% LESS gross). **It failed.** Its return edge dies
+on dropping the best year (−8.2%) and collapses on the best two (−17.0%), with only 12/25 years
+won. Identical failure mode to `tilt80 @1.00`.
+
+**This is the second time an arm with a clean aggregate AND a clean dose-response died here.**
+The pre-registered flag ("this is exactly the profile that fooled me once") was correct, and
+running the test rather than trusting the aggregate is what prevented shipping it.
+
+### The pattern is now consistent across every variant tested
+
+**At LOW leverage (~1.00×) these are RISK products:** drawdown better in **24-25 of 25 years**,
+crisis-year drawdown **+7pp** better — and **no return edge at all** (sum diff +7.4% / −12.8%,
+dying on the drop-best test). Their equal-or-better CAGR comes from compounding a smoother path,
+exactly as EXP-033 found for plain Option 2.
+
+**At HIGHER leverage (1.10-1.25×) the return edge is real and survives** (+35.4% after removing
+the two best years, 15/25 years) **but the drawdown advantage shrinks** from 24/25 years to 14/25.
+
+**You cannot have both from the leverage dial.** Every attempt to buy return with leverage spends
+the drawdown edge, and every attempt to bank the drawdown edge gives up the return. The harder
+credit gate improved BOTH ends of that trade-off, but did not abolish it.
+
+### Still outstanding
+- **d0.10 / d0.00 edge check on the 26yr** (the only horizon that can discriminate — on the 8yr
+  all three derisk values converge to +27.27 / +27.25 / +27.18 because the gate barely fires).
+  Running.
 
 ---
 

@@ -1,4 +1,3 @@
-EXP031_leverage_frontier.py|8yr|_exp031_50k_8yr
-EXP031_leverage_frontier.py|26yr|_exp031_50k_26yr
-EXP030_cap_and_tilt.py|26yr|_exp030_26yr
-EXP023_universe_tier.py|26yr|_exp023_26yr
+EXP037_final_candidates.py|8yr|_exp037b_8yr
+EXP036_yby_candidates.py|26yr|_exp036b_26yr
+EXP037_final_candidates.py|26yr|_exp037b_26yr

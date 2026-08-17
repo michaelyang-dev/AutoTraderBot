@@ -160,6 +160,39 @@ class JointTrancheBacktester(LiveMirrorBacktester):
                         g += h["shares"] * px
                 return g
 
+            # ---- mid-cycle SIGNAL EXIT (EXP-026) -------------------------------------
+            # The only mechanism in this program whose drawdown gain SURVIVED the
+            # matched-exposure control (+5.6..+7.8pp) rather than being a level effect. It
+            # costs Sharpe on its own (-0.016..-0.037 matched), so it is tested here only in
+            # combination -- the question is whether tranching's variance budget pays for it.
+            # ⚠️ BUG CAUGHT 2026-08-16 by the suspicious-roundness heuristic (BUGS E): the first
+            # version gated on `di % sig_exit == 0 AND di % stride != 0`. With sig_exit=5 and
+            # stride=5 those are the SAME days, so the exit could NEVER fire -- and the arms
+            # returned numbers IDENTICAL to the no-exit reference (+14.46% twice). Same failure
+            # as `park idle cash IEF` in EXP-021: an arm that tested nothing.
+            # The exit only has anything to do on days when NO tranche is rebalancing, so its
+            # cadence must be FINER than the stride. Now it fires on any non-rebalance day that
+            # matches the cadence, and a cadence coarser than the stride is rejected loudly.
+            sig_exit = config.get("signal_exit_every")
+            if sig_exit and sig_exit >= stride:
+                raise ValueError(
+                    f"signal_exit_every={sig_exit} >= tranche_stride={stride}: every exit day "
+                    f"is already a rebalance day, so the exit can never fire. Use a finer "
+                    f"cadence (e.g. 1-{stride-1}).")
+            if sig_exit and di > 0 and di % sig_exit == 0 and di % stride != 0:
+                m1 = strategy1_momentum_reversal(date, self.uni, 0, top_n=top_n,
+                                                 rebal_days=rebal_days) or {}
+                mem_ = self.uni.get_sp500(date)
+                wanted = (set(m1) | set(strategy_value(self.uni, date, mem_, top_n=10) or {})
+                          | set(strategy5_lowvol_quality(date, self.uni, 0) or {}))
+                for b_ in books:
+                    for s_ in list(b_):
+                        if s_ not in wanted:
+                            px_ = today.get(s_, b_[s_]["entry_px"])
+                            cash += b_[s_]["shares"] * px_ * (1 - cost_frac)
+                            del b_[s_]
+                nav = cash + sum(mark(today, bb) for bb in books)
+
             # exactly ONE tranche rebalances every `stride` sessions, cycling
             if di % stride != 0:
                 prev_gross = snapshot()
