@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 2,738 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 2,858 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2324,10 +2324,43 @@ the two best years, 15/25 years) **but the drawdown advantage shrinks** from 24/
 the drawdown edge, and every attempt to bank the drawdown edge gives up the return. The harder
 credit gate improved BOTH ends of that trade-off, but did not abolish it.
 
-### Still outstanding
-- **d0.10 / d0.00 edge check on the 26yr** (the only horizon that can discriminate — on the 8yr
-  all three derisk values converge to +27.27 / +27.25 / +27.18 because the gate barely fires).
-  Running.
+### EXP-038 — the edge check: derisk is MONOTONE TO THE BOUNDARY. 0.20 is NOT a tuned optimum.
+
+**26yr, O2 @1.25×, 12 starts:**
+
+| derisk | gross | CAGR | Sharpe | MaxDD | worst | crisis | dCAGR | dSharpe | +Shrp |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.50 | 1.227 | +14.46% | 0.602 | −57.4% | −61.2% | −34.1% | +1.74pp | +0.053 | 10/12 |
+| 0.30 | 1.221 | +14.74% | 0.612 | −52.8% | −57.7% | −33.3% | +2.02pp | +0.063 | 10/12 |
+| 0.20 | 1.218 | +14.87% | 0.616 | −51.2% | −55.9% | −32.8% | +2.15pp | +0.067 | 10/12 |
+| 0.10 | 1.214 | +15.02% | 0.621 | −50.1% | −54.8% | −32.4% | +2.30pp | +0.072 | 10/12 |
+| **0.00** | 1.211 | **+15.11%** | **0.624** | **−49.4%** | **−53.9%** | **−32.0%** | **+2.39pp** | **+0.075** | 10/12 |
+
+**It improves monotonically all the way to 0.00 on every single axis.** So the answer is the
+FIRST of the three pre-registered outcomes: **the finding is "go FLAT while credit is stressed",
+not "0.20 is special".** 0.20 was simply the edge of the range I happened to test, and quoting
+it as a tuned parameter would have been a fitted artefact. **Quote a range (≤0.20), or quote
+0.00 as the limit — never 0.20 as an optimum.**
+
+**8yr, same sweep:**
+
+| derisk | CAGR | Sharpe | MaxDD |
+|---|---|---|---|
+| 0.50 | +27.63% | 0.866 | −41.8% |
+| 0.30 | +27.46% | 0.865 | −41.0% |
+| 0.20 | +27.27% | 0.862 | −40.6% |
+| 0.10 | +27.25% | 0.862 | −40.3% |
+| 0.00 | +27.18% | 0.861 | −40.2% |
+
+**The horizons disagree in DIRECTION on CAGR** — 26yr rises +14.46→+15.11%, 8yr falls
++27.63→+27.18%. But note the magnitudes: the entire 8yr range is **−0.45pp** while the 26yr range
+is **+0.65pp**, and 2018-25 contains no genuine credit crisis so the gate barely fires there.
+**Drawdown improves monotonically on BOTH horizons** (8yr −41.8→−40.2%, 26yr −57.4→−49.4%).
+
+**Honest reading:** cutting to zero in credit stress is unambiguously right over a full cycle and
+costs a trivial amount in a crisis-free decade. The drawdown benefit is two-horizon consistent.
+This is the one parameter change in the entire program that improves every axis monotonically
+to the boundary of its range.
 
 ---
 

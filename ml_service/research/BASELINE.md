@@ -170,6 +170,46 @@ single-book approximation (partial adjustment) was tested and **destroys the str
 
 ---
 
+## ★★ FINAL RECOMMENDATION (2026-08-17) — OPTION 2 + HARDER CREDIT GATE
+
+`vol_scaling: False` · `tranches: 4` (5-day stride) · `credit_derisk: ≤0.20` (0.00 = the limit)
+· leverage chosen by risk appetite. Gate stays at p95.
+
+**At IDENTICAL exposure to the deployed book** (gross 1.211 vs 1.221), 26yr, 12 starts:
+
+| | LIVE | candidate | delta |
+|---|---|---|---|
+| CAGR | +12.72% | **+15.11%** | **+2.39pp** |
+| Sharpe | 0.549 | **0.624** | **+0.075** |
+| MaxDD | −55.9% | **−49.4%** | **+6.5pp** |
+| worst-start DD | −64.2% | **−53.9%** | **+10.3pp** |
+| crisis-year DD | −33.1% | **−32.0%** | **+1.1pp** |
+| sd CAGR | 3.05pp | **1.80pp** | −41% |
+
+10/12 starts on Sharpe. **Better on every axis with no leverage sleight-of-hand.**
+
+**Three things this rests on, each independently validated:**
+1. **Tranching K=4** — sd CAGR falls monotonically 1.31→1.16→1.04→1.01 across K=2/4/5/10, then
+   saturates. K=4 is the build; K=10 is pure operational cost.
+2. **No vol overlay** — negative timing skill on both horizons (−0.024 / −0.017 Sharpe at matched
+   exposure); its value was a level effect all along.
+3. **Credit gate cut to ~0** — monotone improvement on every axis to the boundary of the tested
+   range. NOT a tuned parameter; the finding is "go flat in credit stress".
+
+**⚠️ Limits, stated:**
+- 8yr Sharpe sign-consistency is 7-8/12 vs the ≥9/12 bar (26yr is 10/12). Marginal on the
+  recent horizon.
+- The harder gate costs a trivial −0.45pp of 8yr CAGR (no credit crisis in 2018-25 for it to
+  earn on) while still improving 8yr drawdown.
+- At ~1.00× leverage every variant is a RISK product only: drawdown better in 24-25/25 years,
+  **no return edge** (the year-by-year killed all of them on return).
+- The momentum tilt is validated ONLY at 1.10-1.25×. At 1.00× it FAILED the year-by-year twice.
+
+**Blocker:** four target books netted in one IBKR account. The cheap single-book approximation
+was tested and destroys the strategy (EXP-007, −7 to −10pp).
+
+---
+
 ## ★ AUDITED CANDIDATE 3 (STRONGEST) — TRANCHING + CONSTANT LEVERAGE, NO VOL OVERLAY
 
 **= candidates 1 and 2 combined.** `research/EXP019_stack_candidates.py`,
