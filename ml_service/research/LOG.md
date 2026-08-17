@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 2,282 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 2,354 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2092,6 +2092,106 @@ Option 1 nominal 1.75 → 2.00 makes CAGR **fall** (+15.66% → +15.61%) while d
 Sharpe-optimal is **1.00× on all three**. Choosing higher leverage is a deliberate
 CAGR-for-drawdown trade, not an optimisation — and the worst-DD column is the one to read when
 making it (Option 2 at 1.49× has a worst start of −67.7%).
+
+---
+
+## Cycle 35 — EXP-032 · JOINT-TRANCHE FIDELITY — **the published tranching numbers are slightly
+## OPTIMISTIC. Found before writing live code, not after.**
+
+**The gap I found while designing the engine.** Every tranching number in this program
+(EXP-001, -014, -019, -027, -031) came from running K sub-books as SEPARATE backtests at
+capital/K and summing the curves. Those sub-books never share capital — a lucky phase stays big
+for 26 years. **The live engine cannot work that way:** all K sub-books sit in one margin
+account, so a rebalancing tranche necessarily sizes off NAV/K of the *current total* NAV. That
+is continuous reallocation between tranches.
+
+Cross-phase 26yr CAGR σ is 1.94pp, compounding to ~1.6× between best and worst tranche, so the
+two designs are genuinely different products. Quoting one while shipping the other is the
+backtest-vs-live divergence class in BUGS section B — the one that cost −15.7pp when the
+momentum sleeve was silently SP500-only.
+
+**Built `research/livemirror_tranche.py`** — K virtual ledgers with per-tranche trailing-stop
+peaks (entry dates differ, so stops fire at different times), one shared cash balance and margin
+debit, one tranche rebalancing every `rebal_days/K` sessions, each sizing off shared-NAV/K
+through the same closed-loop integer-share calibration the live engine runs.
+
+### Two parity gates, and the first version of gate 2 was a BAD TEST
+
+- **Gate 1** — `tranches=1` delegates to the validated parent: **IDENTICAL** (236,634.08). Zero
+  regression risk. But this gate never enters the new code, so it validates nothing about it.
+- **Gate 2, first attempt** — K=4 with `stride = rebal_days`, expecting "one book split 4 ways":
+  came back **−53%** and looked like a machinery bug. It was a **bad gate**: with stride=20 and
+  K=4, each tranche fires every K×stride = **80** sessions, not 20, so the book is 4× stale. The
+  comparison was meaningless. Recorded because a wrong test produced a number that looked like a
+  catastrophic bug.
+- **Gate 2, corrected** — added `force_joint` so K=1 runs *through* the joint loop instead of
+  delegating; with stride=20 that is by construction one book on the deployed cadence, so it must
+  reproduce the parent. **236,858.59 vs 236,634.08 = +0.09%.** The reimplementation is faithful.
+
+### Result — 8yr, 12 starts
+
+| arm | mean CAGR | sd CAGR | Sharpe | Sortino | MaxDD | worst DD |
+|---|---|---|---|---|---|---|
+| **A summed-independent** (what I published) | **+24.19%** | 3.92pp | **0.898** | 1.325 | −33.8% | −37.1% |
+| **B joint-reallocated** (what the engine does) | **+23.64%** | 4.20pp | **0.887** | 1.303 | −33.9% | −37.4% |
+
+**B − A: −0.54pp CAGR, −0.0110 Sharpe, −0.19pp MaxDD, at 2/12 and 3/12** — i.e. the joint design
+is worse in 10/12 starts on CAGR and 9/12 on Sharpe. Small, but **sign-consistent, not noise**.
+
+My pre-registered threshold was |dSharpe| < 0.010 = faithful. **It came in at −0.0110 — just
+over.** I am reporting it as a miss rather than rounding it to "close enough".
+
+**My hypothesis was wrong in direction.** I wrote that reallocation "may add a small rebalancing
+bonus" by moving capital from lucky phases to unlucky ones. It does not — it costs. Most likely
+extra turnover: a rebalancing tranche sized off the *current* shared NAV must trade further than
+one compounding its own capital, and that trades against a drifted book every cycle.
+
+### 🔴 CONSEQUENCE — the 8yr headline changes sign on CAGR
+
+Deployed 8yr baseline is **+23.88%**. The summed version of Option 2 showed **+24.19% (+0.31pp)**.
+The live-faithful version is **+23.64% (−0.24pp)**.
+
+**So on the 8yr, Option 2 as it can actually be built gives slightly LESS CAGR than the deployed
+system, not more.** What survives on that horizon is the risk side: Sharpe 0.887 vs 0.802
+(**+0.085**) and MaxDD −33.9% vs −38.5% (**+4.6pp**).
+
+Every Option-2 CAGR figure previously quoted should be read **−0.54pp**, and every Sharpe
+**−0.011**. That does not overturn the finding — the Sharpe and drawdown gains dominate the
+correction — but it does remove the "free CAGR" framing on the 8yr.
+
+### 26yr — the correction does NOT carry, and the decision horizon says FAITHFUL
+
+Gate 1 IDENTICAL (758,728.67). Gate 2 joint-as-one-book **+0.15%**.
+
+| arm | mean CAGR | sd CAGR | Sharpe | Sortino | MaxDD | worst DD |
+|---|---|---|---|---|---|---|
+| A summed-independent | +12.79% | 1.21pp | 0.623 | 0.888 | −48.2% | −51.4% |
+| **B joint-reallocated** | **+12.83%** | **1.16pp** | **0.625** | 0.890 | −48.3% | −51.8% |
+
+**B − A: +0.04pp CAGR, +0.0020 Sharpe, −0.15pp MaxDD, 9/12 and 9/12.**
+**|dSharpe| = 0.002, well inside the pre-registered 0.010 threshold → FAITHFUL.**
+
+**So the correction is horizon-specific, and it does not affect the horizon that matters:**
+
+| | dCAGR (B−A) | dSharpe (B−A) | verdict |
+|---|---|---|---|
+| 8yr | **−0.54pp** | **−0.0110** | just outside threshold |
+| **26yr** | **+0.04pp** | **+0.0020** | **faithful** |
+
+On the full-cycle horizon the live design is if anything *marginally better* than the summed
+version (9/12 on both), and its dispersion is slightly lower (1.16pp vs 1.21pp). **The 26yr
+tranching numbers stand as published.** Only the 8yr figures need the −0.54pp / −0.011 haircut.
+
+**Why the difference is credible rather than convenient:** the reallocation drag is a turnover
+cost, and turnover cost is roughly constant per year while the 8yr horizon has ~3× fewer years
+to amortise the compounding benefit of a lower-dispersion path. Over 26 years the variance
+reduction (sd 1.16 vs 1.21) compounds enough to offset the extra trading. That is a story fitted
+after the fact and is labelled as such — but the *measurement* is 9/12 sign-consistent on both
+metrics, which is not.
+
+**Net effect on the recommendation:** Option 2's 26yr case is unchanged. Its 8yr CAGR edge is
+gone (−0.24pp vs baseline) while its 8yr Sharpe (+0.085) and drawdown (+4.6pp) edges remain.
+**Option 2 is a risk improvement on the 8yr and a both-axes improvement on the 26yr.**
 
 ---
 
