@@ -1,2 +1,2 @@
-VERIFY2_cleanroom.py|8yr|_verify2_8yr
-VERIFY2_cleanroom.py|26yr|_verify2_26yr
+VERIFY2_cleanroom.py|8yr|_verify3_8yr
+VERIFY2_cleanroom.py|26yr|_verify3_26yr

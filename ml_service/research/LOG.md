@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 3,506 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 3,650 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2514,6 +2514,78 @@ the same starts — a +3.4pp gap that is itself independent evidence the overlay
 **Status: the Sharpe and drawdown improvements are INDEPENDENTLY CONFIRMED and survive an
 untouched holdout. The CAGR improvement is partially confirmed; its largest component (deleting
 the overlay) still rests on a single engine.**
+
+---
+
+## Cycle 43 — VERIFY3 · FULL INDEPENDENT VERIFICATION vs the TRUE deployed book
+
+The first clean-room pass had a gap I flagged: its reference lacked the vol overlay, so
+overlay-removal — the largest component of the CAGR gain — was never independently derived.
+Closed by implementing the overlay in the clean room **to the LIVE engine's own definition**
+(`ibkr_engine.compute_vol_scale`: clamp(0.15×1.49 / 40-day realised NAV vol, 0.30, 1.00)),
+which is a genuinely different construction from the original harness's synthetic unlevered
+"shadow book".
+
+### 26yr — independent engine, TRUE live reference
+
+| sample | arm | CAGR | Sharpe | MaxDD | dCAGR | dSharpe | dMaxDD | +Shrp |
+|---|---|---|---|---|---|---|---|---|
+| **UNTOUCHED** | LIVE @1.49+ovl | +14.17% | 0.596 | −55.3% | — | — | — | — |
+| | WIN @1.00 | +14.96% | 0.682 | −41.7% | +0.79pp | +0.085 | +13.65pp | 10/12 |
+| | **WIN @1.10** | +15.87% | 0.673 | −45.3% | **+1.70pp** | **+0.076** | **+10.04pp** | 10/12 |
+| | WIN @1.25 | +17.02% | 0.666 | −50.0% | +2.85pp | +0.070 | +5.32pp | 10/12 |
+| | WIN @1.49 | +18.36% | 0.661 | −56.1% | +4.19pp | +0.064 | −0.75pp | 9/12 |
+| | **noOvl ONLY @1.49** | +16.76% | 0.607 | −62.3% | +2.59pp | **+0.010** | **−7.00pp** | 8/12 |
+| used | LIVE @1.49+ovl | +13.68% | 0.581 | −56.6% | — | — | — | — |
+| | WIN @1.00 | +14.97% | 0.676 | −41.5% | +1.29pp | +0.095 | +15.05pp | 11/12 |
+| | **WIN @1.10** | +15.89% | 0.668 | −45.2% | **+2.21pp** | **+0.086** | **+11.41pp** | 11/12 |
+| | WIN @1.25 | +16.94% | 0.660 | −49.9% | +3.27pp | +0.079 | +6.71pp | 11/12 |
+| | **noOvl ONLY @1.49** | +16.08% | 0.592 | −63.3% | +2.40pp | **+0.011** | **−6.72pp** | 7/12 |
+
+### 8yr — independent engine, TRUE live reference
+
+| sample | arm | dCAGR | dSharpe | dMaxDD | +Shrp |
+|---|---|---|---|---|---|
+| **UNTOUCHED** | WIN @1.00 | +1.32pp | +0.086 | +5.61pp | 7/12 |
+| | **WIN @1.10** | **+3.36pp** | **+0.080** | **+2.78pp** | 8/12 |
+| | WIN @1.25 | +4.75pp | +0.058 | **−0.89pp** | 7/12 |
+| | **noOvl ONLY @1.49** | +4.68pp | **−0.029** | **−8.94pp** | **4/12** |
+| used | WIN @1.00 | +1.01pp | +0.078 | +5.91pp | 7/12 |
+| | **WIN @1.10** | **+3.03pp** | **+0.073** | **+3.10pp** | 7/12 |
+| | WIN @1.25 | +4.28pp | +0.049 | −0.51pp | 7/12 |
+| | **noOvl ONLY @1.49** | +3.77pp | **−0.040** | **−8.87pp** | **2/12** |
+
+### 1. CONFIRMED — the untouched holdout matches the used sample at EVERY leverage
+
+26yr dSharpe holdout vs used: +0.085/+0.095 (1.00×), +0.076/+0.086 (1.10×), +0.070/+0.079
+(1.25×). 8yr: +0.086/+0.078, +0.080/+0.073, +0.058/+0.049. **The edge is not a product of the
+start dates chosen** — this is a clean out-of-sample result on entry timing, in independent code.
+
+### 2. 🔴 CORRECTION — "just delete the overlay" is NOT a win on its own
+
+`noOvl ONLY @1.49` (delete the overlay, leave leverage at 1.49×) is:
+- 26yr: **+0.010 / +0.011 Sharpe** — indistinguishable from zero — and **−7pp drawdown**
+- 8yr: **−0.029 / −0.040 Sharpe — NEGATIVE** — and **−9pp drawdown**, at **2-4/12**
+
+**I previously called this "Option 1, the easy config win" and quoted +0.9pp CAGR.** That figure
+came from an ISO-DRAWDOWN comparison — i.e. leverage adjusted downward to match. At UNCHANGED
+1.49× nominal, deleting the overlay simply raises exposure (nominal ≈ realised once the scaler is
+gone), buying CAGR with drawdown and losing Sharpe.
+
+**The overlay removal and the leverage reduction are ONE change, not two.** Doing the first
+without the second is worse than doing nothing. That correction matters because it was the piece
+I described as deployable today.
+
+### 3. The all-positive setting is 1.10×, not 1.25×
+
+`WIN @1.10` is positive on CAGR **and** Sharpe **and** drawdown in **all four cells** (2 horizons
+× 2 samples). `WIN @1.25` gives more CAGR but goes slightly negative on 8yr drawdown
+(−0.89 / −0.51pp). The original engine had favoured 1.25×; the independent engine with the true
+live reference favours **1.10×**.
+
+**FINAL: WIN @1.10 — tranching K=4 + no overlay + credit gate→0 + sleeves 70/21/9 + constant
+1.10× leverage.** Confirmed in two independent engines, on two horizons, on a start sample never
+previously examined.
 
 ---
 

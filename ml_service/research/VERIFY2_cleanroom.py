@@ -102,6 +102,15 @@ class CleanRoom:
         # DIFFERENCE 5: explicit up-front schedule, no modulo on the loop counter
         sched = {i: (i // stride) % K for i in range(len(dates)) if i % stride == 0}
 
+        # VOL OVERLAY -- implemented here to the LIVE engine's own definition
+        # (ibkr_engine.compute_vol_scale): vol_scale = clamp(VOL_TARGET / realised NAV vol,
+        # 0.30, 1.0) with VOL_TARGET = 0.15 * 1.49 over a 40-day window of ACCOUNT NAV returns.
+        # This is deliberately a DIFFERENT construction from the original harness, which derives
+        # the signal from a synthetic unlevered "shadow" book. If the two agree on the overlay's
+        # cost, that cost is not an artefact of either construction.
+        use_ov = bool(cfg.get("vol_overlay"))
+        VOL_TARGET = 0.15 * 1.49
+        navhist = []
         books = [dict() for _ in range(K)]     # tranche -> {sym: shares}
         peaks = [dict() for _ in range(K)]     # tranche -> {sym: peak price}
         cash = float(cfg.get("initial_capital", 50_000.0))
@@ -193,6 +202,13 @@ class CleanRoom:
                 comb = {s: v for s, v in comb.items() if v >= 0.005}
 
                 dr = derisk_v if (gate_pct and gate.get(d, 0.5) >= gate_pct) else 1.0
+                vs = 1.0
+                if use_ov and len(navhist) >= 41:
+                    rr = np.diff(np.array(navhist[-41:])) / np.array(navhist[-41:-1])
+                    rv = float(np.std(rr)) * np.sqrt(252)
+                    if rv > 0.01:
+                        vs = min(1.0, max(0.30, VOL_TARGET / rv))
+                dr = dr * vs
                 tnav = nav / K
                 tot = sum(comb.values())
                 base = {s: v / tot for s, v in comb.items()} if tot > 0 else {}
@@ -234,6 +250,7 @@ class CleanRoom:
                 nav = cash + mtm()
 
             prev_debit = max(0.0, -cash)
+            navhist.append(max(nav, 1e-9))
             navs.append((d, max(nav, 1e-9)))
 
         v = pd.Series([x for _, x in navs], index=pd.DatetimeIndex([x for x, _ in navs]))
@@ -249,27 +266,36 @@ def main():
     bt = FastBacktester(universe_path=PATH)
     cr = CleanRoom(bt)
     LIVE = dict(leverage=1.49, tranches=1, tranche_stride=20, credit_pct=0.95,
-                credit_derisk=0.50, mom_w=.50, val_w=.35, lv_w=.15, initial_capital=50_000.0)
+                credit_derisk=0.50, mom_w=.50, val_w=.35, lv_w=.15, initial_capital=50_000.0,
+                vol_overlay=True)          # <- the TRUE deployed book, overlay included
     WIN = dict(leverage=1.25, tranches=4, tranche_stride=5, credit_pct=0.95,
                credit_derisk=0.00, mom_w=.70, val_w=.21, lv_w=.09, initial_capital=50_000.0)
-    # NOTE: LIVE here has NO vol overlay (the clean room does not implement one). It is therefore
-    # NOT the deployed book -- it is "deployed minus the overlay" at 1.49x. The comparison that
-    # matters is WIN vs this same-engine reference, and whether the DELTA matches the original.
+    ARMS = [("LIVE @1.49+ovl", LIVE),
+            ("WIN @1.00", {**WIN, "leverage": 1.00}),
+            ("WIN @1.10", {**WIN, "leverage": 1.10}),
+            ("WIN @1.25", WIN),
+            ("WIN @1.49", {**WIN, "leverage": 1.49}),
+            ("noOvl only @1.49", {**LIVE, "vol_overlay": False})]
     for label, sts in (("UNTOUCHED HOLDOUT (even months)", HOLDOUT),
                        ("previously-used (odd months)", USED)):
         print(f"\n  === {HZ} — {label} ===", flush=True)
-        print(f"  {'arm':<16}{'CAGR':>10}{'Sharpe':>9}{'MaxDD':>9}", flush=True)
+        print(f"  {'arm':<18}{'CAGR':>10}{'Sharpe':>9}{'MaxDD':>9}{'dCAGR':>9}{'dShrp':>9}"
+              f"{'dMaxDD':>9}{'+Shrp':>7}", flush=True)
         out = {}
-        for nm, cfg in (("ref @1.49", LIVE), ("WINNER @1.25", WIN)):
+        for nm, cfg in ARMS:
             rs = [cr.run(s, cfg) for s in sts]
             c = np.array([x["cagr"] for x in rs]); sh = np.array([x["sharpe"] for x in rs])
             dd = np.array([x["dd"] for x in rs])
             out[nm] = (c, sh, dd)
-            print(f"  {nm:<16}{c.mean():>+10.2%}{sh.mean():>9.3f}{dd.mean():>9.1%}", flush=True)
-        a, b = out["ref @1.49"], out["WINNER @1.25"]
-        print(f"  {'DELTA':<16}{(b[0]-a[0]).mean()*100:>+9.2f}p{(b[1]-a[1]).mean():>+9.3f}"
-              f"{(b[2]-a[2]).mean()*100:>+8.2f}p   "
-              f"({int((b[1]>a[1]).sum())}/{len(sts)} Sharpe)", flush=True)
+            a = out.get("LIVE @1.49+ovl")
+            if nm == "LIVE @1.49+ovl":
+                print(f"  {nm:<18}{c.mean():>+10.2%}{sh.mean():>9.3f}{dd.mean():>9.1%}",
+                      flush=True)
+            else:
+                print(f"  {nm:<18}{c.mean():>+10.2%}{sh.mean():>9.3f}{dd.mean():>9.1%}"
+                      f"{(c-a[0]).mean()*100:>+8.2f}p{(sh-a[1]).mean():>+9.3f}"
+                      f"{(dd-a[2]).mean()*100:>+8.2f}p{int((sh>a[1]).sum()):>4}/{len(sts)}",
+                      flush=True)
     print(f"\n  total {time.time()-t0:.0f}s", flush=True)
 
 
