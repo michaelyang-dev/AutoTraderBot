@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 3,410 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 3,506 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2436,6 +2436,84 @@ Why it wins where the others failed:
 26yr **+0.088 Sharpe at 11/12** (best sign-consistency in the program), **+11.58pp MaxDD**,
 drawdown better in **25 of 25 years**, cost-flat. But **FAILS the 8yr year-by-year on return**
 (3/8 years, −20.8% after dropping two). Pick it if the mandate is drawdown, not return.
+
+---
+
+## Cycle 42 — VERIFY2 · CLEAN-ROOM INDEPENDENT VERIFICATION + UNTOUCHED HOLDOUT
+
+Every number in this program came from ONE simulator I wrote. A systematic error in it would be
+inherited by every result, and no amount of start-consistency / cost / year-by-year testing would
+reveal it — those all run THROUGH the same engine. The only detector is a second implementation
+that shares no code.
+
+**Built `research/VERIFY2_cleanroom.py`**: independent portfolio simulator with five deliberate
+implementation differences so a shared bug cannot survive in both — NAV rebuilt from scratch each
+day (never accumulated), costs charged as a separate deduction, **financing accrued on the
+PREVIOUS day's debit** (a different, slightly more conservative convention), stops from an
+explicit peak dict, and an up-front tranche schedule rather than a modulo. The production sleeves
+are NOT reimplemented — they are what live calls, so rewriting them would test my copy of the
+strategy rather than the strategy.
+
+### 🔴 The verifier itself was broken first, and it "refuted" the result
+
+First run: reference arm returned **+1.36% CAGR / −70.3% MaxDD** against the original's +23.88%.
+A 22pp gap that looked like a devastating refutation.
+
+**It was my new code.** `prc.get(s, 0.0)` marked any holding without a print that day to **zero**
+— and 577 of 2,740 symbols lack a print on a typical day, so held names were being written to nil
+and sold for nil. Fixed to carry the last observed price. Reference then returned **+29.29%**
+against the original's +29.85% on a comparable config — agreement.
+
+**Recorded because an independent verifier that is itself broken is worse than no verifier: it
+would have killed a good result with false confidence.** This is the fourth time in this program
+that a "finding" was my own tooling.
+
+### Results — independent engine, both samples
+
+| horizon / sample | arm | CAGR | Sharpe | MaxDD |
+|---|---|---|---|---|
+| **8yr UNTOUCHED (even months)** | ref @1.49 | +32.00% | 0.855 | −46.9% |
+| | **WINNER @1.25** | +32.07% | **0.943** | **−38.8%** |
+| | **DELTA** | **+0.07pp** | **+0.088** | **+8.05pp** (7/12) |
+| 8yr previously-used (odd) | ref @1.49 | +30.15% | 0.829 | −46.9% |
+| | **WINNER @1.25** | +30.66% | **0.918** | **−38.6%** |
+| | **DELTA** | **+0.51pp** | **+0.089** | **+8.37pp** (7/12) |
+| **26yr UNTOUCHED (even months)** | ref @1.49 | +16.76% | 0.607 | −62.3% |
+| | **WINNER @1.25** | +17.02% | **0.666** | **−50.0%** |
+| | **DELTA** | **+0.27pp** | **+0.060** | **+12.32pp** (8/12) |
+| 26yr previously-used (odd) | ref @1.49 | +16.08% | 0.592 | −63.3% |
+| | **WINNER @1.25** | +16.94% | **0.660** | **−49.9%** |
+| | **DELTA** | **+0.87pp** | **+0.068** | **+13.43pp** (10/12) |
+
+### What this DOES establish
+
+**1. The edge is not a product of the start dates I picked.** Every experiment in this program used
+ODD-month starts. The UNTOUCHED even-month sample gives **+0.088 vs +0.089 Sharpe (8yr)** and
+**+0.060 vs +0.068 (26yr)** — essentially identical. That is a genuine out-of-sample check on
+entry timing and it passes cleanly.
+
+**2. The Sharpe and drawdown improvements replicate in independent code**, under a different
+financing convention and different NAV accounting. Sign, rough magnitude and 10/12 consistency
+on the 26yr all reproduce.
+
+### ⚠️ What it does NOT establish — a limitation of my own design
+
+**The clean-room reference is NOT the deployed book.** It is "deployed minus the vol overlay" at
+1.49×, because I did not implement the overlay in the clean room. So its DELTA measures only
+tranching + tilt + harder gate — it **excludes** the overlay removal, which is the single largest
+component of the original's improvement.
+
+That is exactly why the CAGR deltas differ: original **+3.00pp** (26yr) vs clean-room **+0.87pp**.
+The gap (~2.1pp) is the overlay removal, which the clean-room reference already has. Read that
+way the two engines are **consistent**, not contradictory — but the CAGR claim is verified only
+in part, and the overlay-removal component has NOT been independently re-derived.
+
+Corroborating: the clean-room "reference" returns +16.08% where the real LIVE returns +12.72% on
+the same starts — a +3.4pp gap that is itself independent evidence the overlay is costly.
+
+**Status: the Sharpe and drawdown improvements are INDEPENDENTLY CONFIRMED and survive an
+untouched holdout. The CAGR improvement is partially confirmed; its largest component (deleting
+the overlay) still rests on a single engine.**
 
 ---
 
