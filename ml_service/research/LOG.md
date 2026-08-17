@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 2,858 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 3,410 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2361,6 +2361,81 @@ is **+0.65pp**, and 2018-25 contains no genuine credit crisis so the gate barely
 costs a trivial amount in a crisis-free decade. The drawdown benefit is two-horizon consistent.
 This is the one parameter change in the entire program that improves every axis monotonically
 to the boundary of its range.
+
+---
+
+## Cycles 39-41 — THE FINAL SEARCH. Winner: `REC + tilt70 @1.25×`
+
+### Year-by-year breadth (the test that killed 2 of 2 prior look-alikes)
+
+**26yr, 25 calendar years:**
+
+| candidate | yrs won | ddn won | sum | drop best | **drop 2** | crisis | verdict |
+|---|---|---|---|---|---|---|---|
+| REC+BOTH @1.75 | 13/25 | 21/25 | +35.2% | +19.5% | +3.9% | +6.3% | PASS |
+| REC+sigexit @1.75 | 15/25 | 20/25 | +34.7% | +17.4% | +1.4% | +5.2% | PASS |
+| **REC+tilt @1.25** | 15/25 | 14/25 | **+82.7%** | **+58.1%** | **+41.1%** | +4.7% | **PASS** |
+| REC @1.10 | 16/25 | **25/25** | +20.3% | +6.1% | **−5.0%** | +6.0% | PASS |
+
+**8yr, 8 calendar years:**
+
+| candidate | yrs won | ddn won | sum | drop best | drop 2 | crisis | verdict |
+|---|---|---|---|---|---|---|---|
+| REC+BOTH @1.75 | 4/8 | 6/8 | +12.2% | **−7.3%** | −17.0% | +14.6% | **FAIL** |
+| REC+sigexit @1.75 | 5/8 | 7/8 | +15.5% | −2.4% | −9.6% | +12.6% | marginal |
+| **REC+tilt @1.25** | 5/8 | 6/8 | **+29.8%** | **+14.0%** | −0.3% | +6.9% | **PASS** |
+| REC @1.10 | 3/8 | 7/8 | −6.2% | −17.4% | −20.8% | +5.4% | **FAIL** |
+
+### 🔴 COST SENSITIVITY KILLED THE SIGNAL-EXIT ARMS
+
+dSharpe vs LIVE, paired at each multiplier (BUGS A8b):
+
+| 26yr | ×1 | ×2 | ×3 |
+|---|---|---|---|
+| REC+BOTH @1.75 | +0.073 | +0.039 | **+0.005** |
+| REC+sigexit @1.75 | +0.059 | +0.019 | **−0.019** |
+| **REC+tilt @1.25** | +0.076 | +0.079 | **+0.081** |
+| **REC @1.10** | +0.088 | +0.089 | **+0.090** |
+
+**The signal-exit arms collapse to zero (or negative) at 3× cost** — they sell and re-buy, so
+their entire advantage is a turnover subsidy. At the modelled 10bps that looks fine; at 3× it is
+gone. The tilt and plain-REC arms are **flat or IMPROVING** with cost because they trade LESS
+than the deployed book. Same pattern on the 8yr (+0.114 → +0.056 for BOTH; +0.078 → +0.079 for
+the tilt).
+
+**This is why EXP-040's "best all-round arm" (REC+BOTH @1.75) is NOT the answer** despite winning
+on aggregates on both horizons. It failed the 8yr year-by-year AND collapsed under cost. Third
+time an arm that looked best in aggregate died in validation.
+
+### ⇒ WINNER: `REC + tilt70 @1.25×`
+
+vol_scaling OFF · 4 tranches (5-day stride) · credit gate → 0 · sleeves 70/21/9 · leverage 1.25×
+
+| | gross | CAGR | Sharpe | MaxDD | crisis | +Shrp |
+|---|---|---|---|---|---|---|
+| LIVE (26yr) | 1.221 | +12.72% | 0.549 | −55.9% | −33.1% | — |
+| **WINNER (26yr)** | **1.205** | **+15.72%** | **0.625** | **−50.8%** | **−32.3%** | **10/12** |
+| LIVE (8yr) | 1.175 | +23.88% | 0.802 | −38.5% | −30.3% | — |
+| **WINNER (8yr)** | 1.210 | **+28.95%** | **0.880** | −39.9% | −29.9% | 7/12 |
+
+**26yr +3.00pp CAGR / +0.076 Sharpe / +5.16pp MaxDD at MATCHED gross (1.205 vs 1.221).**
+**8yr +5.07pp / +0.078 / −1.42pp.**
+
+Why it wins where the others failed:
+- **only arm to PASS year-by-year on BOTH horizons**
+- **strongest breadth by far**: +41.1% still positive after removing its two best years (next
+  best +3.9%)
+- **cost-ROBUST**: dSharpe rises with cost on both horizons
+- matched exposure on the 26yr, so not a leverage re-pick
+
+**Weaknesses, stated:** 8yr MaxDD is −1.42pp WORSE than LIVE; 8yr drop-2 is −0.3% (marginal);
+8yr sign-consistency 7/12 is below the ≥9/12 bar.
+
+### Runner-up, and the honest alternative: `REC @1.10×` — the RISK product
+
+26yr **+0.088 Sharpe at 11/12** (best sign-consistency in the program), **+11.58pp MaxDD**,
+drawdown better in **25 of 25 years**, cost-flat. But **FAILS the 8yr year-by-year on return**
+(3/8 years, −20.8% after dropping two). Pick it if the mandate is drawdown, not return.
 
 ---
 
