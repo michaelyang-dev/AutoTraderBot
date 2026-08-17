@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 3,650 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 3,794 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2586,6 +2586,73 @@ live reference favours **1.10×**.
 **FINAL: WIN @1.10 — tranching K=4 + no overlay + credit gate→0 + sleeves 70/21/9 + constant
 1.10× leverage.** Confirmed in two independent engines, on two horizons, on a start sample never
 previously examined.
+
+---
+
+## Cycle 44 — VERIFY4 · YEAR-BY-YEAR, and the CREDIT-GATE / DRAWDOWN COUPLING
+
+User chose 1.25x and asked to keep the live credit gate (derisk 0.50) rather than harden it to
+0.00, plus a year-by-year breakdown. Ran three arms x 24 starts (12 used + 12 untouched) on the
+clean-room engine. VERIFY2_cleanroom.py left BYTE-IDENTICAL on disk; the one line needed (return
+the NAV curve) is patched in memory at import. Every calendar year is averaged over all 24 starts
+-- a single start lets the 20-session rebalance phase drive the per-year numbers (sigma 7.92pp).
+
+### Headline, 24 starts
+
+| horizon | arm | CAGR | Sharpe | MaxDD | dCAGR | dSharpe | dMaxDD | +Shrp |
+|---|---|---|---|---|---|---|---|---|
+| 26yr | LIVE | +13.93% | 0.589 | −55.9% | — | — | — | — |
+| | REC@1.25 **gate0.50** | +16.37% | 0.643 | **−57.0%** | +2.44pp | +0.054 | **−1.12pp** | 18/24 |
+| | REC@1.25 gate0.00 | +16.98% | 0.663 | **−49.9%** | +3.06pp | +0.074 | **+6.01pp** | 21/24 |
+| 8yr | LIVE | +26.85% | 0.877 | −38.0% | — | — | — | — |
+| | REC@1.25 **gate0.50** | +31.89% | 0.936 | −38.7% | +5.04pp | +0.059 | −0.73pp | 14/24 |
+| | REC@1.25 gate0.00 | +31.36% | 0.930 | −38.7% | +4.52pp | +0.054 | −0.70pp | 14/24 |
+
+Internal consistency check PASSES: these 24-start means reproduce the cycle-43 12-start-per-sample
+figures almost exactly (26yr gate0.00: +16.98/0.663/−49.9 here vs +17.02/0.666/−50.0 holdout and
++16.94/0.660/−49.9 used; LIVE +13.93/0.589/−55.9 vs the +14.17/+13.68 pair). Two runs, same answer.
+
+### 1. 🔴 THE DRAWDOWN BENEFIT WAS THE GATE, NOT THE CONFIG
+
+At 1.25x, **derisk 0.50 gives NO drawdown improvement — it is slightly WORSE than live on both
+horizons** (−1.12pp on 26yr, −0.73pp on 8yr). derisk 0.00 at the identical leverage gives
+**+6.01pp on 26yr**. A 7.1pp MaxDD swing from the gate multiplier alone.
+
+It traces almost entirely to **2008**: LIVE −29.63%, gate0.50 **−35.52%** (−5.89pp), gate0.00
+−30.23% (−0.61pp). And 2009 recovery: LIVE +24.23%, gate0.50 +27.48%, gate0.00 **+37.29%**.
+Removing the vol overlay and running 1.25x raises crisis exposure; only the FULL gate buys it back.
+Half a gate on an unbraked book is not half the protection — in 2008 it was almost none.
+
+**This means the package I recommended cannot be decomposed the way I implied.** I already
+corrected "overlay removal is standalone" in cycle 43. Same error one level up: **overlay-removal
+and the HARD gate are also one unit.** The config has three coupled dials (overlay / leverage /
+gate depth), and drawdown improvement requires at least two of the three to move together.
+
+### 2. The gain is NOT broad-based year to year
+
+| | 26yr gate0.50 | 8yr gate0.50 |
+|---|---|---|
+| years REC beats LIVE | **13/24** | **4/7** |
+| median year diff | **+0.71pp** | **+0.18pp** |
+| mean year diff | +2.47pp | +4.45pp |
+| drop the single best year (2021) | +1.52pp, **12/23** | +2.25pp, **3/6** |
+
+13/24 is a coin flip. The mean is carried by **2020 (+21.5pp) and 2021 (+24.4pp)**; the median
+year is worth +0.71pp. Worst years 2008 (−5.89pp), 2024 (−4.85pp), 2004 (−4.49pp).
+
+Mechanism is plausible, not a bug: 2020 = the overlay clamps after the March crash and stays
+clamped through the recovery (its documented negative timing skill); 2021 = 70% momentum sleeve in
+a momentum year. But that makes the edge **REGIME-SPECIFIC — it pays in V-shaped recoveries — not
+a steady per-year process edge.** Reporting the +2.44pp mean without this is the "one good year"
+inflation the user explicitly asked me to guard against, and on the mean-vs-median split it very
+nearly is one.
+
+### 3. Verdict on the user's requested config
+
+1.25x + gate 0.50 = **more CAGR, modestly better Sharpe, NO drawdown improvement.** That is a
+return-seeking change, not the risk improvement the program was aimed at. If drawdown matters,
+either the gate goes to 0.00 or leverage comes down; at 1.25x with a half gate, both dials are
+spent. 2008 at −35.5% is the number to look at before choosing.
 
 ---
 
