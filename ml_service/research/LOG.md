@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 3,986 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 4,082 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2712,6 +2712,52 @@ market the overlay sits at its 1.00 cap so LIVE runs the full 1.49x, while REC r
 decay with no change in signal quality. The two are separated only by holding leverage fixed:
 (REC@1.25 - LIVE@1.25) is the strategy term, (LIVE@1.49 - LIVE@1.25) is the leverage term.
 **Until that decomposition lands, "the edge decayed" is the leading hypothesis, not the verdict.**
+
+---
+
+## Cycle 46 — EXP-046 · 🔴 RETRACTION: THERE IS NO DECAY. It was the leverage term.
+
+Cycle 45 reported "the edge has decayed" off the COMBINED rolling delta (REC@1.25 vs LIVE@1.49).
+That comparison confounds two changes at once -- the strategy AND a 1.49x->1.25x leverage cut --
+and I flagged the confound but led with the alarming reading. **The decomposition says the
+confound was the whole story. I was wrong.**
+
+Holding leverage fixed:
+
+| term | 26yr mean | 26yr last3 | 8yr mean | 8yr last3 | pos windows |
+|---|---|---|---|---|---|
+| **STRATEGY** (REC@1.25 − LIVE@1.25) | +3.54pp | **+3.88pp** | +8.95pp | **+4.71pp** | **20/23 · 6/6** |
+| LEVERAGE (LIVE@1.49 − LIVE@1.25) | +0.81pp | **+3.50pp** | +2.78pp | **+3.54pp** | 18/23 · 6/6 |
+| COMBINED (REC@1.25 − LIVE@1.49) | +2.73pp | +0.38pp | +6.17pp | +1.17pp | 17/23 · 5/6 |
+| STRATEGY@1.49 (REC@1.49 − LIVE@1.49) | +4.29pp | +2.69pp | +8.91pp | +3.67pp | 19/23 · 6/6 |
+
+### 1. The strategy term is NOT decaying
+26yr: recent **+3.88pp vs its own long-run +3.54pp** -- slightly ABOVE average, 20/23 windows
+positive. 8yr: positive in **6/6** windows, recent +4.71pp.
+
+### 2. The 8yr "decline" is REVERSION TO THE 26yr NORM, not decay
+The 8yr strategy term ran +11 to +16pp in 2018-2021 -- three to five times the 26-year average of
++3.5pp. That window is the COVID crash and V-recovery, the single most favourable regime for
+removing a vol overlay that clamps down after a crash and stays clamped. Recent +4.71pp sits right
+on the 26yr long-run mean. **An exceptional period ending is not an edge dying**, and reading the
+8yr's own early windows as the baseline is exactly the mistake the two-horizon rule exists to catch.
+
+### 3. What ACTUALLY changed is the LEVERAGE term
+26yr: +0.81pp historically -> **+3.50pp in the last three windows** (2022-2024 +3.28, 2023-2025
++4.51). 2022-2025 has been a strong low-vol bull market, which is precisely when running 1.49x
+instead of 1.25x pays. **The combined delta shrank because I recommended giving up leverage, not
+because the signal weakened.**
+
+### Consequence
+The strategy package (overlay removal + sleeves 70/21/9 + 4 tranches) is robust and regime-stable
+at BOTH leverage levels -- 19-20/23 on the 26yr, 6/6 on the 8yr. The leverage level is a pure
+risk-preference choice with a known price, not a signal question. Cycle 45's headline is retracted;
+the sub-period Sharpe weakness in 2023-2025 remains real and is the leverage term showing up in a
+bull market.
+
+**Process note.** The confound was written down in EXP-046's docstring BEFORE the result, with both
+outcomes pre-specified. That is the only reason this got caught rather than shipped as a scary
+finding. Cycle 45 should have led with the confound instead of the headline.
 
 ---
 
