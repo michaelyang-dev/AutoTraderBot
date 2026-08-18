@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 4,082 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 4,178 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2758,6 +2758,65 @@ bull market.
 **Process note.** The confound was written down in EXP-046's docstring BEFORE the result, with both
 outcomes pre-specified. That is the only reason this got caught rather than shipped as a scary
 finding. Cycle 45 should have led with the confound instead of the headline.
+
+---
+
+## Cycle 47 — EXP-045/047 · 🔴 SECOND RETRACTION: REMOVING THE OVERLAY WAS THE WRONG CALL
+
+### EXP-045 — the splice guard, with a working positive control
+`splice300` returned **exactly 0.000** on every 8yr metric. That is the suspicious-roundness
+pattern that caught EXP-035, so I verified the guard rather than accepting it: it fires on 1.36
+names/day but **intersects SP1500 membership zero times** on the 8yr file, so the no-op is correct.
+The 26yr is the positive control (GPOR intersects membership on 171 date-cells) and it **does**
+move: +0.06pp CAGR / +0.002 Sharpe. Guard works; **D10's real cost is ~0.06-0.08pp CAGR.**
+REC−LIVE goes +2.44pp → +2.46pp. **D10 is resolved as immaterial.**
+
+`splice100` (which also removes genuine squeezes) COSTS −2.43/−4.46pp CAGR: the strategy really
+does harvest real squeezes, and they are worth money.
+
+### 🔴 EXP-047 — the 24-config factorial. THE OVERLAY SHOULD STAY.
+
+MAIN EFFECTS (each averaged over 12 configs — far more robust than any config's rank):
+
+| factor | 8yr FULL | 26yr FULL | 8yr 2023-25 | 26yr 2023-25 |
+|---|---|---|---|---|
+| **tranche t4 − t1** | **+0.065** | **+0.033** | +0.069 | −0.023 |
+| **leverage 1.10 − 1.49** | **+0.018** | **+0.021** | +0.050 | +0.053 |
+| overlay ON − OFF | **+0.027** | **−0.011** | **+0.118** | **+0.102** |
+| sleeves 70/21/9 − 50/35/15 | +0.023 | +0.002 | −0.035 | −0.017 |
+
+**On the 8yr, all five configs beating LIVE on Sharpe in EVERY sub-period have the overlay ON and
+4 tranches. Zero no-overlay configs pass.** The no-overlay arms show the giveaway shape: the
+highest ΔCAGR in the grid (+7.03pp for `noovl_s702109_t4_L1.49`) alongside the WORST recent
+sub-period (−0.113) and worse drawdown (−5.19pp). They buy CAGR with risk.
+
+**My entire overlay-removal thesis was a 2018-2022 artefact.** That window is the COVID crash plus
+V-recovery — the single most favourable regime possible for deleting a brake that clamps after a
+crash and stays clamped. Both horizons now agree the overlay is BETTER in 2023-2025 (+0.118/+0.102).
+
+### The contaminated cell — why the horizons disagree on the full-sample overlay effect
+`ovl_s503515_t4_L1.49` (LIVE + tranching only) has 2023-2025 dSharpe **−0.049 on the 26yr file and
++0.052 on the 8yr file** — opposite signs, same config, same calendar window, different universe
+file. BUGS D9: the 26yr file is missing ~10% of the modern universe in exactly that window.
+**The 26yr 2023-2025 column is the least trustworthy cell in the table** and must be down-weighted
+against the 8yr's, which is clean there.
+
+### What is actually established
+Two-horizon agreement, which is the bar: **tranching helps (+0.065/+0.033)** — the largest single
+effect and the one with the cleanest mechanism (variance reduction, no alpha claim, therefore
+regime-independent) — and **lower leverage raises Sharpe monotonically** on both. Sleeve tilt is
+noise on the 26yr (+0.002) and NEGATIVE recently on both; it should probably be dropped too.
+
+### NOT selecting on the leaderboard
+Only 2 of 24 configs went 4/4 on the 26yr, by margins of +0.006 and +0.007, while strictly better
+configs missed by −0.018. That is a knife-edge, not a finding, and 5-of-24 passing 3/3 on the 8yr
+is barely above the ~3 expected by chance. What makes the result credible is that survivors
+CLUSTER on one factor combination instead of scattering. Finalists are therefore chosen from the
+MAIN EFFECTS, not the ranking → EXP-051 at the full 24-start standard with the untouched holdout.
+
+**Leading candidate: overlay ON + 4 tranches + leverage 1.10.** Expect roughly FLAT CAGR with
++0.056/+0.103 Sharpe and **+6.7 to +8.4pp of drawdown**. That is a drawdown-reduction package, not
+the CAGR package I pitched. Less exciting and much more likely to be real.
 
 ---
 
