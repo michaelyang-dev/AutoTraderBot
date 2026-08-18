@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 3,794 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 3,986 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2653,6 +2653,65 @@ nearly is one.
 return-seeking change, not the risk improvement the program was aimed at. If drawdown matters,
 either the gate goes to 0.00 or leverage comes down; at 1.25x with a half gate, both dials are
 spent. 2008 at −35.5% is the number to look at before choosing.
+
+---
+
+## Cycle 45 — EXP-042/043/044 · THE EDGE HAS DECAYED. Reported against my own recommendation.
+
+Opened a new phase by attacking my OWN results before chasing new ideas. Three findings, and the
+third is the one that matters.
+
+### EXP-042 — universe integrity: 3 defects (BUGS D9/D10/D11)
+See BUGS.md. Headline: the 26yr file is missing ~10% of the modern investable universe (9.9% by
+2025, 179 real SP1500 names with zero prices from 2017 on), and D5's PERMNO fix is incomplete
+(WW/WTW carries a 15,925.6% one-day splice in BOTH files). **The A/B DELTA survives** -- same
+start, only the file differs, REC-minus-LIVE agrees to 0.07pp in 2024 and 0.13pp in 2025 while the
+LEVELS differ by up to 10.55pp. Conclusions are deltas, so they stand; absolute 26yr recent-year
+figures must not be quoted.
+
+### EXP-044 — does the splice contamination reach the book? MOSTLY NO
+Membership-gated share of top-5 momentum slots taken by a likely artefact:
+**8yr 0.010% (1 slot of 10,050). 26yr 0.856% (86 slots).** Ungated it was 7.07%/5.60%, so PIT
+membership removes ~99%/85% of it. Nearly every flagged name (WW, TBHC, DXLG, ACY, ACIC, SEZL,
+CLSK, MARA, RGC, KOPN) was **never an index member**.
+
+**The one real hit is WTW on the 26yr file, and the asymmetry is instructive.** The same company is
+`WW` in the 8yr file (never a member -> harmless) and `WTW` in the 26yr file, where it is a member
+on 85 of 85 absurd days. The 26yr build married a genuine member's membership record to a corrupted
+spliced price series. Small (0.86% of slots) but real; EXP-045 measures the return impact directly.
+
+### 🔴 EXP-043 — THE EDGE HAS DECAYED. This cuts against my own recommendation.
+
+I expected D9 to explain the 2023-2025 weakness -- the 26yr file is missing modern high-momentum
+names, so the clean 8yr file should have looked better. **It does not. It looks worse.**
+
+8yr sub-periods (clean file, 24 starts), REC@1.25 gate0.50 vs LIVE:
+
+| period | dCAGR | dSharpe | dMaxDD | sign |
+|---|---|---|---|---|
+| 2018-2020 | **+10.72pp** | **+0.247** | +1.32pp | 16/24 |
+| 2021-2022 | +5.16pp | +0.077 | −5.08pp | 12/24 |
+| **2023-2025** | **+0.67pp** | **−0.053** | **−4.51pp** | **9/24** |
+
+Rolling 3-year CAGR delta, 8yr: +10.72 / +13.01 / +9.74 / +3.78 / −0.94 / +0.67.
+**Trend slope −2.80pp per year.** 26yr agrees at the tail: 2022-2024 −1.93pp and 2023-2025 −2.43pp
+are the **4th percentile of all 23 windows**.
+
+**Honest reading:** in the most recent three years the proposed config delivers no excess CAGR, a
+NEGATIVE Sharpe delta, WORSE drawdown, and sign consistency of 9/24 -- below a coin flip. The
++2.44pp/+5.04pp headline I reported is earned almost entirely in 2018-2022.
+
+**Statistical caveat, stated so I do not overclaim in the other direction:** the 8yr trend is fit
+on 6 heavily overlapping windows from 8 years -- they are nowhere near independent, and the script's
+own percentile call ("inside the historical spread") is meaningless on 6 points. The 26yr tail
+(4th percentile of 23) is the stronger evidence. This is a serious warning, not a proof of death.
+
+**Open confound, and it is a real one (-> EXP-046).** LIVE = 1.49x x vol overlay; in a calm bull
+market the overlay sits at its 1.00 cap so LIVE runs the full 1.49x, while REC runs 1.25x flat.
+2023-2025 was exactly that regime, so a pure LEVERAGE gap predicts the same rolling pattern as
+decay with no change in signal quality. The two are separated only by holding leverage fixed:
+(REC@1.25 - LIVE@1.25) is the strategy term, (LIVE@1.49 - LIVE@1.25) is the leverage term.
+**Until that decomposition lands, "the edge decayed" is the leading hypothesis, not the verdict.**
 
 ---
 
