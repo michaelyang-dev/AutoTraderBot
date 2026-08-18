@@ -247,6 +247,73 @@ Eight defects, each found only after fixing the previous one. Full detail in
 3.5pp and drawdown understated by 6.3pp. **Every figure in this repo predating 2026-07-28 is
 suspect.**
 
+### 🔴 D9 (found 2026-08-17, EXP-042) — the 26yr file is MISSING ~10% of the modern universe
+
+Direct panel comparison of the two universe pickles over their shared era (2017+):
+
+| year | investable names, 8yr file | 26yr file | 26yr short by |
+|---|---|---|---|
+| 2017 | 2179 | 2102 | 3.6% |
+| 2019 | 2164 | 2042 | 5.6% |
+| 2021 | 2176 | 1999 | 8.1% |
+| 2023 | 2139 | 1932 | 9.7% |
+| 2025 | 2049 | 1847 | **9.9%** |
+
+209 names priced in the 8yr file are absent from the 26yr file on 2025-12-31, and **179 of those
+have ZERO prices in the 26yr file at any point from 2017 on** — ACI (Albertsons), AMCR (Amcor),
+ALAB (Astera Labs), AGL, ADPT, AHR, ALTM and ~170 more. These are real SP1500 constituents. The
+26yr build simply never ingested them; the deficit GROWS monotonically with time, which is the
+signature of a membership/price source that stops picking up new listings.
+
+**Consequence — and it cuts at my own conclusions.** Every 26yr result for 2017-2025 in this
+program ran on a pool ~10% thinner than reality, missing precisely the recently-added names. Those
+skew high-momentum, so a top-5 momentum sleeve is disproportionately likely to have wanted them.
+**This is a live candidate explanation for the "recent decay" flagged in VERIFY4** (26yr shows the
+proposed config losing in 2023/2024/2025) — the 8yr file, which has the names, does NOT show the
+same pattern. Treat every 26yr recent-window number as understating the modern universe until
+EXP-043 settles it against the 8yr file.
+
+**What is NOT affected:** the A/B DELTA. Holding the start date fixed and varying only the file
+(EXP-042 part B), REC-minus-LIVE agrees to 0.07pp in 2024 and 0.13pp in 2025 — while the LEVELS
+differ by up to 10.55pp (2025 LIVE: +25.41% on the 8yr file vs +14.86% on the 26yr file). Both
+arms lose the same names, so the comparison survives what the levels do not. Every conclusion in
+this program is a delta, which is why they stand — but no absolute 26yr recent-year figure should
+be quoted.
+
+### 🔴 D10 (found 2026-08-17, EXP-042) — D5's PERMNO fix is INCOMPLETE; spliced tickers remain
+
+D5 above claims ticker-splicing was fixed by PERMNO-keying. It was not fully fixed, and **the two
+files resolve tickers differently from each other**:
+
+- **WW / WTW** — an identical **15,925.6% ONE-DAY** move in BOTH files. The 8yr file files it
+  under `WW`, the 26yr file under `WTW`. WW (Weight Watchers) and WTW (Willis Towers Watson) are
+  different companies; their series are spliced together. Max price 349 (8yr) vs 103 (26yr).
+- **AA** — the exact Alcoa→Arconic case D5 names as fixed. Max price 91.1 (8yr) vs 212.17 (26yr):
+  the two files disagree about which company `AA` is.
+- 32 of 2,398 shared symbols (1.3%) disagree by >1%; 10 disagree by >10x.
+
+**Why this is the dangerous one.** A fabricated +15,925% day manufactures a colossal 12-1 momentum
+score, and the sleeve takes the TOP FIVE — a fake number that large is an automatic #1, not a small
+rank perturbation. Ungated, absurd-momentum (>2000%) names occupy **7.07% (8yr) / 5.60% (26yr) of
+all top-5 momentum slots**, roughly half of them likely artefacts rather than real squeezes
+(GME/MARA/HTZ/KOPN/CLSK are real). **Whether this reaches the book depends entirely on PIT
+membership, which is the open question EXP-044 answers.** Do not quote a momentum number as
+clean until it does.
+
+### D11 (found 2026-08-17, EXP-042) — absurd absolute prices, inert for selection
+
+`NETE` at 1.64e18 and `SINT` at 4.97e6 in BOTH files; `NILE` at 1.16e9 in the 8yr file only
+(vs 40.66 in the 26yr). 9 symbols >$10k in the 8yr file, 5 in the 26yr.
+
+**Inert for BUYING** — sizing is `q = int(nav * w / price)`, so a $138M price gives `q = 0` and the
+name can never be held. **Not inert for RETURNS**: the corruption is not a constant scale factor,
+so anything derived from it differs between files — NILE's daily returns correlate **−0.115**
+across the two files. It therefore feeds momentum/vol features even though it can never be bought.
+Low priority relative to D10 (these names are unbuyable, so they only waste a rank slot), but it is
+the same root cause and should be fixed in the same pass.
+
+---
+
 **Residual known gap:** 399/4,305 membership symbols (9.3%) never resolve to a CRSP ticker.
 A name-based bridge was tested and **rejected** — it matched LEHMQ→Lehigh Valley RR and
 WAMUQ→Wampler Longacre, wrong 3 of 4 times. Clean fix is a WRDS re-download with PERMNO/GVKEY
