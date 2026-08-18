@@ -141,7 +141,12 @@ mechanism, and the nearness measure is far more robust to a single outlier month
 12-month return. Different functional form, same underlying anomaly — so it is not a new edge
 claim, it is a less noisy estimator of the one we already trade.
 
-### I-11 · Harder idiosyncratic-vol screen inside the momentum pool · **OPEN** · EV: MED
+### I-11 · Harder idiosyncratic-vol screen · **KILLED (EXP-048)** · see LOG cycle 48
+Book-wide screen is harmful at every dose on both horizons: dSharpe −0.279/−0.441/−0.395 (8yr) and
+−0.061/−0.155/−0.109 (26yr) at p80/p67/p50, costing 4.5-22pp of CAGR. Momentum winners ARE the
+high-vol names, so screening them removes the sleeve's hunting ground. A standalone-predictive
+feature is not the same claim as an additive one. Pool-only variant formally untested but not worth
+reopening at this magnitude.
 The AUDIT01 forward-IC sweep found `vol_60d` the **single strongest** feature in the panel
 (IC −0.050, i.e. low vol → high forward return) — stronger than any return feature. The
 momentum sleeve currently gives only a soft ×1.15 nudge for `vol_20d < 0.25`.

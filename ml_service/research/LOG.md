@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 4,178 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 4,274 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2817,6 +2817,42 @@ MAIN EFFECTS, not the ranking → EXP-051 at the full 24-start standard with the
 **Leading candidate: overlay ON + 4 tranches + leverage 1.10.** Expect roughly FLAT CAGR with
 +0.056/+0.103 Sharpe and **+6.7 to +8.4pp of drawdown**. That is a drawdown-reduction package, not
 the CAGR package I pitched. Less exciting and much more likely to be real.
+
+---
+
+## Cycle 48 — EXP-048 · IDIOSYNCRATIC-VOL SCREEN (I-11): **KILLED**, and not marginally
+
+`vol_60d` is the single strongest feature in the AUDIT01 forward-IC sweep (IC −0.050, low vol →
+high forward return), stronger than any return feature, and the book harvests it only through a
+soft ×1.15 nudge. The low-vol anomaly is among the most replicated results in the literature. This
+was the best-motivated untested idea in IDEAS.md. It fails hard.
+
+Dose-response, dSharpe vs the unscreened base (12 starts):
+
+| screen | 8yr dCAGR | 8yr dSharpe | 26yr dCAGR | 26yr dSharpe |
+|---|---|---|---|---|
+| p80 (drop top vol quintile) | −16.50pp | **−0.279** | −4.52pp | −0.061 |
+| p67 (drop top tercile, = I-11) | −22.07pp | **−0.441** | −7.76pp | −0.155 |
+| p50 (drop top half) | −22.17pp | −0.395 | −7.67pp | −0.109 |
+
+Negative at every dose, on both horizons, in almost every sub-period. Also NON-MONOTONE (p67 worse
+than p50), which by the criterion I set before running means the fine structure is noise — but the
+direction is not in doubt.
+
+**Why it fails, and why the premise was still not silly.** A cross-sectional IC says low-vol names
+beat high-vol names *on average across the whole cross-section*. It does NOT say the momentum
+sleeve's top-5 are improved by deleting the high-vol half of the pool — momentum winners ARE the
+high-vol names, so a book-wide vol screen removes the sleeve's entire hunting ground. The feature
+is real; harvesting it this way destroys the thing it is bolted onto. A signal being predictive
+standalone and being additive to an existing book are different claims, and I conflated them.
+
+**Scope honesty:** this screened the WHOLE book, which is a stronger intervention than I-11
+proposed (momentum pool only) -- flagged in the docstring before running, not after. A pool-only
+version remains formally untested, but at −0.28 to −0.44 Sharpe the narrower variant is very
+unlikely to rescue it. Downranked to LOW, not reopened.
+
+One notable side-result: p50 on the 26yr buys **+14.99pp of MaxDD** for −7.67pp CAGR. A large
+drawdown lever exists here — it is simply a bad *trade* (Sharpe −0.109), not an absent effect.
 
 ---
 
