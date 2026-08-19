@@ -364,6 +364,48 @@ class MassiveDataProvider:
                         pass
             uncached.append(sym)
 
+        # ── CACHE DEPTH GUARD (2026-08-19) ───────────────────────────────────
+        # The cache is per-symbol and reused for 18h with NO check on how much history
+        # each file actually holds. On 2026-08-18 the live book ran for >2h with
+        # dist_sma200 coverage at 30.6% (1044 of 1504 SP1500 names missing) while the
+        # fetch reported success (1539/1539, quality gate PASSED) — because coverage is
+        # not a fetch property, it is a DEPTH property, and nothing measured depth.
+        #
+        # Why depth alone breaks and nothing else does: dist_sma200 is the only feature
+        # needing 200 CONTIGUOUS bars. `c.rolling(200).mean()` uses pandas' default
+        # min_periods=200, so a symbol short of 200 usable bars yields NaN; get_feature_map
+        # drops NaN keys; `dist_sma200.get(sym, 0)` then returns 0, fails `> 0`, and the
+        # name vanishes from the momentum and lowvol sleeves with no log and no error.
+        # vol_60d (60 bars) and ret_126d (touches 2 rows) survive the same truncation
+        # untouched, which is exactly the signature observed: 99.4% / 99.4% / 30.6%.
+        #
+        # Deliberately a SET-level test, not per-symbol. Genuinely short histories are
+        # normal and permanent (recent IPOs: ADIG 10 bars, HONA 35, MFP 30) — re-fetching
+        # those every cycle would burn API budget forever and never succeed. The failure
+        # being defended against is MASS truncation, so the statistic is the MEDIAN.
+        #
+        # NOT fixed by relaxing min_periods: the backtest universe builder uses the
+        # identical `rolling(200).mean()` (scripts/build_universe_2000.py:262), so
+        # loosening it live would silently change which names the live book selects
+        # relative to every validated backtest number. The formula is right; the input
+        # was short. Fix the input.
+        _depths = sorted(len(d) for d in raw.values() if d is not None and len(d) > 0)
+        if _depths:
+            _median = _depths[len(_depths) // 2]
+            _expected = int(warmup_days * 252 / 365)          # ~379 sessions for 550d
+            _floor = int(_expected * 0.80)                      # ~303
+            log.info("cache depth: median %d bars (expected ~%d), p05 %d, min %d, "
+                     "%d/%d below 200",
+                     _median, _expected, _depths[max(0, len(_depths) // 20)], _depths[0],
+                     sum(1 for d in _depths if d < 200), len(_depths))
+            if _median < _floor:
+                log.error("CACHE DEPTH ALARM: median cached history %d bars < floor %d "
+                          "(expected ~%d). This silently guts dist_sma200 and drops names "
+                          "from the momentum sleeve. Discarding cache and refetching ALL.",
+                          _median, _floor, _expected)
+                uncached = list(symbols)
+                raw = {}
+
         if uncached:
             log.info("Fetching %d/%d symbols from Massive (rate-limited) ...",
                      len(uncached), len(symbols))
@@ -400,6 +442,21 @@ class MassiveDataProvider:
         loaded = sum(1 for s in raw if len(raw[s]) > 0)
         log.info("Massive: %d/%d symbols loaded (%d from cache, %d fresh)",
                  loaded, len(symbols), len(symbols) - len(uncached), len(uncached))
+
+        # Post-fetch depth report. If the refetch is ALSO short the problem is upstream
+        # (vendor/API), not the cache — say so plainly rather than looping, and let the
+        # existing feature-coverage guard in signal_builder alarm on the consequence.
+        _d2 = sorted(len(d) for d in raw.values() if d is not None and len(d) > 0)
+        if _d2:
+            _m2 = _d2[len(_d2) // 2]
+            _exp2 = int(warmup_days * 252 / 365)
+            _n200 = sum(1 for d in _d2 if d < 200)
+            log.info("post-fetch depth: median %d bars, %d/%d symbols below 200 "
+                     "(these cannot produce dist_sma200)", _m2, _n200, len(_d2))
+            if _m2 < int(_exp2 * 0.80):
+                log.error("DEPTH STILL SHORT AFTER REFETCH: median %d < %d. The vendor is "
+                          "returning truncated history — this is upstream of the cache.",
+                          _m2, int(_exp2 * 0.80))
         return raw
 
     # ── Quick Refresh (for 15-min cadence) ───────────────────────────────────
