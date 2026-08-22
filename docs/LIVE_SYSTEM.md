@@ -150,6 +150,49 @@ Vol-scaling was validated best-of-5 policies at 1x AND at leverage; up-scaling v
 (e.g. t.20/cap1.5) LOSE at leverage — financing cost + Reg-T clamping + variance drag
 (`research/volpolicy_levered_test.py`). Do not re-tune without new evidence.
 
+## 🔴 dist_sma200 coverage collapse — INCIDENT 2026-08-18, FIXED + DEPLOYED 2026-08-19
+
+**Symptom.** Telegram COVERAGE ALARM: `dist_sma200 30.6% < floor 85%`. The live book ran from
+~16:11 to ~18:28 on 2026-08-18 with **1,044 of 1,504 SP1500 names invisible to the momentum and
+lowvol sleeves**, while every upstream check reported success (`Massive: 1539/1539 symbols
+loaded`, `Data quality gate PASSED`).
+
+**Why nothing caught it.** Coverage is not a *fetch* property, it is a *depth* property, and
+nothing measured depth. `dist_sma200` is the only feature needing 200 CONTIGUOUS bars —
+`c.rolling(200).mean()` uses pandas' default `min_periods=200`, so a short symbol yields NaN,
+`get_feature_map` drops NaN keys, `dist_sma200.get(sym, 0)` returns 0, fails `> 0`, and the name
+vanishes from the sleeve **with no log and no error**. `vol_60d` (60 bars) and `ret_126d` (touches
+only 2 rows) are untouched by the same truncation — hence the diagnostic signature
+**99.4% / 99.4% / 30.6%**. The per-symbol disk cache in `massive_data_provider` is reused for 18h
+with no check on how much history each file holds, so a truncated cache serves the whole window.
+
+**Trading impact: NONE.** No orders in the window (engine logs show only IBKR connectivity);
+`ibkr_rebal_state.json` showed 5/20 trading days since the 2026-08-11 rebalance.
+
+**Fix (commit 10046bc, data layer, parity-neutral).** `fetch_bars_batch` now measures cache depth
+on load; if the **median** falls below 80% of expected sessions it discards the cache and refetches
+everything. Set-level by design — genuine short histories are normal and permanent (ADIG 10 bars,
+HONA 35, MFP 30) and per-symbol refetching would burn API budget forever and never succeed. Also
+logs the depth distribution every fetch, and reports when a refetch is STILL short (= the vendor is
+the problem, not the cache).
+
+**Explicitly NOT fixed by relaxing `min_periods`.** The backtest universe builder uses the
+identical `rolling(200).mean()` (`scripts/build_universe_2000.py:262`). Loosening it live would
+silently change which names the live book selects relative to every validated backtest number.
+The formula is right; the input was short. **Fix the input, never the filter.**
+
+**Verified live 2026-08-19 → 08-22:** new telemetry present
+(`cache depth: median 379 bars (expected ~379)`), depth alarm never fired, coverage restored to
+**98.1–99.1%**, no COVERAGE ALARM since. Unit test: `ml_service/tests/test_cache_depth_guard.py`
+(6 assertions incl. the negative cases — healthy cache not churned, genuine short-history IPOs do
+not trigger a mass refetch).
+
+**Caveat on the root cause.** Mass cache truncation is the best-supported mechanism but was not
+*proven*: the diagnostic run refreshed the per-symbol cache as a side effect, destroying the
+evidence. The new depth telemetry exists so a recurrence is diagnosable rather than inferred.
+
+---
+
 ## Gotchas that previously caused misdiagnosis
 - **Alpaca multi-strategy buckets are DISABLED**: `momentum: 0, mean_reversion: 0,
   mega_cap: 0` — all 30 slots are the v12 factor bucket. Log labels "ML 22/30, MOM 0/0"
