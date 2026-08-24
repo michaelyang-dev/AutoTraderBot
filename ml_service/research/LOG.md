@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 4,274 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 4,412 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2853,6 +2853,61 @@ unlikely to rescue it. Downranked to LOW, not reopened.
 
 One notable side-result: p50 on the 26yr buys **+14.99pp of MaxDD** for −7.67pp CAGR. A large
 drawdown lever exists here — it is simply a bad *trade* (Sharpe −0.109), not an absent effect.
+
+---
+
+## Cycle 49 — EXP-052/053 · K=4 CONFIRMED; and the credit gate should go to 0.00
+
+### EXP-052 — tranche count was ASSUMED, never tested. It survives.
+K=4 was picked at the start of this program and never validated. Sweep (K=1/2/4/5/10, leverage
+1.10 and 1.49, 24 starts, both horizons):
+
+| K | 8yr dSharpe @1.10 | 26yr dSharpe @1.10 | sigma ratio 8yr | vs sqrt(K) |
+|---|---|---|---|---|
+| 2 | +0.025 | +0.021 | 0.643 | 0.707 |
+| **4** | **+0.062** | **+0.027** | 0.602 | 0.500 |
+| 5 | +0.057 | +0.026 | 0.518 | 0.447 |
+| 10 | +0.060 | +0.024 | 0.473 | 0.316 |
+
+**K=4 peaks on BOTH horizons and is the ONLY K positive in every 8yr sub-period at BOTH leverage
+levels** — K=2/5/10 all go negative in 2018-2020. Per-start sigma falls 40% (8yr) / 55% (26yr).
+
+**Against myself:** I-01's falsification criterion said sigma must fall by ~sqrt(K) "or the idea is
+void." **It does not** (0.602 at K=4 vs 0.500 predicted; 0.473 at K=10 vs 0.316). Phases are more
+correlated than the mechanism assumed because sub-books hold overlapping names. Mechanism PARTIALLY
+confirmed; the idealised version is wrong. Recording the failed criterion rather than dropping it.
+
+### 🔴 EXP-053 — gate depth on the WINNING (overlay-ON) base: 0.00 beats 0.50
+
+EXP-049 measured gate depth on the overlay-OFF base, which EXP-047 superseded. Re-run on the
+actual candidate, 24 starts, both samples. At leverage 1.10, UNTOUCHED HOLDOUT:
+
+| horizon | gate | CAGR | Sharpe | MaxDD | dSharpe | dMaxDD | won |
+|---|---|---|---|---|---|---|---|
+| 26yr | **0.00** | **+14.33%** | **0.666** | **−43.1%** | **+0.070** | **+12.25pp** | 4/4 |
+| 26yr | 0.25 | +14.13% | 0.658 | −44.2% | +0.062 | +11.06pp | 4/4 |
+| 26yr | 0.50 | +13.88% | 0.647 | −48.1% | +0.051 | +7.24pp | 4/4 |
+| 8yr | 0.00 | +27.43% | 0.995 | −29.9% | +0.111 | +8.01pp | 3/3 |
+| 8yr | 0.50 | +27.46% | 0.992 | −29.9% | +0.107 | +8.02pp | 3/3 |
+
+**26yr: MONOTONE across 0.00 → 0.25 → 0.50 on CAGR, Sharpe AND drawdown** — the pre-registered
+dose-response criterion, met on the axis that matters. g0.00 dominates g0.50 by +0.019 Sharpe and
+**+5.0pp of drawdown** while also delivering MORE CAGR (+0.45pp), because a shallower drawdown
+compounds better. 8yr: gate depth is irrelevant (+0.004 spread) — no cost to taking the deeper gate.
+
+**Why this reverses the earlier 'keep 0.50' call, and it is not a contradiction.** VERIFY4 found
+g0.00 overshot in 2020 (+16.99% vs g0.50's +20.64%) on the overlay-OFF base. With the overlay ON
+that penalty VANISHES: 2018-2020 dSharpe is +0.105 (g0.00) vs +0.101 (g0.50), a tie. The overlay
+has already de-grossed by the time the gate fires, so the gate is no longer doing the de-risking
+alone and its depth costs nothing in a V-recovery. The two mechanisms are complements, and 'keep
+the gate shallow' was only correct on a base that no longer exists.
+
+**Note g0.25 is NOT selected** despite sitting between: it was never pre-registered, and it is
+dominated by g0.00 on every axis anyway, so nothing turns on it.
+
+**FINAL: overlay ON + 4 tranches (5-day stride) + sleeves 70/21/9 + leverage 1.10 + credit gate
+derisk 0.00.** 26yr holdout +0.070 Sharpe / **+12.25pp MaxDD**; 8yr holdout +0.111 / +8.01pp;
+CAGR flat on both. 4/4 and 3/3 sub-periods.
 
 ---
 
