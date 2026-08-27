@@ -4,7 +4,7 @@ Format: hypothesis → change → IS/OOS metrics → audit result → verdict �
 Kills are logged in as much detail as wins; the failure reasons are what generate the next
 hypotheses.
 
-**Configurations tested to date: 4,412 (this program) + ~60 inherited (see "Inherited verdicts").**
+**Configurations tested to date: 4,442 (this program) + ~60 inherited (see "Inherited verdicts").**
 
 ---
 
@@ -2908,6 +2908,60 @@ dominated by g0.00 on every axis anyway, so nothing turns on it.
 **FINAL: overlay ON + 4 tranches (5-day stride) + sleeves 70/21/9 + leverage 1.10 + credit gate
 derisk 0.00.** 26yr holdout +0.070 Sharpe / **+12.25pp MaxDD**; 8yr holdout +0.111 / +8.01pp;
 CAGR flat on both. 4/4 and 3/3 sub-periods.
+
+---
+
+## Cycle 50 — EXP-054 · THE PARAMETER FRONTIER IS REACHED. Nothing promoted.
+
+Seven parameters that had never been swept — all hardcoded in the clean-room engine, which is
+precisely why nothing had ever touched them. Star design, 3 levels each (base in the middle so
+monotonicity is testable), 15 configs x 2 horizons.
+
+**Instrumentation parity, twice confirmed.** The knobs were made config-driven by an in-memory
+source patch (VERIFY2_cleanroom.py untouched on disk). With every knob at its hardcoded default
+the patched BASE reproduces the UNPATCHED engine exactly: 8yr +26.46%/0.974/−29.6% vs EXP-053's
++26.46%/0.974/−29.6%; 26yr +14.15%/0.655/−42.8% vs EXP-053's +14.15%/0.655/−42.8%. The patch is
+behaviour-neutral, so the sweep measures the parameters and not my instrumentation.
+
+**A pre-flight assertion caught a real defect before any compute was spent:** the anchor
+`VOL_TARGET = 0.15 * 1.49` appears TWICE (once in an explanatory comment). A silent partial patch
+would have left the vol target hardcoded while the label said otherwise, producing plausible wrong
+numbers across the whole sweep. Fixed with a line-anchored replacement and a full uniqueness check.
+
+### RESULT: nothing clears the pre-registered bar. The base is at a local optimum.
+
+| parameter | 8yr coherence | 26yr coherence | verdict |
+|---|---|---|---|
+| **top_n** | both worse (−0.151/−0.110) | both worse (−0.038/−0.034) | **5 CONFIRMED optimal** |
+| **trailing_stop** | both worse (−0.020/−0.096) | both worse (−0.016/−0.036) | **40% CONFIRMED optimal** |
+| **credit_pct** | both worse (−0.017/−0.008) | gradient, fails sub-period | **p95 CONFIRMED** |
+| vol_target | gradient → 0.85x, all sub-periods | **+0.000/+0.000, base in a hole** | rejected |
+| vol_floor | gradient → 0.40, all sub-periods | gradient but fails a sub-period | rejected |
+| cap_pos | gradient → 0.20, all sub-periods | fails a sub-period | rejected |
+| vol_lookback | gradient → 20, fails a sub-period | gradient → 20, fails a sub-period | rejected (see below) |
+
+Three variants passed on the 8yr (vol_target 0.85x +0.029, vol_floor 0.40 +0.007, cap_pos 0.20
++0.003). **None survives on the 26yr** — they collapse to +0.000, +0.004 and −0.000 respectively.
+Classic single-horizon artefacts, caught by the two-horizon rule exactly as designed.
+
+### Three parameters are now CONFIRMED rather than assumed
+`top_n=5`, `trailing_stop=0.40` and `credit_pct=0.95` are each WORSE on both sides on BOTH
+horizons — a genuine local optimum, not an untested default. `credit_pct=0.98` is the standout
+warning: on the 26yr it costs **−12.11pp of drawdown**, because raising the trigger means the gate
+almost never fires and the crisis protection disappears.
+
+### The one near-miss, documented and NOT promoted
+`vol_lookback=20` is the only variant positive on BOTH horizons on full-sample Sharpe
+(**+0.033 8yr, +0.018 26yr**) AND on drawdown (+0.33pp, +0.64pp). It fails only the every-
+sub-period test (8yr 2021-2022 −0.068; 26yr 2001-2008 −0.017).
+
+**It is rejected.** Rule (b) was written before the run and says positive in EVERY sub-period on
+BOTH horizons. Promoting this would mean loosening a validation rule to let a result through,
+which is the one thing this program forbids. Recorded as the single most promising direction if it
+is ever revisited under a fresh pre-registration — not as a pending win.
+
+**Consequence:** escalation-ladder rung 1 (parameters) is now exhausted. The recommended config is
+unchanged and every one of its parameters is either measured or confirmed at a local optimum.
 
 ---
 
