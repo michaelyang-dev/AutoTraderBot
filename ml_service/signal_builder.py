@@ -231,10 +231,24 @@ def _build_universe(raw, enhanced_data=None):
     return uni
 
 
+# ── VENDOR-HOLE STATS (2026-09-02) — filled in by _compute_features_from_raw, logged by the
+# coverage guard. ROOT CAUSE of the 2026-08-18 (30.6%) and 2026-09-01 (19.7%) dist_sma200
+# collapses, proven from 16 bad-day cache files still on disk: every one was missing
+# 2026-08-28 — a real trading day — that the good files have. Polygon transiently omits a
+# date from per-symbol history (backfill lag); the union index keeps the date because SOME
+# symbols have it; everyone else gets a NaN row inside the 200-bar window.
+#
+# WHY ONLY dist_sma200 BROKE: pandas pct_change() PADS NaNs by default, so ret_*/vol_* walk
+# straight through the hole and look healthy (99.4% both incidents). rolling(200).mean() on
+# the raw close does not pad, so ONE missing day kills it for 200 sessions.
+_HOLE_STATS = {"symbols": 0, "cells": 0, "unfilled": 0, "dates": {}}
+
+
 def _compute_features_from_raw(raw, prices):
     """Compute the feature columns that v9.6 strategies need from raw bars."""
     date_index = prices.index
     all_features = []
+    _HOLE_STATS.update({"symbols": 0, "cells": 0, "unfilled": 0, "dates": {}})
 
     for sym in prices.columns:
         if sym not in raw or len(raw[sym]) == 0:
@@ -249,6 +263,26 @@ def _compute_features_from_raw(raw, prices):
             continue
         c = df["close"].reindex(date_index)
         v = df["volume"].reindex(date_index) if "volume" in df.columns else pd.Series(1, index=date_index)
+
+        # ── VENDOR-HOLE FILL (2026-09-02) ─────────────────────────────────────────
+        # Forward-fill INTERIOR gaps only (between the first and last real print), at most
+        # 3 sessions. This is parity-RESTORING, not a formula change: the backtest's CRSP
+        # panel carries a row for every trading day per security, so its rolling(200) never
+        # meets an interior NaN. Leading NaNs (pre-listing) are untouched; a gap longer than 3
+        # sessions (a real halt/delisting) stays NaN and the name stays excluded. The formula
+        # (rolling(200).mean(), default min_periods) is deliberately NOT relaxed.
+        _fv, _lv = c.first_valid_index(), c.last_valid_index()
+        if _fv is not None and _lv is not None and _fv != _lv:
+            _inner = c.loc[_fv:_lv]
+            _miss = _inner.isna()
+            if _miss.any():
+                _filled = _inner.ffill(limit=3)
+                c = c.copy(); c.loc[_fv:_lv] = _filled
+                _HOLE_STATS["symbols"] += 1
+                _HOLE_STATS["cells"] += int(_miss.sum())
+                _HOLE_STATS["unfilled"] += int(_filled.isna().sum())
+                for _d in _inner.index[_miss.values]:
+                    _HOLE_STATS["dates"][_d] = _HOLE_STATS["dates"].get(_d, 0) + 1
 
         feat = pd.DataFrame(index=date_index)
         feat["symbol"] = sym
@@ -773,6 +807,29 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
                 if _frac < _floor:
                     _cov_bad.append(f"{_f} {_frac:.1%} < floor {_floor:.0%}")
                     _cov_missing[_f] = [s for s in _pool2 if _m.get(s) is None]
+            # VENDOR-HOLE REPORT — the root-cause signal, logged every universe build.
+            _hs = _HOLE_STATS
+            if _hs["symbols"]:
+                _top = sorted(_hs["dates"].items(), key=lambda kv: -kv[1])[:4]
+                _worst_frac = (_top[0][1] / _n) if _top else 0.0
+                log.warning("VENDOR HOLES filled: %d symbols, %d cells (%d unfillable >3d); "
+                            "worst dates %s",
+                            _hs["symbols"], _hs["cells"], _hs["unfilled"],
+                            [(str(d)[:10], k) for d, k in _top])
+                if _worst_frac > 0.20:
+                    _hmsg = (f"VENDOR HOLE: {str(_top[0][0])[:10]} missing from "
+                             f"{_top[0][1]}/{_n} symbols ({_worst_frac:.0%}). Filled by carry; "
+                             f"without the fill dist_sma200 would have collapsed. Check Polygon.")
+                    log.error(_hmsg)
+                    try:
+                        import os as _os2, requests as _rq
+                        _t = (_os2.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+                        _c = (_os2.getenv("TELEGRAM_CHAT_ID") or "").strip()
+                        if _t and _c:
+                            _rq.post(f"https://api.telegram.org/bot{_t}/sendMessage",
+                                     json={"chat_id": _c, "text": f"⚠️ {_hmsg}"}, timeout=10)
+                    except Exception:
+                        pass
             log.info("feature coverage: %s", " | ".join(_cov_msgs))
             # PUBLISH so ibkr_engine can refuse to rebalance on a degraded book
             globals()["LAST_COVERAGE"] = _cov_frac

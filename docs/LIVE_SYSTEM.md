@@ -217,8 +217,43 @@ on recent rows would take vol_60d down too.
    design. Skipping a rebalance costs at most 20 sessions of drift; trading a corrupt book does not
    unwind. Test: `ml_service/tests/test_coverage_gate.py`.
 
-**Status: harm is contained, cause is not yet identified.** The next occurrence should be
-self-diagnosing.
+### ✅ ROOT CAUSE FOUND 2026-09-02 — vendor date hole + `rolling(200)`'s NaN sensitivity. FIXED.
+
+**Evidence (direct, not inferred).** 16 cache files written at 18:28 on the bad day survived the
+morning refresh (too young). **Every one is missing 2026-08-28 — a real trading day** — while all
+40 sampled good files have it (0/40 disagree). FISV additionally lacks 2025-11-12: this is a
+recurring vendor property, not a one-off.
+
+**Mechanism.** Polygon transiently omits a real trading date from per-symbol history (backfill
+lag). The 09:33 Sep-1 batch (1,204 files) lacked Aug 28; the 09:50 batch (318) had it — and
+318/1539 ≈ the 19.7% that survived. Symbols that HAVE the date put it in the union index;
+everyone else gets a NaN row from `reindex`, inside the 200-bar window. `rolling(200).mean()`
+(default `min_periods`) → NaN → `get_feature_map` drops the key → `dist_sma200.get(sym, 0)`
+fails `> 0` → silent exclusion. It heals when the 18h cache rolls and the backfill has landed.
+
+**Why ONLY dist_sma200 broke — the constraint every earlier theory failed:** pandas
+`pct_change()` PADS NaNs by default, so `ret_*` and `vol_*` walk straight through the hole and
+report 99.4%. Only features computed with `rolling()` on the raw close see it. Depth telemetry
+cannot see it either (378 vs 379 bars is within calendar jitter). Row-level sparsity checks
+cannot see it (one date at ~80% presence is invisible next to the 96% baseline from stale files).
+
+**Fix (commit below), parity-RESTORING not formula-changing.** In `_compute_features_from_raw`,
+after `reindex`, forward-fill INTERIOR gaps only (between first and last real print), limit 3
+sessions. CRSP gives the backtest a row for every trading day per security, so its `rolling(200)`
+never meets an interior NaN — live must match that INPUT structure. Leading NaNs untouched; a
+gap >3 sessions (real halt/delisting) stays NaN and the name stays excluded. `rolling(200).mean()`
+and its `min_periods` are deliberately NOT relaxed. Plus: a vendor-hole detector at the data
+layer (`fetch_bars_batch`: any date missing from >20% of covering symbols → ERROR) and a
+per-build hole report + Telegram in the coverage guard.
+
+**Test:** `ml_service/tests/test_vendor_hole.py` — reproduces the exact incident (a real date
+missing from most symbols, present in others): dist_sma200 restored for holed names, 5-day halt
+still excluded (limit respected), output bit-identical to raw `rolling(200)` for clean names,
+provider scan flags the date. 10/10 locally and on the box.
+
+**What the earlier fixes were:** the 08-19 depth guard addressed a refuted hypothesis (kept: cheap,
+and its telemetry is what falsified it). The 09-02 engine coverage gate remains the backstop — if
+a hole ever exceeds the fill limit, the engine still refuses to rebalance on a degraded book.
 
 ---
 

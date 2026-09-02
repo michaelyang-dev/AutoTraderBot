@@ -457,6 +457,36 @@ class MassiveDataProvider:
                 log.error("DEPTH STILL SHORT AFTER REFETCH: median %d < %d. The vendor is "
                           "returning truncated history — this is upstream of the cache.",
                           _m2, int(_exp2 * 0.80))
+        # VENDOR-HOLE SCAN (2026-09-02). Root cause of both dist_sma200 collapses: Polygon
+        # transiently omits a real trading date from per-symbol history (2026-08-28 was missing
+        # from every bad-day cache file). Depth cannot see this (378 vs 379). Count, per date,
+        # how many symbols whose span covers it are missing it; a date absent from >20% of
+        # covering symbols is a vendor hole. signal_builder fills it; this is the loud early
+        # signal at the layer where it originates.
+        try:
+            from collections import Counter as _Ctr
+            _has = _Ctr(); _cover = _Ctr()
+            _spans = []
+            for _s, _d in raw.items():
+                if _d is None or len(_d) == 0:
+                    continue
+                _ix = pd.DatetimeIndex(_d.index)
+                _has.update(_ix)
+                _spans.append((_ix.min(), _ix.max()))
+            _alld = sorted(_has)
+            for _lo, _hi in _spans:
+                for _t in _alld:
+                    if _lo <= _t <= _hi:
+                        _cover[_t] += 1
+            _holes = [(str(_t)[:10], _cover[_t] - _has[_t], _cover[_t]) for _t in _alld
+                      if _cover[_t] >= 50 and (_cover[_t] - _has[_t]) / _cover[_t] > 0.20]
+            if _holes:
+                log.error("VENDOR HOLE(S) in fetched history: %s  (date, missing, covering)",
+                          _holes[:6])
+            else:
+                log.info("vendor-hole scan: clean (%d dates, %d symbols)", len(_alld), len(_spans))
+        except Exception as _e:
+            log.warning("vendor-hole scan failed: %s", _e)
         return raw
 
     # ── Quick Refresh (for 15-min cadence) ───────────────────────────────────
