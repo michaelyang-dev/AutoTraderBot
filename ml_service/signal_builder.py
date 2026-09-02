@@ -74,6 +74,76 @@ def _load_si_change_data(uni):
         uni._si_change_rank = {}
 
 
+# ── COVERAGE STATE, PUBLISHED (2026-09-02) ───────────────────────────────────
+# The coverage guard has fired twice (2026-08-18 dist_sma200 30.6%, 2026-09-01 19.7%) and BOTH
+# times the cause had self-healed before anyone could look: the per-symbol disk cache turns over
+# within ~18h, so post-hoc forensics arrive after the evidence is gone. The 2026-08-19 depth guard
+# addressed a hypothesis (mass truncation) that the telemetry has since REFUTED -- during the
+# second incident depth was healthy (median 378 bars, expected ~379) while coverage was 19.7%.
+#
+# So: stop guessing. Capture the state AT ALARM TIME, and publish coverage so the trading engine
+# can refuse to act on a degraded book.
+LAST_COVERAGE: dict = {}          # {feature: fraction}, read by signal_server /health
+LAST_COVERAGE_OK: bool = True     # False while any feature is under its floor
+
+
+def _coverage_forensics(raw, today, pool, missing, path):
+    """Dump WHY names are missing, at the moment it happens. Read-only, best-effort.
+
+    Discriminates the three live hypotheses in one shot:
+      STALE    -- symbol's series ends before the union index does (NaN on recent rows)
+      SHORT    -- symbol has fewer than 200 bars at all
+      GAP      -- symbol spans the window but has interior NaNs inside the trailing 200
+    Whichever bucket dominates names the cause; that is exactly what could not be recovered
+    after the fact on 2026-08-18 or 2026-09-01.
+    """
+    import json
+    idx = None
+    for _d in raw.values():
+        if _d is not None and len(_d):
+            idx = _d.index if idx is None else idx.union(_d.index)
+    if idx is None:
+        return
+    idx = pd.DatetimeIndex(sorted(idx))
+    tail = idx[-200:]
+    union_last = idx.max()
+    buckets = {"STALE": 0, "SHORT": 0, "GAP": 0, "ABSENT": 0}
+    detail = []
+    for sym in list(missing)[:400]:
+        d = raw.get(sym)
+        if d is None or not len(d):
+            buckets["ABSENT"] += 1
+            continue
+        c = d["close"].reindex(tail) if "close" in d.columns else None
+        n_nan = int(c.isna().sum()) if c is not None else -1
+        last = d.index.max()
+        if len(d) < 200:
+            b = "SHORT"
+        elif last < union_last:
+            b = "STALE"
+        elif n_nan > 0:
+            b = "GAP"
+        else:
+            b = "GAP"
+        buckets[b] += 1
+        if len(detail) < 60:
+            detail.append({"sym": sym, "bucket": b, "bars": int(len(d)),
+                           "first": str(d.index.min())[:10], "last": str(last)[:10],
+                           "nan_in_trailing_200": n_nan})
+    out = {"ts": datetime.now(ZoneInfo("US/Eastern")).isoformat(),
+           "today": str(today)[:10],
+           "union_index": {"rows": int(len(idx)), "first": str(idx.min())[:10],
+                           "last": str(union_last)[:10]},
+           "pool_size": int(len(pool)), "n_missing": int(len(missing)),
+           "buckets": buckets, "sample": detail}
+    try:
+        with open(path, "w") as fh:
+            json.dump(out, fh, indent=2)
+        log.error("COVERAGE FORENSICS written to %s — buckets %s", path, buckets)
+    except Exception as _e:
+        log.error("could not write coverage forensics: %s", _e)
+
+
 def _is_partial_session(idx):
     """True when idx[-1] belongs to a session that has NOT closed yet.
 
@@ -693,14 +763,30 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
             _pool2 = _uni_cache.get_sp500(today)
             _n = max(len(_pool2), 1)
             _cov_msgs, _cov_bad = [], []
+            _cov_frac, _cov_missing = {}, {}
             for _f, _floor in _cov_floor.items():
                 _m = _uni_cache.get_feature_map(today, _f)
                 _have = sum(1 for s in _pool2 if _m.get(s) is not None)
                 _frac = _have / _n
+                _cov_frac[_f] = round(_frac, 4)
                 _cov_msgs.append(f"{_f} {_frac:.1%} ({_n - _have} missing)")
                 if _frac < _floor:
                     _cov_bad.append(f"{_f} {_frac:.1%} < floor {_floor:.0%}")
+                    _cov_missing[_f] = [s for s in _pool2 if _m.get(s) is None]
             log.info("feature coverage: %s", " | ".join(_cov_msgs))
+            # PUBLISH so ibkr_engine can refuse to rebalance on a degraded book
+            globals()["LAST_COVERAGE"] = _cov_frac
+            globals()["LAST_COVERAGE_OK"] = not _cov_bad
+            if _cov_bad:
+                try:
+                    _worst = min(_cov_bad, key=lambda x: x)
+                    _ts = datetime.now(ZoneInfo("US/Eastern")).strftime("%Y%m%d-%H%M%S")
+                    _fp = (Path(__file__).resolve().parent / "data" /
+                           f"coverage_forensics_{_ts}.json")
+                    _feat = sorted(_cov_missing, key=lambda k: _cov_frac[k])[0]
+                    _coverage_forensics(raw, today, _pool2, _cov_missing[_feat], str(_fp))
+                except Exception as _e:
+                    log.error("coverage forensics failed: %s", _e)
             if _cov_bad:
                 msg = ("COVERAGE ALARM: " + "; ".join(_cov_bad) +
                        ". Names missing a filter feature are SILENTLY dropped from that "

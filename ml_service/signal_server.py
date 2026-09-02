@@ -39,6 +39,7 @@ import pandas as pd
 import uvicorn
 import yfinance as yf  # kept as fallback only
 from massive_data_provider import fetch_bars_batch_massive, get_provider
+import signal_builder as _sb
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -390,6 +391,13 @@ def health():
         "is_stale":        state.is_stale,
         "cached_signals":  len(state.cache),
         "market_open":     _is_market_hours(),
+        # FEATURE COVERAGE (2026-09-02). Published so ibkr_engine can refuse to rebalance on a
+        # degraded book. The coverage guard has fired twice (dist_sma200 30.6% on 2026-08-18,
+        # 19.7% on 2026-09-01) — on both occasions signals were still FRESH, so the engine's
+        # existing staleness check would have happily traded a book built from ~20% of the
+        # universe. Freshness and correctness are different properties.
+        "coverage":        getattr(_sb, "LAST_COVERAGE", {}),
+        "coverage_ok":     bool(getattr(_sb, "LAST_COVERAGE_OK", True)),
     }
 
 

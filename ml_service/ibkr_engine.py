@@ -555,6 +555,23 @@ class IBKREngine:
                     log.warning(f"Signal server data is STALE (last update: {h.get('last_update')}) — NOT trading")
                     send_telegram(f"⚠️ IBKR skipping rebalance — signals are STALE")
                     return []
+                # FEATURE-COVERAGE GATE (2026-09-02). Staleness and CORRECTNESS are different
+                # properties, and only the first was checked. The coverage guard has fired twice
+                # (dist_sma200 30.6% on 2026-08-18, 19.7% on 2026-09-01); both times the signals
+                # were perfectly FRESH while up to 1,208 of 1,504 names were silently missing from
+                # the momentum and lowvol sleeves. Had either landed on a rebalance day this
+                # engine would have rebuilt the entire book from ~20% of the universe and logged
+                # nothing unusual. Refuse instead — skipping a rebalance costs at most 20 sessions
+                # of drift, which is recoverable; trading a corrupt book is not.
+                if h.get("coverage_ok") is False:
+                    _cov = h.get("coverage", {})
+                    _bad = ", ".join(f"{k} {v:.1%}" for k, v in sorted(_cov.items())
+                                     if isinstance(v, (int, float)) and v < 0.85)
+                    log.error("Signal feature COVERAGE is degraded (%s) — NOT trading", _bad)
+                    send_telegram("🚨 IBKR skipping rebalance — feature coverage degraded "
+                                  f"({_bad}). Names are being silently dropped from sleeves; "
+                                  "the book would be built from a fraction of the universe.")
+                    return []
             resp = requests.get(SIGNAL_URL, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
