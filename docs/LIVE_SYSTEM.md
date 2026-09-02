@@ -187,9 +187,38 @@ The formula is right; the input was short. **Fix the input, never the filter.**
 (6 assertions incl. the negative cases — healthy cache not churned, genuine short-history IPOs do
 not trigger a mass refetch).
 
-**Caveat on the root cause.** Mass cache truncation is the best-supported mechanism but was not
-*proven*: the diagnostic run refreshed the per-symbol cache as a side effect, destroying the
-evidence. The new depth telemetry exists so a recurrence is diagnosable rather than inferred.
+### 🔴 RECURRENCE 2026-09-01 — the depth hypothesis is REFUTED. Root cause STILL UNKNOWN.
+
+`dist_sma200` fell to **19.7%** (1,208 of 1,504 names missing) — worse than the first incident.
+**The depth telemetry added on 08-19 disproves the mechanism that fix was built on:** during this
+incident cache depth was healthy (`median 378 bars (expected ~379)`, only 7-21 symbols below 200)
+while coverage sat at 19.7%. The depth guard correctly never fired, because depth was never the
+problem. **Mass cache truncation was a hypothesis, not a finding, and it is now dead.** The depth
+guard is retained (it is cheap and its telemetry is what produced this refutation) but it is NOT
+the fix for this failure.
+
+**Post-hoc forensics have now failed TWICE** — the per-symbol cache turns over within ~18h and the
+condition self-heals before anyone can inspect it. Both times the disk state was already healthy by
+the time it was examined.
+
+**The surviving constraint, which any future explanation must satisfy:** `vol_60d` (60 contiguous
+bars) and `ret_126d` stayed at **99.4% through BOTH incidents**. So the final ~126 rows are intact
+and only the 200-contiguous-bar window breaks. That rules out simple end-staleness — a symbol NaN
+on recent rows would take vol_60d down too.
+
+**Response (commit dc6206c), two parts:**
+1. **Forensic capture at alarm time** — the guard now writes
+   `data/coverage_forensics_<ts>.json` classifying every missing name as STALE / SHORT / GAP plus
+   the union-index shape. Whichever bucket dominates names the cause.
+2. **Engine coverage gate** — coverage is published in `/health` and `ibkr_engine` now REFUSES to
+   rebalance while it is degraded. The engine checked staleness but never correctness; both
+   incidents produced perfectly FRESH signals, so it would have rebuilt the book from ~20% of the
+   universe and logged nothing unusual. Neither landed on a rebalance day — that was luck, not
+   design. Skipping a rebalance costs at most 20 sessions of drift; trading a corrupt book does not
+   unwind. Test: `ml_service/tests/test_coverage_gate.py`.
+
+**Status: harm is contained, cause is not yet identified.** The next occurrence should be
+self-diagnosing.
 
 ---
 
