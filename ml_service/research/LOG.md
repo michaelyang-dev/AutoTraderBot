@@ -2965,6 +2965,47 @@ unchanged and every one of its parameters is either measured or confirmed at a l
 
 ---
 
+## Cycle 50 — FINAL-CONFIG FREE AUDIT · it is a RISK package, and it LOSES most calendar years
+
+Final config = overlay ON, K=4 / 5-day stride, sleeves 70/21/9, leverage 1.10, credit gate
+p95 → derisk 0.00. Audit pieces computed from the EXP-053 cached curves (24 starts = 12 used +
+12 untouched, both horizons), clean-room engine:
+
+| | 8yr | 26yr |
+|---|---|---|
+| dCAGR | +0.10pp | +0.31pp |
+| dSharpe | **+0.108** (16/24) | **+0.072** (20/24) |
+| dMaxDD | **+8.22pp (24/24)** | **+12.98pp (24/24)** |
+| worst-start MaxDD | −46.0% → **−31.3%** | −67.7% → **−49.7%** |
+| per-start CAGR σ ratio | 0.48 | 0.45 |
+
+**Drawdown is shallower in every one of 48 start dates.** Start-date dispersion is halved. That
+part is as solid as anything in this program.
+
+### But by the user's own criterion — "better in most years, not one good year" — it FAILS
+Year-by-year (mean over 24 starts, wins pairwise): **FINAL beats LIVE in 2/7 years (8yr) and
+10/24 (26yr); median year −2.74pp / −0.65pp.** It wins big in the bad years (2008 +6.1pp, 2022
++7.1pp, 2020 +4.7pp, 2015 +6.0pp, 2005 +7.6pp) and gives up ground in strong bull years (2003
+−11.9pp, 2021 −15.8pp/−7.7pp, 2023 −8.6pp, 2013 −6.8pp). Mean yearly diff is NEGATIVE (−0.95pp
+on 26yr) while CAGR diff is positive (+0.31pp): shallower drawdowns compound better — the
+arithmetic/geometric gap is the whole return story.
+
+**That is exactly what a 1.10× book with a hard gate should do against a 1.49× book.** It is not
+a signal improvement showing up every year; it is less gross plus better crash handling. Event
+concentration is N/A for the same reason: net excess is ≈0, so there is nothing to concentrate
+(BUGS A8a guard fires: excess not meaningful in any start).
+
+### Consequence: the Sharpe gain must be SPENT explicitly, and I have only measured one way
+- Spent on risk (1.10×): same CAGR, 8-13pp less drawdown, loses most bull years.
+- Spent on return (run the final base at LIVE's own ~1.49×): CAGR read at LIVE's own drawdown —
+  the only leverage-fair answer to "is it better most years". EXP-053's ladder stopped at 1.25×
+  (26yr −46.2%, still 10pp shallower than LIVE). → **EXP-056 extends to 1.40× / 1.49×**, queued.
+
+Both are legitimate. Which one is "the improved strategy" is the user's risk preference, and the
+write-up must present both rather than pick silently.
+
+---
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
