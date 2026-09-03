@@ -1,6 +1,6 @@
 # FINAL RECOMMENDATION — the tranche strategy vs what is live
 
-**Status 2026-09-03: structure settled and audited; two audit items pending (marked ⏳).**
+**Status 2026-09-03: structure settled and audited; one item pending (Option B ladder, marked ⏳).**
 Everything below is from the clean-room independent engine, 24 monthly starts per horizon
 (12 previously-used + 12 untouched even-month starts never examined during research), two
 horizons (8yr 2018-25 on the clean universe file; 26yr 2001-25), $50k account, integer shares,
@@ -76,7 +76,7 @@ Same CAGR-at-same-drawdown comparison, leverage-fair. Ladder so far (26yr, holdo
 | sub-period consistency | 3/3 (8yr), 4/4 (26yr holdout) — 26yr 2023-25 cell is D9-contaminated (see caveats) |
 | event concentration | N/A — net excess ≈0 (guard fires); the gain is the risk profile, not a few days |
 | parameter star | nothing promoted; base confirmed local optimum on top_n / stop / gate pctile |
-| paired cost sensitivity 1/2/3/5× | ⏳ EXP-055 |
+| paired cost sensitivity 1/2/3/5× | **PASS, both horizons** — ΔSharpe *widens* with cost (8yr +0.105→+0.115; 26yr +0.074→+0.084), sign 8/12 and 11/12 at every multiplier. FINAL trades fewer dollars than LIVE (1.10× gross, hard gate), so cost hurts LIVE more. Not turnover-fragile |
 
 ## 5. Caveats you should weigh
 

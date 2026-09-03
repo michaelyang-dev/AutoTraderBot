@@ -3006,6 +3006,26 @@ write-up must present both rather than pick silently.
 
 ---
 
+## Cycle 51 — EXP-055 · PAIRED COST SENSITIVITY on the final base: PASS, and the delta WIDENS
+
+Final base (overlay ON, K=4/5, 70/21/9, L1.10, gate p95→0.00) vs LIVE, both arms at the same cost
+multiplier (BUGS A8b), 12 starts, clean-room engine:
+
+| cost × | 8yr dSharpe | 8yr dCAGR | 26yr dSharpe | 26yr dCAGR | 26yr dMaxDD | sign (Shrp) |
+|---|---|---|---|---|---|---|
+| 1 | +0.105 | +0.09pp | +0.074 | +0.48pp | +13.72pp | 7/12 · 11/12 |
+| 2 | +0.108 | +0.47pp | +0.076 | +0.83pp | +13.73pp | 8/12 · 11/12 |
+| 3 | +0.109 | +0.78pp | +0.078 | +1.17pp | +13.74pp | 8/12 · 11/12 |
+| 5 | **+0.115** | **+1.53pp** | **+0.084** | **+1.86pp** | +13.70pp | 8/12 · 11/12 |
+
+The edge is not turnover-fragile; it is turnover-FAVOURED. FINAL runs 1.10× gross against LIVE's
+1.49× and the hard gate goes flat instead of half-size in stress, so its dollar turnover is lower
+and every multiplier taxes LIVE more. (The earlier 2×/3×/5× pass was on the retired overlay-OFF
+package; this is the first on the actual candidate.) Audit gate for the structure is now complete
+except Option B's leverage ladder (EXP-056, running).
+
+---
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
