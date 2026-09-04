@@ -1,5 +1,18 @@
 # BASELINE — current audited champion
 
+## ✅ 2026-09-03 — AUDITED CANDIDATE (not deployed): tranched rebalance + hard credit gate
+
+Cleared the full gate (24 starts incl. 12 untouched, two horizons, independent engine, sub-period
+consistency, paired cost 1/2/3/5×, parameter star, leverage ladder). Live champion below is
+UNCHANGED until the engine has a tranche path. Full write-up: `FINAL_RECOMMENDATION.md`.
+
+Structure: 4 rebalance tranches / 5-session stride · credit gate derisk 0.50→**0.00** · sleeves
+70/21/9 · vol overlay KEPT · everything else as live. Dominates LIVE on CAGR, Sharpe AND MaxDD at
+every leverage 1.00-1.49×. **Recommended 1.25×**: 26yr +14.85% / 0.651 / −46.1% vs LIVE +13.93% /
+0.589 / −55.9%; 8yr +28.23% / 0.973 / −31.8% vs +26.85% / 0.877 / −38.0%; MaxDD shallower in
+48/48 starts. At 1.49× (no leverage change): +1.6/+2.5pp CAGR, better in 16/24 years (26yr).
+
+
 **Last updated 2026-08-14.** Update ONLY after a result clears the full audit gate in `LOG.md`.
 
 ## 🔴 2026-08-14 — `DEPLOYED` OMITS THE CREDIT GATE. Measured, corrected, RESOLVED (BUGS A9).

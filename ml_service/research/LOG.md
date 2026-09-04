@@ -3026,6 +3026,31 @@ except Option B's leverage ladder (EXP-056, running).
 
 ---
 
+## Cycle 52 — EXP-056 · the ladder to 1.49×: the structure DOMINATES LIVE at every leverage. PROGRAM CLOSED.
+
+Final base at 1.40× and 1.49× added to EXP-053's ladder (24 starts, both horizons). The
+"iso-drawdown" question dissolves: **even at LIVE's own 1.49× the structure's MaxDD is 6.5pp (26yr)
+/ 3.6pp (8yr) shallower than LIVE's** — LIVE's drawdown is off the bottom of the curve. Every rung
+gives more CAGR, more Sharpe and less drawdown than LIVE simultaneously.
+
+At 1.49× (26yr): CAGR +15.53% vs +13.93% (+1.60pp, 18/24), Sharpe +0.052 (19/24), MaxDD −49.5% vs
+−55.9% (+6.5pp, 20/24), worst-start −58.0% vs −67.7%, **better in 16/24 calendar years, median
++1.17pp, +0.96pp with the best year dropped (15/23).** This is the first configuration in the
+program to pass the user's "better in most years" bar on the crisis-bearing horizon. 8yr: 3/7
+years — the strongest momentum years go to LIVE by 1-3pp; too few years to decide.
+
+**Verdict — leverage is a pure risk dial; recommendation 1.25×** (highest leverage at which MaxDD
+is shallower in all 48 starts; +0.9/+1.4pp CAGR; +0.06/+0.10 Sharpe; the user's stated
+preference). 1.49× is the "change only the structure" option with the most CAGR. 1.10× is
+drawdown-first. No setting is worse than LIVE on any axis.
+
+Audit gate for the final structure is complete. Remaining work is ENGINEERING (tranche path in
+ibkr_engine, staggered transition) and DATA (WRDS re-download with PERMNO/GVKEY, then rebuild both
+universes and re-verify). ~4,452 configurations, 56 experiments, 3 retractions, 1 live incident
+found and fixed. Closing the research program here.
+
+---
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

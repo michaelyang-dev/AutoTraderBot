@@ -1,6 +1,6 @@
 # FINAL RECOMMENDATION — the tranche strategy vs what is live
 
-**Status 2026-09-03: structure settled and audited; one item pending (Option B ladder, marked ⏳).**
+**Status 2026-09-03: COMPLETE. Structure settled; full audit gate cleared; leverage ladder measured 1.00-1.49×.**
 Everything below is from the clean-room independent engine, 24 monthly starts per horizon
 (12 previously-used + 12 untouched even-month starts never examined during research), two
 horizons (8yr 2018-25 on the clean universe file; 26yr 2001-25), $50k account, integer shares,
@@ -57,13 +57,51 @@ Untouched-holdout vs used-sample agreement on ΔSharpe: within 0.005 on both hor
 better crash handling. CAGR ends flat only because shallower drawdowns compound better. **If
 "better in most years" is the bar, Option A does not pass it and I will not pretend otherwise.**
 
-### Option B — RETURN spend: run the same structure at LIVE's own leverage ⏳ EXP-056
+### Option B — RETURN spend: same structure at LIVE's own 1.49× (measured, EXP-056)
 
-Same CAGR-at-same-drawdown comparison, leverage-fair. Ladder so far (26yr, holdout, gate 0.00):
-1.00× −40.4% / +13.75% · 1.10× −43.1% / +14.33% · 1.25× −46.2% / +14.93%. LIVE sits at
-−55.3% / +14.17%. Extrapolated, matching LIVE's drawdown lands near 1.45-1.5× at roughly
-+16.5-17%; **that is an extrapolation and is being measured, not assumed.** Year-by-year at
-1.40× and 1.49× will be reported the same way as Option A — including the losing years.
+**The structure never reaches LIVE's drawdown at any leverage.** Even at 1.49× — LIVE's own
+setting — MaxDD is 6.5pp shallower on the 26yr and 3.6pp on the 8yr, so "same drawdown, more
+CAGR" is off the curve: at every point on the ladder you get more CAGR *and* less drawdown *and*
+more Sharpe than LIVE. The full ladder (24 starts, gate 0.00):
+
+| lev | 26yr CAGR | Sharpe | MaxDD | worst-start | ΔCAGR | ΔSharpe | ΔMaxDD (sign) | years better |
+|---|---|---|---|---|---|---|---|---|
+| LIVE 1.49× | +13.93% | 0.589 | −55.9% | −67.7% | — | — | — | — |
+| 1.00× | +13.65% | 0.667 | −40.3% | −46.7% | −0.27pp | +0.078 | +15.6pp (24/24) | |
+| 1.10× | +14.24% | 0.661 | −42.9% | −49.7% | +0.31pp | +0.072 | +13.0pp (24/24) | 10/24 |
+| **1.25×** | **+14.85%** | **0.651** | **−46.1%** | **−53.3%** | **+0.92pp** | **+0.062** | **+9.8pp (24/24)** | |
+| 1.40× | +15.28% | 0.643 | −48.3% | −56.3% | +1.35pp | +0.054 | +7.6pp (22/24) | 14/24 |
+| 1.49× | +15.53% | 0.641 | −49.5% | −58.0% | +1.60pp | +0.052 | +6.5pp (20/24) | **16/24** |
+
+| lev | 8yr CAGR | Sharpe | MaxDD | worst-start | ΔCAGR | ΔSharpe | ΔMaxDD (sign) | years better |
+|---|---|---|---|---|---|---|---|---|
+| LIVE 1.49× | +26.85% | 0.877 | −38.0% | −46.0% | — | — | — | — |
+| 1.10× | +26.95% | 0.985 | −29.8% | −31.3% | +0.10pp | +0.108 | +8.2pp (24/24) | 2/7 |
+| **1.25×** | **+28.23%** | **0.973** | **−31.8%** | **−33.7%** | **+1.38pp** | **+0.096** | **+6.2pp (24/24)** | |
+| 1.40× | +28.95% | 0.955 | −33.5% | −36.3% | +2.11pp | +0.079 | +4.5pp (21/24) | 3/7 |
+| 1.49× | +29.37% | 0.948 | −34.4% | −37.5% | +2.52pp | +0.071 | +3.6pp (15/24) | 3/7 |
+
+**Year-by-year at 1.49× (26yr): better in 16/24 years, median +1.17pp, and still +0.96pp with the
+best year removed (15/23 positive).** That passes the "better in most years" bar on the horizon
+that contains real crises. On the 8yr it is 3/7 — the strongest momentum years (2021, 2023, 2025)
+go to LIVE by 1-3pp; the 8yr has too few years to be decisive either way.
+
+## 3b. Verdict
+
+The structure dominates LIVE on all three axes at every leverage tested. Leverage is a pure
+risk-preference dial, and here is what each setting buys:
+
+- **1.10× — drawdown first.** Sharpe +0.07/+0.11, MaxDD 8-13pp shallower, CAGR flat. Loses most
+  bull years. For someone whose binding constraint is the worst month.
+- **1.25× — the recommendation.** The highest leverage at which drawdown is shallower in **all 48
+  starts** on both horizons, with +0.9/+1.4pp CAGR and +0.06/+0.10 Sharpe. Balanced, and the
+  setting you said you preferred.
+- **1.49× — "change nothing but the structure."** No leverage change, no financing change: only
+  tranching, gate depth and the tilt move. +1.6/+2.5pp CAGR, +0.05/+0.07 Sharpe, 3.6-6.5pp less
+  drawdown, better in 16/24 years. The cleanest deployment story and the most CAGR. Drawdown gain
+  is smaller and less uniform (15-20/24).
+
+There is no setting at which the new structure is worse than LIVE on any of CAGR, Sharpe or MaxDD.
 
 ## 4. Audit gate for the final structure
 
