@@ -295,6 +295,17 @@ re-pull Fundamentals Quarterly with Industry Format **FS** only (small) and merg
 - Still wanted: **Index Constituents – S&P Current** for 500/400/600 (small), to extend membership
   forward and validate the identifier map.
 
+**2026 price coverage of the SP1500 on the corrected Security Daily panel: 1,484 of 1,485 still-listed
+names (99.9%).** The 31 that first looked missing were all explained: **25 acquisitions/delistings in
+2026** (HOLX, SEE, CTRA, MASI, AL, APLS… `dlrsn=01`; TMHC last print 2026-07-23, reason pending) and
+**5 ticker/name changes** — BK→`BNY`, SATS→`ECHO`, IAC→`PPLI` (People Inc), EXPI→`AGNT`, FDP→`DMC`.
+Five ticker changes in four months among 1,510 names: **anything keyed on ticker drifts within
+weeks.** CUSIP (8-char) matched all of them on the first try and exists on both the CRSP and
+Compustat sides — it is the bridge to use in the universe rebuild (CUSIP→gvkey via Security Monthly,
+CUSIP→PERMNO via CRSP security info; CCM link as the cross-check).
+**Live is unaffected:** the live universe is the weekly-refreshed `sp1500_members.json`; the served
+signal set already carries BNY/ECHO/PPLI/AGNT/DMC and has dropped the old tickers and delisted names.
+
 ---
 
 ## Gotchas that previously caused misdiagnosis
