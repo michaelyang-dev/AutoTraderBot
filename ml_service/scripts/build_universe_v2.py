@@ -54,40 +54,90 @@ def load_identifiers():
     sm = pd.read_parquet(W / "compustat_security_monthly.parquet", columns=["tic", "gvkey", "iid", "cusip", "datadate"]).dropna(subset=["tic"])
     sm["gvkey"] = sm["gvkey"].astype(str).str.zfill(6); sm["cusip8"] = sm["cusip"].astype(str).str[:8]
     sm_last = sm.sort_values("datadate").drop_duplicates("tic", keep="last")
+    # per (tic, gvkey): first/last month with data. A delisted membership symbol "X-YYYYMM" is the gvkey with tic X whose
+    # LAST month is YYYYMM; a bare symbol is the gvkey with tic X that is still reporting. This is the identity the
+    # membership files were generated from, so it separates twins that share a tic (JCI / JCI-201609 = Tyco).
+    sm["datadate"] = pd.to_datetime(sm["datadate"]); span = sm.groupby(["tic", "gvkey"])["datadate"].agg(["min", "max"]).reset_index()
+    resolve._sm_by_tic = {}
+    for r in span.itertuples(index=False): resolve._sm_by_tic.setdefault(r.tic, []).append((r.gvkey, r.min, r.max))
     return ci, link, sm_last
 
 def resolve(sym, y0, y1, ci_by_tic, link_by_tic, sm_tic, link_by_g, ci_by_cusip):
-    """Return (PERMNO, stage) for a membership symbol active in [y0, y1]. Date-aware."""
+    """Return (PERMNO, stage) for a membership symbol active in [y0, y1].
+
+    WHAT A MEMBERSHIP SYMBOL MEANS (established 2026-09-07 from the twins in the files): it names a SECURITY, not a
+    ticker-at-the-time.  A bare symbol is the security that is alive today under that ticker, over its whole history
+    ("JCI" = Tyco's PERMNO 45356, which trades as JCI plc since 2016; "T" = SBC's PERMNO, "COR" = AmerisourceBergen's,
+    "KDP" = Dr Pepper Snapple's).  "X-YYYYMM" is the security that ENDED in month YYYYMM under ticker X ("JCI-201609" =
+    Johnson Controls Inc's PERMNO 42534, "T-200511" = the old AT&T, "GMCR-201603" = Keurig).  So a symbol maps to ONE
+    PERMNO for all years; the year only matters for fallbacks.
+    Two earlier resolvers were wrong: (v1) CRSP ticker era by DATE mapped 197 renamed symbols to whichever company held
+    the ticker that year; (v2) Compustat identity first collapsed the twins (JCI/JCI-201609 -> one PERMNO) because both
+    are the same Compustat company.  Neither survived the collapse/overlap audit in load_membership."""
     lo, hi = pd.Timestamp(f"{y0}-01-01"), pd.Timestamp(f"{y1}-12-31")
-    cands = [sym] + ([sym[:-1]] if len(sym) == 5 and sym.endswith("Q") else [])
-    for s in cands:                                             # 1. CRSP ticker eras, best overlap
-        eras = ci_by_tic.get(s)
-        if eras is not None:
-            best, bo = None, pd.Timedelta(0)
-            for p, a, b in eras:
-                ov = min(b, hi) - max(a, lo)
-                if ov > bo: best, bo = p, ov
-            if best is not None: return best, "crsp_era"
-    for s in cands:                                             # 2. CCM link by Compustat tic, date-valid
-        rows = link_by_tic.get(s)
-        if rows is not None:
-            for p, a, b, prim in sorted(rows, key=lambda r: (r[3] != "P", r[1])):
-                if a <= hi and b >= lo: return p, "ccm_tic"
-    g = sm_tic.get(sym)                                         # 3. Security Monthly tic -> gvkey -> CCM
-    if g is not None:
-        rows = link_by_g.get(g)
-        if rows:
-            for p, a, b, prim in sorted(rows, key=lambda r: (r[3] != "P", r[1])):
-                if a <= hi and b >= lo: return p, "secm_gvkey"
-            return rows[0][0], "secm_gvkey_anydate"
-    c8 = sm_cusip.get(sym) if (sm_cusip := getattr(resolve, "_sm_cusip", None)) else None   # 4. CUSIP bridge
-    if c8 and c8 in ci_by_cusip:
-        eras = ci_by_cusip[c8]; best, bo = eras[0][0], pd.Timedelta(-1)
-        for p, a, b in eras:
-            ov = min(b, hi) - max(a, lo)
-            if ov > bo: best, bo = p, ov
-        return best, "cusip"
-    for s in cands:                                             # 5. CRSP era, ignoring dates (last resort)
+    m = re.match(r"^(.+)-(\d{6})$", sym)
+    base = m.group(1) if m else sym
+    cands = [base] + ([base.replace(".", "")] if "." in base else []) + ([base[:-1]] if len(base) == 5 and base.endswith("Q") else [])
+    def best_overlap(rows):
+        best, bo = None, pd.Timedelta(0)
+        for r in rows:
+            ov = min(r[2], hi) - max(r[1], lo)
+            if ov > bo: best, bo = r[0], ov
+        return best
+    ALIVE = pd.Timestamp("2025-12-01")                           # CRSP file ends 2025-12-31; link file uses 2099 for open links
+    if m:                                                        # ---- ENDED security: match the END month ----
+        dl = pd.Timestamp(year=int(m.group(2)[:4]), month=int(m.group(2)[4:]), day=1) + pd.offsets.MonthEnd(0)
+        best, bd = None, pd.Timedelta(days=400)
+        for s in cands:                                          # a. CRSP: PERMNO whose last era under this ticker ends nearest YYYYMM
+            ends = {}
+            for p, a, b in ci_by_tic.get(s, []): ends[p] = max(ends.get(p, b), b)
+            for p, e in ends.items():
+                if e < ALIVE and abs(e - dl) < bd: best, bd = p, abs(e - dl)
+        if best is not None: return best, "crsp_delist"
+        best, bd = None, pd.Timedelta(days=400)
+        for s in cands:                                          # b. CCM link (tic base, any .N) whose LINKENDDT is nearest YYYYMM
+            for r in link_by_tic.get(s, []):
+                if r[2] < ALIVE and abs(r[2] - dl) < bd: best, bd = r[0], abs(r[2] - dl)
+        if best is not None: return best, "ccm_delist"
+        for s in cands:                                          # c. CCM link by tic, best overlap of the window (OTC tails: AMR -> AAMRQ)
+            p = best_overlap(link_by_tic.get(s, []))
+            if p is not None: return p, "ccm_tic"
+        for s in cands:                                          # d. CRSP era, best overlap of the window
+            p = best_overlap(ci_by_tic.get(s, []))
+            if p is not None: return p, "crsp_era"
+    else:                                                        # ---- ALIVE security ----
+        for s in cands:                                          # a. CRSP: the PERMNO whose era under this ticker is alive at file end
+            eras = [e for e in ci_by_tic.get(s, []) if e[2] >= ALIVE]
+            if eras: return sorted(eras, key=lambda e: e[2])[-1][0], "crsp_latest"
+        for s in cands:                                          # b. CCM: open link whose tic is this bare tic (ticker changed in 2026, or CRSP writes it differently)
+            rows = [r for r in link_by_tic.get(s, []) if r[4] == s and r[2] >= ALIVE]
+            if rows: return sorted(rows, key=lambda r: r[1])[-1][0], "ccm_current"
+        for s in cands:                                          # c. Security Monthly: still-reporting gvkey with this tic -> open CCM link
+            for g, a, b in sorted(getattr(resolve, "_sm_by_tic", {}).get(s, []), key=lambda x: x[2], reverse=True):
+                if b >= pd.Timestamp("2025-10-31") and link_by_g.get(g):
+                    rows = sorted(link_by_g[g], key=lambda r: r[2]); return rows[-1][0], "secm_current"
+        for s in cands:                                          # d. CRSP era latest even if ended (Compustat alive, CRSP ended: rare)
+            eras = ci_by_tic.get(s)
+            if eras: return sorted(eras, key=lambda e: e[2])[-1][0], "crsp_latest_ended"
+    # ---- shared fallbacks: Compustat Security Monthly keyed by the BASE tic (the file's "AAMRQ-201312" is Compustat's
+    # frozen last tic AAMRQ; Security Monthly carries it with the CUSIP, and CRSP's security info carries the same CUSIP).
+    # This is what recovers the bankruptcies -- AMR, Kodak, Frontier, Chesapeake, Delta, Delphi, Lear, Peabody, Calpine, Dana --
+    # whose OTC-phase tic never existed in CRSP. Earlier versions looked these up by the full suffixed symbol and found nothing.
+    sm_cusip = getattr(resolve, "_sm_cusip", None) or {}
+    for s in cands:
+        c8 = sm_cusip.get(s)
+        if c8 and c8 in ci_by_cusip:
+            eras = ci_by_cusip[c8]
+            if m:                                                # ended security: the PERMNO whose last era ends nearest YYYYMM
+                ends = {}
+                for p, a, b in eras: ends[p] = max(ends.get(p, b), b)
+                return sorted(ends.items(), key=lambda kv: abs(kv[1] - dl))[0][0], "cusip_delist"
+            p = best_overlap(eras); return (p if p is not None else sorted(eras, key=lambda e: e[2])[-1][0]), "cusip"
+    for s in cands:
+        g = sm_tic.get(s)
+        if g is not None and link_by_g.get(g):
+            rows = link_by_g[g]; p = best_overlap(rows); return (p if p is not None else sorted(rows, key=lambda r: r[2])[-1][0]), "secm_gvkey"
+    for s in cands:                                              # last resort: CRSP era ignoring dates
         eras = ci_by_tic.get(s)
         if eras: return sorted(eras, key=lambda e: e[1])[-1][0], "crsp_anydate"
     return None, "unresolved"
@@ -100,7 +150,7 @@ def load_membership(ci, link, sm_last):
         ci_by_cusip.setdefault(r.cusip8, []).append((r.PERMNO, r.SecInfoStartDt, r.SecInfoEndDt))
     link_by_tic, link_by_g = {}, {}
     for r in link.itertuples(index=False):
-        if isinstance(r.tic, str): link_by_tic.setdefault(r.tic, []).append((r.LPERMNO, r.LINKDT, r.LINKENDDT, r.LINKPRIM))
+        if isinstance(r.tic, str): link_by_tic.setdefault(re.sub(r"\.\d+$", "", r.tic), []).append((r.LPERMNO, r.LINKDT, r.LINKENDDT, r.LINKPRIM, r.tic))
         link_by_g.setdefault(r.gvkey, []).append((r.LPERMNO, r.LINKDT, r.LINKENDDT, r.LINKPRIM))
     sm_tic = dict(zip(sm_last.tic, sm_last.gvkey)); resolve._sm_cusip = dict(zip(sm_last.tic, sm_last.cusip8))
     mems, stages, unresolved = {}, {}, set()
@@ -108,7 +158,7 @@ def load_membership(ci, link, sm_last):
         df = pd.read_parquet(W / fn).reset_index(); dcol = df.columns[0]; df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
         flag = next(c for c in df.columns if c.strip().lower() == "index constituent")
         df = df[(pd.to_numeric(df[flag], errors="coerce") == 1) & (df[dcol] >= pd.Timestamp(START) - pd.Timedelta(days=400)) & (df[dcol] <= pd.Timestamp(END))]
-        df["sym"] = df["symbol"].map(_strip); df["year"] = df[dcol].dt.year
+        df["sym"] = df["symbol"].astype(str); df["year"] = df[dcol].dt.year      # RAW symbol: resolve() reads the -YYYYMM delist suffix
         keymap = {}
         for (s, y), _ in df.groupby(["sym", "year"]):
             p, st = resolve(s, y, y, ci_by_tic, link_by_tic, sm_tic, link_by_g, ci_by_cusip)
@@ -116,11 +166,17 @@ def load_membership(ci, link, sm_last):
             if p is None: unresolved.add(s)
             keymap[(s, y)] = None if p is None else str(p)
         df["key"] = [keymap[(s, y)] for s, y in zip(df["sym"], df["year"])]
-        m = {}
-        for d, g in df.dropna(subset=["key"]).groupby(dcol): m[d] = set(g["key"].unique())
-        mems[name] = m
+        m = {}; collapsed = 0
+        for d, g in df.dropna(subset=["key"]).groupby(dcol): m[d] = set(g["key"].unique()); collapsed += len(g) - len(m[d])
+        mems[name] = m; META[f"{name}_symbol_days_collapsed"] = collapsed
+        log.info("  %s: %d symbol-days where two symbols map to one PERMNO (must be ~0)", name, collapsed)
         log.info("  %s: %d dates, members on last date %d (%s)", name, len(m), len(m[max(m)]), max(m).date())
     META["resolution_stages"] = stages; META["unresolved_symbols"] = sorted(unresolved)
+    # cross-index overlap audit: a PERMNO in two of the three lists on one date is a mapping error (S&P indices are disjoint)
+    ov = 0; k5 = sorted(mems["sp500"])
+    for d in k5[::5]:
+        a5 = mems["sp500"][d]; a4 = mems["sp400"].get(d, set()); a6 = mems["sp600"].get(d, set()); ov += len(a5 & a4) + len(a5 & a6) + len(a4 & a6)
+    META["cross_index_overlap_permno_days_sampled"] = ov; log.info("  cross-index overlaps on every-5th date: %d PERMNO-days (was ~1.7/day before the resolver fix)", ov)
     log.info("  resolution stages: %s ; unresolved symbols: %d %s", stages, len(unresolved), sorted(unresolved)[:15])
     return mems["sp500"], mems["sp400"], mems["sp600"], ci_by_tic, link
 

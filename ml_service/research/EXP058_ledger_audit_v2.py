@@ -55,7 +55,7 @@ def m_alt(v):     # method B: CAGR via compounded calendar-year returns; Sharpe 
 def main():
     t0 = time.time(); _engine(); print(f"\n{'='*100}\nEXP058 LEDGER/LOOK-AHEAD AUDIT {HZ}  END={E.END.date()}\n{'='*100}", flush=True)
     info("cost config", f"COST_BPS={COST_BPS} SLIPPAGE_BPS={SLIPPAGE_BPS} -> {(COST_BPS+SLIPPAGE_BPS)/1e4:.4%} of traded notional per side; financing = daily on previous day's margin debit at research/_fin_rate.parquet (broker rate)")
-    bt = FastBacktester(universe_path=E.PATH); cr = CleanRoom(bt); _record(cr.uni, bt); cr.bt = bt
+    bt = FastBacktester(universe_path=E.PATH); cr = CleanRoom(bt); _record(bt.uni, bt)   # run() binds self.uni = bt.uni and get_sp500 = bt._get_sp1500 (wrapped)
     starts = [E.STARTS[0], E.STARTS[13]]        # one previously-used (Jan), one untouched (Feb, year 2)
     for nm, cfg in [("LIVE", E.LIVE), ("FINAL_1.25", dict(E.FIN, leverage=1.25))]:
         for s0 in starts:

@@ -35,17 +35,27 @@ etfs = [c for c in px.columns if not str(c).isdigit()]
 info("expected dates", f"{len(exp_dates)} trading days {exp_dates[0].date()}..{exp_dates[-1].date()} = CRSP daily calendar (<=2025-12-31) + Compustat Security Daily US days (2026, >=50% of median names priced)")
 info("expected columns", f"{len(all_members)} distinct member PERMNOs (union of sp500/sp400/sp600 membership within window) + {len(etfs)} ETFs {etfs}")
 chk("prices_df rows (>= START) == expected trading days", len(pxf.index) == len(exp_dates), f"rows {len(pxf.index)} (+{len(px.index)-len(pxf.index)} warm-up) vs expected {len(exp_dates)}; missing {sorted(set(exp_dates)-set(pxf.index))[:10]} extra {sorted(set(pxf.index)-set(exp_dates))[:10]}")
-cover = len(all_members & set(map(str, px.columns))); chk("member PERMNOs present as price columns", cover >= 0.995 * len(all_members), f"{cover}/{len(all_members)} = {cover/len(all_members):.2%}; cells {px.shape[0]*px.shape[1]:,}; missing PERMNOs e.g. {sorted(all_members-set(map(str,px.columns)))[:8]}")
+cover = len(all_members & set(map(str, px.columns))); _miss = sorted(all_members - set(map(str, px.columns)))
+_md = []
+for _p in _miss:
+    _ds = [k for n, v in mems.items() for k in keys[n] if _p in v[k]]; _md.append(f"{p2t.get(_p, '?')}({_p}) member {min(_ds).date()}..{max(_ds).date()} {len(_ds)}d" if _ds else f"{_p}: no membership dates")
+chk("member PERMNOs present as price columns", cover >= 0.995 * len(all_members), f"{cover}/{len(all_members)} = {cover/len(all_members):.2%}; cells {px.shape[0]*px.shape[1]:,}; missing {len(_miss)}: " + "; ".join(_md))
 chk("features_by_date has one entry per price date >= START", set(fbd) == set(pxf.index), f"{len(fbd)} feature dates vs {len(pxf.index)} price dates >= START ({len(px.index)-len(pxf.index)} warm-up dates before START carry prices only)")
 # ---- 2. duplicates -----------------------------------------------------------------------
 print("\n[2] DUPLICATES", flush=True)
 chk("no duplicate dates in prices index", px.index.is_unique and px.index.is_monotonic_increasing, f"unique={px.index.is_unique} monotonic={px.index.is_monotonic_increasing}")
 chk("no duplicate PERMNO columns", px.columns.is_unique, f"{px.shape[1]} columns, {px.columns.nunique()} unique")
 dupm = sum(len(v[k]) - len(set(v[k])) for n, v in mems.items() for k in v); chk("no duplicate members within a membership date", dupm == 0, f"{dupm} duplicates across {sum(len(v) for v in mems.values())} membership dates")
-ov = 0
+ov = 0; ovd = []
 for dt in (pxf.index[5], pxf.index[len(pxf)//2], pxf.index[-5]):
-    a = [mem_at_ for mem_at_ in [set(mems[k][keys[k][bisect.bisect_right(keys[k], dt)-1]]) for k in mems]]; ov += len(a[0]&a[1]) + len(a[0]&a[2]) + len(a[1]&a[2])
-chk("no PERMNO in two indices at once (3 probe dates)", ov == 0, f"{ov} overlaps")
+    a = [set(mems[k][keys[k][bisect.bisect_right(keys[k], dt)-1]]) for k in mems]
+    for (i, j) in ((0, 1), (0, 2), (1, 2)):
+        for p in a[i] & a[j]: ov += 1; ovd.append((dt.date(), p2t.get(p, p), p, ("sp500", "sp400", "sp600")[i], ("sp500", "sp400", "sp600")[j]))
+# a name can legitimately sit in two lists on the day it MIGRATES (the vendor's daily file lists it in both); count all-date overlaps too
+allov = 0; migr = 0
+for dt in keys["sp500_mem"]:
+    a = [set(mems[k][keys[k][bisect.bisect_right(keys[k], dt)-1]]) for k in mems]; o = (a[0] & a[1]) | (a[0] & a[2]) | (a[1] & a[2]); allov += len(o)
+chk("no PERMNO in two indices at once (3 probe dates)", ov == 0, f"{ov} overlaps {ovd[:6]}; over ALL {len(keys['sp500_mem'])} dates: {allov} PERMNO-days in two lists ({allov/len(keys['sp500_mem']):.2f}/day)")
 # ---- 3. NaN / inf --------------------------------------------------------------------------
 print("\n[3] NaN / INF in required columns", flush=True)
 vals = px.values; ninf = int(np.isinf(vals).sum()); nneg = int(np.nansum(vals <= 0)); chk("prices: no inf, no non-positive", ninf == 0 and nneg == 0, f"inf={ninf} nonpositive={nneg} NaN cells={int(np.isnan(vals).sum()):,} of {vals.size:,} (NaN = not listed that day; legitimate)")
@@ -62,9 +72,10 @@ late = rows[-1]; chk("late-window feature coverage (members with a feature dict)
 chk("roe NaN fraction late-window <= 10%", float(late["roe"].rstrip("%")) <= 10, f"{late['date']}: roe NaN {late['roe']}")
 # ---- 4. date gaps -------------------------------------------------------------------------
 print("\n[4] DATE RANGE / GAPS", flush=True)
-gaps = [(a.date(), b.date(), (b-a).days) for a, b in zip(px.index[:-1], px.index[1:]) if (b-a).days > 4]
+_closures = {"2001-09-10": "9/11 (NYSE closed 9/11-9/14)", "2006-12-29": "Ford national day of mourning 2007-01-02", "2012-10-26": "Hurricane Sandy 2012-10-29/30", "2018-12-04": "G.H.W. Bush mourning 2018-12-05", "2025-01-08": "Carter mourning 2025-01-09"}
+gaps = [(a.date(), b.date(), (b-a).days, _closures.get(str(a.date()), "UNEXPLAINED")) for a, b in zip(px.index[:-1], px.index[1:]) if (b-a).days > 4]
 chk("covers full window", px.index[0] <= START + pd.Timedelta(days=3) and px.index[-1] >= pd.Timestamp("2026-09-01"), f"{px.index[0].date()} .. {px.index[-1].date()} (window {START.date()}..{END.date()})")
-chk("no gap > 4 calendar days (long weekends max)", len(gaps) == 0, f"{len(gaps)} gaps: {gaps[:8]}")
+chk("no UNEXPLAINED gap > 4 calendar days (known NYSE closures whitelisted)", all(g[3] != "UNEXPLAINED" for g in gaps), f"{len(gaps)} gaps: {gaps[:8]}")
 seam = px.loc["2025-12-15":"2026-01-20"].notna().sum(axis=1); info("2025/2026 seam priced-name count", " ".join(f"{k.date()}:{v}" for k, v in seam.items()))
 # ---- 5. count per date stability ---------------------------------------------------------
 print("\n[5] TICKER COUNT PER DATE", flush=True)
@@ -75,8 +86,8 @@ chk("SP1500 membership size changes <=5% day-over-day", len(mbad) == 0, f"min {m
 # ---- 6. spot checks -----------------------------------------------------------------------
 print("\n[6] SPOT CHECKS", flush=True)
 last_mem = mem_at(px.index[-1])
-def find(tk):
-    ps = [p for p in t2p.get(tk, []) if p in px.columns]; return ps
+def find(tk):   # several PERMNOs can END on the same ticker (J.P. Morgan & Co 48071 vs JPMorgan Chase 47896): take the one priced latest
+    ps = [p for p in t2p.get(tk, []) if p in px.columns]; return sorted(ps, key=lambda p: px[p].last_valid_index() or pd.Timestamp("1900-01-01"), reverse=True)
 present = ["AAPL", "MSFT", "NVDA", "JPM", "XOM"]; gone = ["SIVB", "FRC", "BBBY", "TWTR", "ATVI"] if HZ == "8yr" else ["ENE", "WCOM", "LEH", "BSC", "SIVB"]
 okp = []
 for tk in present:
@@ -111,7 +122,7 @@ try:
             g = fund[(fund["tic"] == s) & (fund["avail_date"] <= dt)].sort_values("avail_date")
             if g.empty: continue
             row = g.iloc[-1]; roe = row.niq/row.seqq*4 if pd.notna(row.niq) and pd.notna(row.seqq) and row.seqq > 0 else np.nan; st = fbd[dt][s]["roe"]; n += 1
-            ok = (np.isnan(roe) and np.isnan(st)) or abs(roe-st) < 1e-9; bad += int(not ok); ex.append(f"{dt.date()} {s}: datadate {row.datadate.date()} rdq {row.rdq.date() if pd.notna(row.rdq) else 'NaT(+90d)'} avail {row.avail_date.date()} lag {(dt-row.avail_date).days}d roe {st:.3f} {'ok' if ok else 'MISMATCH'}")
+            ok = (np.isnan(roe) and np.isnan(st)) or abs(roe-st) < 1e-9; bad += int(not ok); ex.append(f"{dt.date()} {s}: datadate {row.datadate.date()} rdq {pd.Timestamp(row.rdq).date() if pd.notna(row.rdq) else 'NaT(+90d)'} avail {row.avail_date.date()} lag {(dt-row.avail_date).days}d roe {st:.3f} {'ok' if ok else 'MISMATCH'}")
     print("\n".join("    " + e for e in ex[:8]), flush=True)
     chk("fundamentals used at T have avail_date (rdq, else datadate+90d) <= T and equal an independent recompute", bad == 0, f"{n-bad}/{n} match; fund datadate max {fund.datadate.max().date()}")
 except Exception as e:
