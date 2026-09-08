@@ -153,6 +153,21 @@ RECONNECT_FAIL_LIMIT = 5  # connection watchdog: force-restart after N CONSECUTI
 # the 09:30 open. See the 2026-08-11 01:05-01:11 Error-326 incident.
 REBAL_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_rebal_state.json"
 REBAL_DAYS = 20  # rebalance cadence in trading days (must match backtest rebal_days)
+# ── TRANCHED REBALANCE (decision 2026-09-08: deploy FINAL @1.49x) ─────────────────────
+# The book is split into TRANCHES virtual sub-books of NAV/TRANCHES each. Every TRANCHE_STRIDE
+# trading days ONE sub-book is rebuilt to the day's signals (its own 15% cap, its own
+# closed-loop 1.49x target, its own trailing peaks); the other sub-books are untouched. Same
+# signals, same stops, same leverage as before -- only the rebalance date is de-concentrated.
+# Audited on the rebuilt v2 universes (research/FINAL_RECOMMENDATION.md §0): vs the single
+# 20-day book, +0.07 Sharpe and MaxDD shallower in 24/24 26yr starts, cost-2x intact.
+# TRANCHES=1 restores the legacy single-book path unchanged (rollback switch).
+# Transition: the first tranche day splits the existing holdings equally across the books
+# (whole shares, remainder to the lowest books) and rebuilds book 0; books 1..3 follow at
+# 5-session intervals, so the whole book is on the new schedule after 20 sessions.
+TRANCHES = int(os.getenv("IBKR_TRANCHES", "4"))
+TRANCHE_STRIDE = int(os.getenv("IBKR_TRANCHE_STRIDE", "5"))
+TRANCHE_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_tranche_state.json"
+TRANCHE_MIN_TRADE_PCT = 0.003   # backtest: an existing holding is not resized for |delta| < 0.3% of the book NAV
 
 class IBKREngine:
     def __init__(self):
@@ -180,6 +195,113 @@ class IBKREngine:
         self._last_rebal_date = None
         self._last_counted_day = None
         self._load_rebal_state()
+        self._tranche = self._load_tranche_state()
+
+    # ── tranche state (persisted; survives restarts) ─────────────────────────────────
+    def _tranche_default(self):
+        return {"books": {str(t): {} for t in range(TRANCHES)}, "stride_counter": TRANCHE_STRIDE,
+                "next_tranche": 0, "last_counted_day": None, "initialized": False,
+                "last_tranche_rebal": None, "last_tranche": None}
+
+    def _load_tranche_state(self):
+        st = self._tranche_default()
+        try:
+            if TRANCHE_STATE_FILE.exists():
+                import json
+                d = json.load(open(TRANCHE_STATE_FILE))
+                for k in st:
+                    if k in d:
+                        st[k] = d[k]
+                st["books"] = {str(t): {s: int(q) for s, q in st["books"].get(str(t), {}).items()}
+                               for t in range(TRANCHES)}
+                log.info(f"Loaded tranche state: counter {st['stride_counter']}/{TRANCHE_STRIDE}, "
+                         f"next book {st['next_tranche']}, initialized={st['initialized']}")
+        except Exception as e:
+            log.warning(f"Could not load tranche state: {e}")
+        return st
+
+    def _save_tranche_state(self):
+        try:
+            import json
+            with open(TRANCHE_STATE_FILE, "w") as f:
+                json.dump(self._tranche, f)
+        except Exception as e:
+            log.warning(f"Could not save tranche state: {e}")
+
+    @staticmethod
+    def _split_books(positions_qty, k):
+        """Transition helper: split each existing position across k books in whole shares,
+        remainder (fewer than k shares) to the lowest-numbered books."""
+        books = {str(t): {} for t in range(k)}
+        for sym, q in positions_qty.items():
+            base, rem = divmod(int(q), k)
+            for t in range(k):
+                qt = base + (1 if t < rem else 0)
+                if qt > 0:
+                    books[str(t)][sym] = qt
+        return books
+
+    @staticmethod
+    def _reconcile_books(books, positions_qty, assign_to):
+        """Make the books' bookkeeping agree with the broker: the sum over books of a symbol must
+        equal the actual position. A shortfall (a trailing stop, a manual sell, a partial fill)
+        is removed from the books holding the most of it; a surplus (a manual buy) is credited
+        to `assign_to`. Pure function."""
+        books = {t: dict(b) for t, b in books.items()}
+        syms = set(positions_qty) | {s for b in books.values() for s in b}
+        for sym in syms:
+            actual = int(positions_qty.get(sym, 0))
+            held = sum(b.get(sym, 0) for b in books.values())
+            if actual == held:
+                continue
+            if actual < held:
+                deficit = held - actual
+                for t in sorted(books, key=lambda t: -books[t].get(sym, 0)):
+                    if deficit <= 0:
+                        break
+                    take = min(deficit, books[t].get(sym, 0))
+                    if take:
+                        books[t][sym] -= take
+                        deficit -= take
+                    if books[t].get(sym, 1) == 0:
+                        books[t].pop(sym, None)
+            else:
+                books[assign_to][sym] = books[assign_to].get(sym, 0) + (actual - held)
+        return books
+
+    @staticmethod
+    def _tranche_orders(book, target_qty, prices, book_nav, positions_qty, others_total):
+        """Pure: the orders that move ONE book to its targets. Sells are bounded by what the
+        book holds AND by (actual position - other books' holdings), so one book can never sell
+        another book's shares. Existing holdings are not resized for tiny deltas.
+        Returns [(sym, delta_qty, reason)], sells first."""
+        sells, buys = [], []
+        for sym, q in book.items():
+            if sym not in target_qty:
+                sellable = min(q, max(0, int(positions_qty.get(sym, 0)) - int(others_total.get(sym, 0))))
+                if sellable > 0:
+                    sells.append((sym, -sellable, "tranche_exit"))
+        for sym, tq in target_qty.items():
+            px = prices.get(sym)
+            if not px or px <= 0:
+                continue
+            cur = book.get(sym, 0)
+            d = int(tq) - cur
+            if cur > 0 and abs(d * px) < book_nav * TRANCHE_MIN_TRADE_PCT:
+                continue
+            if d > 0:
+                buys.append((sym, d, "tranche_rebalance"))
+            elif d < 0:
+                sellable = min(-d, max(0, int(positions_qty.get(sym, 0)) - int(others_total.get(sym, 0))))
+                if sellable > 0:
+                    sells.append((sym, -sellable, "tranche_trim"))
+        return sells + buys
+
+    def _rebal_left(self):
+        """Trading days until the next rebalance (tranche or legacy), for status messages."""
+        if TRANCHES > 1:
+            return max(0, TRANCHE_STRIDE - int(self._tranche.get("stride_counter", 0)))
+        return max(0, REBAL_DAYS - self._trading_days_since_rebal)
 
     def _load_rebal_state(self):
         """Resume the rebalance clock from disk so a restart doesn't reset the
@@ -646,6 +768,10 @@ class IBKREngine:
 
         await self.update_positions()
 
+        if TRANCHES > 1 and self._tranche.get("initialized"):
+            await self._check_trailing_stops_tranched()
+            return
+
         # Prune orphan peaks for stocks no longer held — prevents a stale high peak
         # from a prior stint causing an immediate/loose stop if the name is re-bought.
         # Guard on non-empty positions so a transient empty fetch can't nuke live peaks.
@@ -677,6 +803,42 @@ class IBKREngine:
                 self.trailing_peaks.pop(sym, None)  # sell_position already deletes it; idempotent (was del -> KeyError)
 
         # Persist peaks to disk after every check
+        self._save_trailing_peaks()
+
+    async def _check_trailing_stops_tranched(self):
+        """Per-book trailing stops (peak keyed 'book:SYM'): a book that bought a name later at a
+        lower price has its own, lower peak -- the backtest's construction. A stop sells only that
+        book's shares (bounded by the actual position minus the other books' holdings)."""
+        st = self._tranche
+        positions_qty = {s: int(p["qty"]) for s, p in self.positions.items() if p["qty"] > 0}
+        if positions_qty:
+            st["books"] = self._reconcile_books(st["books"], positions_qty, str(st["next_tranche"]))
+            live_keys = {f"{t}:{s}" for t, b in st["books"].items() for s in b}
+            for orphan in [k for k in list(self.trailing_peaks) if k not in live_keys]:
+                del self.trailing_peaks[orphan]
+        for sym, pos in list(self.positions.items()):
+            holders = [t for t, b in st["books"].items() if b.get(sym, 0) > 0]
+            if not holders:
+                continue
+            contract = pos.get("contract") or Stock(sym, "SMART", "USD")
+            price = await self.get_market_price(contract)
+            if not price:
+                continue
+            for t in holders:
+                key = f"{t}:{sym}"
+                self.trailing_peaks[key] = max(price, self.trailing_peaks.get(key, 0))
+                peak = self.trailing_peaks[key]
+                dd = (price - peak) / peak
+                if dd < -TRAILING_STOP:
+                    others = sum(b.get(sym, 0) for tt, b in st["books"].items() if tt != t)
+                    qty = min(st["books"][t][sym], max(0, positions_qty.get(sym, 0) - others))
+                    log.warning(f"TRAILING STOP book {t}: {sym} dropped {dd:.1%} from peak ${peak:.2f} -> sell {qty}")
+                    if qty > 0:
+                        await self.sell_position(sym, qty, f"trailing_stop book {t} ({dd:.1%})")
+                        positions_qty[sym] = max(0, positions_qty.get(sym, 0) - qty)
+                    st["books"][t].pop(sym, None)
+                    self.trailing_peaks.pop(key, None)
+        self._save_tranche_state()
         self._save_trailing_peaks()
 
     async def sell_position(self, symbol, qty, reason="rebalance"):
@@ -801,6 +963,9 @@ class IBKREngine:
         # engine, on a different signal). _is_trading_day() is the NYSE-calendar,
         # holiday-aware check; it also stops orders being queued on a misfired holiday.
         if not self.is_market_open() or not self._is_trading_day():
+            return
+        if TRANCHES > 1:
+            await self.rebalance_tranche()
             return
 
         # Count trading days (only increment once per calendar day)
@@ -947,6 +1112,127 @@ class IBKREngine:
         self._save_rebal_state()
         await self.update_positions()
         log.info(f"Rebalance complete. Positions: {list(self.positions.keys())}")
+
+    async def rebalance_tranche(self):
+        """One sub-book every TRANCHE_STRIDE trading days (see the TRANCHES block at the top).
+        Mirrors rebalance() step for step -- same signal gate, same emergency cover, same
+        vol-scale x credit-gate target, same closed-loop integer sizing -- applied to ONE book
+        of NAV/TRANCHES. Called only from rebalance() after the market-open/trading-day gates."""
+        st = self._tranche
+        today = datetime.now().date().isoformat()
+        if st.get("last_counted_day") != today:
+            st["last_counted_day"] = today
+            st["stride_counter"] = int(st.get("stride_counter", 0)) + 1
+            log.info(f"Tranche day count: {st['stride_counter']}/{TRANCHE_STRIDE} (next book {st['next_tranche']})")
+            self._save_tranche_state()
+        if st["stride_counter"] < TRANCHE_STRIDE:
+            return
+
+        signals = self.fetch_signals()
+        if not signals:
+            log.warning("No signals available — skipping tranche rebalance")
+            return
+        t = int(st["next_tranche"]) % TRANCHES
+        log.info(f"═══ TRANCHE REBALANCE: book {t} of {TRANCHES} ({st['stride_counter']}d since last) ═══")
+
+        # SAFETY: close any accidental short first (same as the legacy path)
+        await self.update_positions()
+        for sym, pos in list(self.positions.items()):
+            if pos["qty"] < 0:
+                log.warning(f"EMERGENCY COVER: {sym} has short position ({pos['qty']} shares)")
+                contract = Stock(sym, "SMART", "USD")
+                await self.ib.qualifyContractsAsync(contract)
+                cover_order = MarketOrder("BUY", abs(pos["qty"]))
+                cover_order.tif = "DAY"
+                trade = self.ib.placeOrder(contract, cover_order)
+                await asyncio.sleep(5)
+                send_telegram(f"⚠️ COVERING accidental short: {sym} ({abs(pos['qty'])} shares)")
+        portfolio_value = await self.get_portfolio_value()
+        if portfolio_value <= 0:
+            log.error("Portfolio value is 0 — skipping tranche rebalance")
+            return
+        await self.update_positions()
+        positions_qty = {s: int(p["qty"]) for s, p in self.positions.items() if p["qty"] > 0}
+
+        # Transition (first tranche day ever): the existing single book becomes TRANCHES equal books.
+        if not st.get("initialized"):
+            st["books"] = self._split_books(positions_qty, TRANCHES)
+            st["initialized"] = True
+            log.info(f"Tranche transition: split {len(positions_qty)} holdings across {TRANCHES} books")
+            send_telegram(f"🧩 Tranche transition: existing {len(positions_qty)} holdings split into "
+                          f"{TRANCHES} sub-books; book {t} rebuilds today, the others follow every "
+                          f"{TRANCHE_STRIDE} sessions.")
+        # Reconcile bookkeeping with the broker (stops, manual trades, partial fills since last time).
+        st["books"] = self._reconcile_books(st["books"], positions_qty, str(t))
+        book = st["books"][str(t)]
+        others_total = {}
+        for tt, b in st["books"].items():
+            if tt != str(t):
+                for sym, q in b.items():
+                    others_total[sym] = others_total.get(sym, 0) + q
+
+        book_nav = portfolio_value / TRANCHES
+        vol_scale, realized_vol = self.compute_vol_scale()
+        credit_derisk, credit_st = self.compute_credit_derisk()
+        if credit_derisk < 1.0:
+            log.warning(f"CREDIT GATE ON: HY-OAS pctile {credit_st['pctile']:.1%} -> book {t} target x{credit_derisk:.2f}")
+            send_telegram(f"🛡️ CREDIT GATE ON: HY credit spread at the {credit_st['pctile']:.0%} percentile — "
+                          f"book {t} rebuilt at {EFFECTIVE_LEVERAGE * vol_scale * credit_derisk:.2f}x "
+                          f"(x{credit_derisk:.2f}); the other books follow on their own days.")
+        elif credit_st and credit_st.get("ok"):
+            log.info(f"CREDIT-GATE: HY-OAS {credit_st['latest']:.2f} pctile {credit_st['pctile']:.1%} -> off (1.00)")
+        target_eff = EFFECTIVE_LEVERAGE * vol_scale * credit_derisk
+        if realized_vol is not None:
+            log.info(f"VOL-SCALE: realized_vol={realized_vol:.1%} target={VOL_TARGET:.0%} -> scale={vol_scale:.2f} "
+                     f"-> book {t} leverage target {target_eff:.2f}x")
+            send_telegram(f"📊 Vol-scale: vol {realized_vol:.0%} → book {t} lev target {target_eff:.2f}x ({vol_scale:.2f}× base)")
+
+        live_prices = {}
+        for sig in signals:
+            sym = sig["symbol"]
+            price = await self.get_market_price(Stock(sym, "SMART", "USD"))
+            if not price or price <= 0:
+                log.warning(f"Cannot get price for {sym} — skipping")
+                continue
+            live_prices[sym] = price
+        target_qty, sizing_mult, projected_gross = self._calibrate_quantities(
+            signals, live_prices, book_nav, vol_scale, credit_derisk)
+        log.info(f"SIZING book {t}: NAV/{TRANCHES}=${book_nav:,.0f}, mult {sizing_mult:.2f} -> projected gross "
+                 f"${projected_gross:,.0f} = {(projected_gross / book_nav if book_nav else 0):.2f}x book NAV "
+                 f"(target {target_eff:.2f}x)")
+        orders = self._tranche_orders(book, target_qty, live_prices, book_nav, positions_qty, others_total)
+        n_sell = sum(1 for _, d, _ in orders if d < 0)
+        n_buy = len(orders) - n_sell
+        send_telegram(f"🔄 Tranche rebalance — book {t}/{TRANCHES}: {n_sell} sells, {n_buy} buys, "
+                      f"book NAV ${book_nav:,.0f}, target {target_eff:.2f}x")
+        for sym, d, reason in orders:
+            if d < 0:
+                await self.sell_position(sym, -d, reason)
+                book[sym] = book.get(sym, 0) + d           # d is negative
+                if book[sym] <= 0:
+                    book.pop(sym, None)
+                    self.trailing_peaks.pop(f"{t}:{sym}", None)
+            else:
+                await self.buy_position(sym, d, reason)
+                book[sym] = book.get(sym, 0) + d
+                key = f"{t}:{sym}"
+                if live_prices[sym] > self.trailing_peaks.get(key, 0):
+                    self.trailing_peaks[key] = live_prices[sym]
+        # Whatever the broker actually filled is picked up by _reconcile_books next time.
+        st["books"][str(t)] = book
+        st["stride_counter"] = 0
+        st["next_tranche"] = (t + 1) % TRANCHES
+        st["last_tranche"] = t
+        st["last_tranche_rebal"] = today
+        self._save_tranche_state()
+        self._save_trailing_peaks()
+        # keep the legacy fields meaningful for status/EOD messages
+        self._trading_days_since_rebal = 0
+        self._last_rebal_date = datetime.now().date()
+        self.last_rebalance = datetime.now()
+        self._save_rebal_state()
+        await self.update_positions()
+        log.info(f"Tranche rebalance complete (book {t}). Positions: {list(self.positions.keys())}")
 
     # ═══════════════════════════════════════════════════════════════
     # SHORT SLEEVE
@@ -1680,11 +1966,14 @@ class IBKREngine:
         except Exception:
             sig = "❌ unreachable"
         vs, rv = (self.compute_vol_scale() if VOL_SCALING else (1.0, None))
-        left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+        left = self._rebal_left()
+        rebal_line = (f"Rebalance — book {self._tranche['next_tranche']}/{TRANCHES} rebuilds in {left}d (every {TRANCHE_STRIDE})\n"
+                      if TRANCHES > 1 else
+                      f"Rebalance — day {self._trading_days_since_rebal}/{REBAL_DAYS}, next in {left}d\n")
         return (self._tg_header("🩺 STATUS", self.is_market_open()) + "\n" +
                 f"IBKR — {ib_state} <i>({self.account_id})</i>\n"
                 f"Signals — {sig}\n"
-                f"Rebalance — day {self._trading_days_since_rebal}/{REBAL_DAYS}, next in {left}d\n"
+                + rebal_line +
                 f"Vol-scale — {vs:.2f}" + (f" <i>(realized vol {rv:.0%})</i>" if rv else " <i>(ramp-up)</i>"))
 
     def _cmd_signals(self):
@@ -1704,6 +1993,16 @@ class IBKREngine:
             return f"⚠️ signals error: {_h.escape(str(e))}"
 
     def _cmd_rebal(self):
+        if TRANCHES > 1:
+            st = self._tranche
+            c = min(int(st.get("stride_counter", 0)), TRANCHE_STRIDE)
+            bar = "▰" * c + "▱" * (TRANCHE_STRIDE - c)
+            books = "\n".join(f"book {t}: {len(b)} names" for t, b in sorted(st["books"].items()))
+            return (self._tg_header("🔄 TRANCHE REBALANCE") + "\n" + self._tg_table([bar]) + "\n"
+                    f"Day <b>{c}</b> of {TRANCHE_STRIDE} — book <b>{st['next_tranche']}</b>/{TRANCHES} "
+                    f"rebuilds in <b>{self._rebal_left()}</b> trading days\n"
+                    f"<i>last: book {st.get('last_tranche')} on {st.get('last_tranche_rebal')}"
+                    f"{'' if st.get('initialized') else ' · transition pending'}</i>\n" + books)
         left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
         done = min(self._trading_days_since_rebal, REBAL_DAYS)
         bar = "▰" * done + "▱" * (REBAL_DAYS - done)
@@ -1871,7 +2170,7 @@ class IBKREngine:
                 f"Book {lev_now:.2f}x vs target {EFFECTIVE_LEVERAGE * vs:.2f}x "
                 f"<i>(scale {vs:.2f} = vol-scale × credit gate)</i>\n")
         if not plan:
-            left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+            left = self._rebal_left()
             why = ("gap under the $500 / 2% NAV floor" if deficit > 0
                    else "book is at/above target")
             return head + (f"Nothing to deploy — {why}.\n"
@@ -2360,7 +2659,7 @@ class IBKREngine:
                     try:
                         await self.update_positions()
                         nav = (await self.get_account_summary()).get("NetLiquidation", 0)
-                        left = max(0, REBAL_DAYS - self._trading_days_since_rebal)
+                        left = self._rebal_left()
                         send_telegram(
                             f"🟢 IBKR market OPEN ({_td}) — engine live, holding "
                             f"{len(self.positions)} positions, NAV ${nav:,.0f}.\n"

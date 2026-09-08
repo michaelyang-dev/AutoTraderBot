@@ -32,7 +32,13 @@ LIVE = os.path.join(ML, "data", "credit_signal_live.parquet")   # maintained by 
 FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}"
 
 PCT = 0.95          # de-risk when spread >= this expanding percentile (validated p95)
-DERISK = 0.5        # gross-leverage multiplier while gated (validated 0.5)
+DERISK = 0.0        # gross-leverage multiplier while gated. 0.5 validated 2026-07 on the single
+                    # 20-day book; 0.00 (fully flat) validated 2026-09 on the tranched book
+                    # (EXP-053: monotone 0.00 > 0.25 > 0.50 on CAGR, Sharpe AND MaxDD, 26yr;
+                    # re-verified on the rebuilt v2 universes, FINAL_RECOMMENDATION.md §0).
+                    # With 4 tranches the gate flattens ONE book per 5 sessions, so the
+                    # de-risk is gradual by construction; a 0.00 on the single book would
+                    # have been a one-day full liquidation, which is why 0.5 was chosen then.
 MIN_OBS = 252       # matches backtest min_periods
 STALE_DAYS = 7      # gate_status flags staleness beyond this (weekends/holidays are fine)
 

@@ -61,7 +61,10 @@ SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLRE", "
 #  unchanged — only the undeliverable 10% is removed.
 #  The s3 code path is retained (computed, zero-weighted) for future use if ETF order
 #  routing is ever added to the live engine.
-PROD_WEIGHTS_BULL  = {"s1_momentum": 0.50,   "s7_value": 0.35,   "s5_lowvol": 0.15,   "s3_sector": 0.00, "s4_inclusion": 0.00}
+#  2026-09-08 (FINAL @1.49x decision): bull mix 50/35/15 -> 70/21/9 (same ratios inside the
+#  value+lowvol block). Weakest of the three changes in the tranche package (+0.023 Sharpe 8yr,
+#  +0.002 26yr, EXP-047/051) but part of the audited configuration; bear/crash mixes unchanged.
+PROD_WEIGHTS_BULL  = {"s1_momentum": 0.70,   "s7_value": 0.21,   "s5_lowvol": 0.09,   "s3_sector": 0.00, "s4_inclusion": 0.00}
 PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.1111, "s7_value": 0.3333, "s5_lowvol": 0.5556, "s3_sector": 0.00, "s4_inclusion": 0.00}
 PROD_WEIGHTS_CRASH = {"s1_momentum": 0.1667, "s7_value": 0.5000, "s5_lowvol": 0.3333, "s3_sector": 0.00, "s4_inclusion": 0.00}
 

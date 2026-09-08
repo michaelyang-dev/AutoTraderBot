@@ -28,9 +28,14 @@ CANONICAL EXPECTATION NUMBERS (research/final_live_config_test.py, 2026-07-10):
 # Backtest config that reproduces the LIVE system (pass to FastBacktester.run):
 V12_LIVE_BACKTEST_CONFIG = {
     "universe": "sp1500",
-    "mom_w": 0.50, "val_w": 0.35, "lv_w": 0.15, "sec_w": 0.0,
+    # 2026-09-08 (FINAL @1.49x): sleeves 50/35/15 -> 70/21/9; rebalance is now TRANCHED
+    # (4 sub-books, one rebuilt every 5 sessions) and the credit gate depth is 0.00 (flat
+    # book while gated). FastBacktester has no tranche path: to reproduce live use the
+    # clean-room engine (research/VERIFY2_cleanroom.py, cfg tranches=4, tranche_stride=5,
+    # credit_derisk=0.0). The 20-day single-book numbers below are the pre-tranche baseline.
+    "mom_w": 0.70, "val_w": 0.21, "lv_w": 0.09, "sec_w": 0.0,
     "top_n": 5,
-    "rebal_days": 20,
+    "rebal_days": 20,          # per book; 4 books staggered 5 sessions apart in live
     "trailing_stop": 0.40,
     "cap": 0.10,          # live-effective relative cap (15% NAV at 1.49x gross)
     "use_rp": False,      # live signal_builder applies NO risk-parity
@@ -58,3 +63,6 @@ LIVE_LEVERAGE = 1.49          # closed-loop measured-gross target (x vol_scale)
 LIVE_FINANCING_RATE = 0.063   # IBKR small-account margin, borrowed portion only
 LIVE_VOL_SCALE_CAP = 1.0      # de-risk only — never levers above LIVE_LEVERAGE
 LIVE_VOL_SCALE_FLOOR = 0.30
+LIVE_TRANCHES = 4             # 2026-09-08: 4 virtual sub-books of NAV/4 (ibkr_engine.TRANCHES)
+LIVE_TRANCHE_STRIDE = 5       # one sub-book rebuilt every 5 trading days
+LIVE_CREDIT_DERISK = 0.0      # credit_gate.DERISK: the rebuilding book goes flat while HY-OAS >= p95

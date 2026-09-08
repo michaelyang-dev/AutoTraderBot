@@ -19,15 +19,15 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 | Parameter | IBKR live | Alpaca paper | Backtest equivalent |
 |---|---|---|---|
 | Signals | `:5001` /signals | same | same shared sleeve code |
-| Sleeves | mom .50 / val .35 / lowvol .15 (bear .1111/.3333/.5556, **sector 0.00**, breadth-blended) | same | same (`PROD_WEIGHTS_*`) |
+| Sleeves | **mom .70 / val .21 / lowvol .09 (2026-09-08, was .50/.35/.15)**; bear .1111/.3333/.5556, **sector 0.00**, breadth-blended | same | same (`PROD_WEIGHTS_*`) |
 | Risk-parity in sleeves | **NO** (signal_builder skips it) | same | model with `use_rp=False` |
-| Rebalance | 20 trading days, persisted `ibkr_rebal_state.json`, NYSE-calendar gated | same via `js_rebal_state.json` | `rebal_days: 20` |
+| Rebalance | **TRANCHED 2026-09-08: 4 virtual sub-books of NAV/4, ONE rebuilt every 5 trading days** (`TRANCHES=4`, `TRANCHE_STRIDE=5`; state `ibkr_tranche_state.json`; per-book trailing peaks keyed `book:SYM`); legacy 20-day single book = `IBKR_TRANCHES=1` | still 20-day single book (paper mirror) | clean-room `tranches=4, tranche_stride=5` (`research/VERIFY2_cleanroom.py`) |
 | Position cap | 15% of NAV (≈10% of the 1.49x book) | same | model with `cap: 0.10` |
 | Trailing stop | 40% from peak | same | same |
 | Take-profit | none | none (deleted 2026-06-25) | none |
 | Sizing | **closed-loop** (2026-07-04): `_calibrate_quantities` targets 1.49x × vol_scale of MEASURED gross; old `LEVERAGE=1.8` is only a safety ceiling | `MAX_CASH_DEPLOY_PCT=1.49` × volScale — **FIXED 2026-07-12 from 1.60** (it was deploying ~1.60x: live gross/equity 1.55x with top pos 13.8%, 15% cap not binding, so the "caps→1.49" premise was false; fractional shares mean the constant IS the deployed leverage) | overlay leverage on 1x returns |
 | Vol-scaling | target 0.15 1x-equiv (0.2235 on levered NAV), lookback 40d, floor 0.30, **de-risk-only cap 1.0** | same policy | `vol_scaling` flags (+ `vol_scale_cap: 1.0` via research fork) |
-| **Credit de-risk gate (LIVE 2026-07-18)** | halve gross-leverage target while HY-OAS ≥ p95 of its expanding history (`credit_gate.py`; FRED BAMLH0A0HYM2; cron 8:35 refreshes `data/credit_signal_live.parquet`; engine reads file only, FAIL-SAFE 1.0; applies at rebalance + /deploy, exactly the validated cadence; Telegram on gate-ON + on stale feed) | not ported (paper mirror) | `livemirror_backtest` gate_cols=[hy_oas] p95×0.5 — 26yr MaxDD −63.5→−56.6 at +0.3pp CAGR; OOS +16.6pp DD (`research/THREAD_T_FINDINGS.md`) |
+| **Credit de-risk gate (LIVE 2026-07-18; depth 0.50 → 0.00 on 2026-09-08)** | **`DERISK = 0.0`: the sub-book being rebuilt goes FLAT** while HY-OAS ≥ p95 (one book per 5 sessions, so the de-risk is gradual by construction; the 0.5 depth was chosen for the single book where 0.0 would have been a one-day liquidation). Was: halve gross-leverage target while HY-OAS ≥ p95 of its expanding history (`credit_gate.py`; FRED BAMLH0A0HYM2; cron 8:35 refreshes `data/credit_signal_live.parquet`; engine reads file only, FAIL-SAFE 1.0; applies at rebalance + /deploy, exactly the validated cadence; Telegram on gate-ON + on stale feed) | not ported (paper mirror) | `livemirror_backtest` gate_cols=[hy_oas] p95×0.5 — 26yr MaxDD −63.5→−56.6 at +0.3pp CAGR; OOS +16.6pp DD (`research/THREAD_T_FINDINGS.md`) |
 | Financing | IBKR margin ~6.3%/yr on the borrowed portion | paper (model the same) | overlay (`research/leverage_financing_test.py`) |
 | Shorts / GLD / VIXM / SPY-parking / trend bucket | all OFF | all OFF (order-path inventory closed 2026-07-10) | all OFF (defaults 0) |
 | Signal outage | skip rebalance, HOLD | HOLD (consensus fallback **neutered 2026-07-10**, alert-only) | n/a (always has signals) |
@@ -307,6 +307,48 @@ CUSIP→PERMNO via CRSP security info; CCM link as the cross-check).
 signal set already carries BNY/ECHO/PPLI/AGNT/DMC and has dropped the old tickers and delisted names.
 
 ---
+
+## Tranched rebalance — BUILT 2026-09-08 (FINAL @1.49x), deployment pending the owner's go
+
+**Decision.** Owner chose FINAL @1.49x on 2026-09-08 after the v2 re-verification and the 17-point
+leakage audit (`ml_service/research/FINAL_RECOMMENDATION.md` §0). Three changes, everything else
+identical: (1) 4 sub-books rebalanced on a 5-session stagger instead of one 20-day book;
+(2) credit gate depth 0.50 → 0.00; (3) bull sleeve mix 50/35/15 → 70/21/9. Leverage stays 1.49x
+closed-loop, vol overlay, 40% stop, 15% cap, top-5 momentum all unchanged.
+
+**Engine (`ibkr_engine.py`).** `TRANCHES=4`, `TRANCHE_STRIDE=5` (env-overridable; `IBKR_TRANCHES=1`
+is the rollback to the untouched legacy path). `rebalance()` dispatches to `rebalance_tranche()`,
+which keeps its own trading-day counter in `data/ibkr_tranche_state.json` and, every 5 sessions,
+rebuilds ONE book: same signal gate (stale + coverage), same emergency short cover, same
+vol-scale × credit-gate target, same `_calibrate_quantities` closed-loop integer sizing — on
+NAV/4 with the 15% cap per book. Orders are the net delta of that book only; sells are bounded by
+(actual position − other books' holdings) so no book can sell another's shares
+(`_tranche_orders`, pure). `_reconcile_books` re-syncs the books to the broker before every
+tranche day and every stop check (stops, manual trades, partial fills). Trailing stops are
+per book (`trailing_peaks["<book>:<SYM>"]`) and sell only that book's slice
+(`_check_trailing_stops_tranched`). Telegram `/status` and `/rebal` show the book cadence.
+
+**Transition.** First tranche day after deploy: existing holdings are split 4 ways in whole
+shares (remainder to the lowest books) and book 0 is rebuilt; books 1–3 follow at 5-session
+intervals, so the whole account is on the new schedule after 20 sessions. The state file's
+counter starts at the stride, so the first tranche day is the first trading day after the
+restart — deploy before the 2026-09-09 open, which is when the legacy 20-day clock (day 20)
+would have fired anyway.
+
+**Tests.** `tests/test_tranche_engine.py` (31 checks, offline: split conservation, reconcile
+shortfall/surplus, bounded sells, tiny-delta skip, cap/closed-loop sizing on NAV/4, gate ×0.00
+→ empty book, cadence and same-day idempotence, per-book stop sells only that slice, legacy
+fallback). Existing engine tests unchanged and passing.
+
+**Deploy steps (on the owner's go).** `git pull` on the box → restart `signal-server` (picks up
+`PROD_WEIGHTS_BULL`) → restart `ibkr-engine` → confirm `/rebal` shows "transition pending" →
+first tranche day at the next open. **Rollback:** `IBKR_TRANCHES=1` in the pm2 env restores the
+20-day path (the state file is ignored); set `credit_gate.DERISK` back to 0.5 if rolling back,
+because 0.0 on a single book is a one-day full liquidation.
+
+**Known limits.** `/deploy` (idle-cash top-up) still sizes against the whole book, not a
+tranche — a manual command, use sparingly. Alpaca paper still runs the single 20-day book
+from the same signals (so it is no longer a mirror of IBKR).
 
 ## Gotchas that previously caused misdiagnosis
 - **Alpaca multi-strategy buckets are DISABLED**: `momentum: 0, mean_reversion: 0,
