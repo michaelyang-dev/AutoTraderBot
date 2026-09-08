@@ -3051,6 +3051,47 @@ found and fixed. Closing the research program here.
 
 ---
 
+## Cycle 53 — v2 UNIVERSE REBUILD + FULL RE-VERIFICATION (2026-09-07/08): the recommendation stands on corrected data
+
+**Ask.** Rebuild both universes from the refreshed WRDS pull (PERMNO-keyed, 2026 prices, fundamentals to
+2026-08), verify them, re-run LIVE vs the recommended structure on both horizons through 2026-08-31, and prove
+nothing is inflated. Deliverable: `FINAL_RECOMMENDATION.md` section 0 (side-by-side, per-year, 24-row
+PASS/FAIL table).
+
+**Result (24 starts each, clean-room engine).** 8yr LIVE +29.52% / 0.956 / −38.6% vs FINAL@1.25 +31.03% /
+1.053 / −33.5% (Sharpe better 17/24, MaxDD 17/24); 26yr LIVE +16.34% / 0.658 / −54.1% vs +17.26% / 0.730 /
+−43.0% (Sharpe 20/24, MaxDD **24/24**). Cost 2× leaves the delta intact (+0.098 / +0.073). Same ordering at
+1.10× and 1.49×. Verdict unchanged: 1.25× recommended; it is a risk package (loses 2023-26 by −0.029 Sharpe,
+wins every bad year: 2008, 2015, 2018, 2020, 2022).
+
+**Four defects found by the gate and fixed BEFORE any number was kept (BUGS.md D12a-d).** (a) all 286,782 new
+fundamentals rows dropped by a NaN link column; (b) `V.END` override applied after the globals copy → every
+curve ended 2025-12-31 under a header saying Aug 2026 (caught by the curve-span check); (c) ETFs are
+`tpci="%"` in Compustat → zero 2026 SPY/sector prices; (d) membership symbols are Compustat SECURITY tics, not
+point-in-time — the date-aware CRSP-era resolver mapped 197 renamed symbols (2.7% of member-days) to the wrong
+company and collapsed twins; resolver v4 (security semantics + CUSIP bridge through Security Monthly, which
+recovers AMR/Kodak/Frontier/Chesapeake/Delta/Delphi/Lear/Peabody) leaves 3 overlap PERMNO-days in 26 years.
+Pipeline runs 1-3 (voided) are archived under `research/_v2_BUGGY_*`.
+
+**Independent checks that PASSED.** Universe checklist 19/19 on both horizons (row counts vs an explicit
+calendar, duplicates, NaN/inf per feature, gaps = 9/11 / Ford / Sandy only, count stability, spot checks,
+features recomputed from prices ≤T, roe recomputed from rdq-dated rows). Ledger audit 44/44 on both horizons
+(data-access recorder: 0 of ~92k accesses beyond the decision date; membership key ≤ date; 15% cap; gross ≤
+leverage bound; ledger reconstructs cash to the cent; CAGR/MaxDD recomputed by a second method to 2e-16;
+Sharpe daily vs monthly within 0.07; win rates 49.8-53.2%). 2026 prices vs Polygon: corr 0.9993 on 1,450
+names; 2017-25 vs the live system's cached Polygon closes: corr 0.94-0.999.
+
+**Flag investigated.** 2024 (+66-74%) and 2026 YTD (+68-70%) are huge years. Prices confirmed against an
+independent vendor; the 2026 cross-section (EW +15.7%, p90 +58.8%) supports a top-5 momentum book at 1.49×
+doing +68%. Could NOT run: live-account reconciliation — live NAV Jun 15→Aug 31 includes a $16.8k deposit
+(Jul 17, +47.5% one-day jump); deposit-netted ≈ +24% vs backtest +0.7% over the same window; live ran
+SP500-only sleeves until Jul 25 and degraded-coverage signals in Aug, so this is open tracking work.
+
+**Caveats.** Membership known only to 2026-05-01; 19 symbols (0.2%) unresolvable; two CRSP/Compustat
+survivor disagreements (USB, BDC) collapse (0.02%); 2026 is a different vendor chained on CRSP.
+
+Configs tested this cycle: 6 arms × 24 starts × 2 horizons (no new search). Program total ≈4,452.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

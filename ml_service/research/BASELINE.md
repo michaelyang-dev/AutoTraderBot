@@ -1,5 +1,14 @@
 # BASELINE — current audited champion
 
+## ✅ 2026-09-08 — RE-VERIFIED on the rebuilt v2 universes, through 2026-08-31 (supersedes the 09-03 numbers)
+
+Both universes rebuilt PERMNO-keyed from the 2026-09-07 WRDS pull (`scripts/build_universe_v2.py`, files
+`data/wrds/*_v2.pkl`), 19/19 checklist + 44/44 ledger audit PASS on each horizon (`FINAL_RECOMMENDATION.md` §0).
+**LIVE canon on v2:** 8yr (2018-01→2026-08) +29.52% / 0.956 / −38.6%; 26yr (2001-01→2026-08) +16.34% / 0.658 /
+−54.1% (24 starts, clean-room engine, $50k, integer shares, financed). **FINAL @1.25×:** 8yr +31.03% / 1.053 /
+−33.5%; 26yr +17.26% / 0.730 / −43.0%; MaxDD shallower in 41/48 starts, Sharpe better in 37/48; cost 2× intact.
+The pre-rebuild numbers below are superseded but kept for the trail.
+
 ## ✅ 2026-09-03 — AUDITED CANDIDATE (not deployed): tranched rebalance + hard credit gate
 
 Cleared the full gate (24 starts incl. 12 untouched, two horizons, independent engine, sub-period
