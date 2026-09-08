@@ -144,8 +144,9 @@ def _coverage_forensics(raw, today, pool, missing, path):
         log.error("could not write coverage forensics: %s", _e)
 
 
-def _is_partial_session(idx):
-    """True when idx[-1] belongs to a session that has NOT closed yet.
+def _is_partial_session(idx, coverage=None):
+    """True when idx[-1] belongs to a session that has NOT closed yet, OR whose bar is not
+    yet published for most names (see the DATA RULE below).
 
     SINGLE SOURCE OF TRUTH for the partial-session guard — used by BOTH the price-matrix
     trim in _build_universe AND the `today` selection in build_signals_v9. Those two
@@ -157,7 +158,54 @@ def _is_partial_session(idx):
     if len(idx) < 2:
         return False
     now_et = datetime.now(ZoneInfo("US/Eastern"))
-    return pd.Timestamp(idx[-1]).date() == now_et.date() and now_et.hour < 16
+    if pd.Timestamp(idx[-1]).date() == now_et.date() and now_et.hour < 16:
+        return True
+    # DATA RULE (2026-09-08, third coverage alarm): the clock alone is not enough. At 16:13 ET
+    # the session had closed, so the clock rule said "final", but the vendor had published the
+    # day's bar for only 421 of 1,504 names; the other 1,083 were NaN on the last row, so
+    # rolling(200) went NaN and dist_sma200 coverage read 28%. A last row that is materially
+    # emptier than the sessions before it is NOT a completed session, whatever the clock says.
+    # `coverage` is the caller's measure of the last row (see _last_row_coverage): the fraction
+    # of names that printed on idx[-1] relative to the recent sessions. Below 0.90 -> partial.
+    if coverage is not None and coverage < PARTIAL_ROW_MIN_COVERAGE:
+        return True
+    return False
+
+
+PARTIAL_ROW_MIN_COVERAGE = 0.90   # last row must carry >= 90% of the recent per-session print count
+
+
+def _last_row_coverage(prices):
+    """Fraction of names printed on the last row of a close-price matrix, relative to the
+    largest per-row count over the previous 5 rows. 1.0 on a normal day; ~0.28 on 2026-09-08
+    at 16:13 ET. Returns None when there is no history to compare against."""
+    if prices is None or len(prices.index) < 2:
+        return None
+    counts = prices.notna().sum(axis=1)
+    ref = float(counts.iloc[-6:-1].max())
+    return float(counts.iloc[-1]) / ref if ref > 0 else None
+
+
+def _raw_last_row_coverage(raw, last_date):
+    """Same measure computed from the raw per-symbol bar dict before the matrix exists: the
+    share of symbols whose last bar is `last_date`, relative to the share that have the
+    session before it. Used by the `today` selection so it agrees with the matrix trim."""
+    try:
+        last = pd.Timestamp(last_date).normalize()
+        have_last = have_prev = 0
+        for df in raw.values():
+            if df is None or len(df) == 0:
+                continue
+            ix = pd.to_datetime(df.index).normalize()
+            if ix[-1] == last:
+                have_last += 1
+                if len(ix) > 1:
+                    have_prev += 1
+            elif ix[-1] < last:
+                have_prev += 1
+        return have_last / have_prev if have_prev > 0 else None
+    except Exception:
+        return None
 
 
 def _build_universe(raw, enhanced_data=None):
@@ -193,14 +241,15 @@ def _build_universe(raw, enhanced_data=None):
     # Only drops while the session is still open; after 16:00 ET the bar is final
     # (and the 17:30 refresh cron + 17:50 restart rebuild it properly). The 15-min
     # refresh loop is gated on _is_market_hours(), so nothing runs in between.
-    if _is_partial_session(prices.index):
+    _cov = _last_row_coverage(prices)
+    if _is_partial_session(prices.index, _cov):
         _partial = prices.index[-1]
         _missing = int(prices.loc[_partial].isna().sum())
         prices = prices.iloc[:-1]
-        log.info("Partial-session guard: dropped in-progress bar %s (%d/%d symbols had no "
-                 "print yet); computing on last completed session %s",
+        log.info("Partial-session guard: dropped in-progress/incomplete bar %s (%d/%d symbols had "
+                 "no print yet, row coverage %s); computing on last completed session %s",
                  str(_partial)[:10], _missing, prices.shape[1],
-                 str(prices.index[-1])[:10])
+                 f"{_cov:.0%}" if _cov is not None else "n/a", str(prices.index[-1])[:10])
 
     # Load sector map
     sector_file = DATA_DIR / "cache_sectors.json"
@@ -706,8 +755,14 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     # _build_universe, or `today` points at a session whose features were dropped and
     # every lookup returns {} -> empty book. Hence the shared _is_partial_session().
     _spy_idx = spy_df.index
-    today = pd.Timestamp(_spy_idx[-2] if _is_partial_session(_spy_idx)
+    # same clock rule AND the same data rule (row coverage) as the matrix trim, computed here
+    # from the raw bars so the two decisions cannot diverge
+    _row_cov = _raw_last_row_coverage(raw, _spy_idx[-1])
+    today = pd.Timestamp(_spy_idx[-2] if _is_partial_session(_spy_idx, _row_cov)
                          else _spy_idx[-1]).normalize()
+    if _row_cov is not None and _row_cov < PARTIAL_ROW_MIN_COVERAGE:
+        log.warning("Partial-session guard (data rule): only %.0f%% of names have printed for %s "
+                    "-- computing on %s", _row_cov * 100, str(_spy_idx[-1])[:10], str(today)[:10])
 
     # Rebuild universe if needed (once per day)
     if _uni_cache is None or _uni_cache_date != today:

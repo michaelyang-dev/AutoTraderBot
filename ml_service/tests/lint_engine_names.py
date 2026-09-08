@@ -50,7 +50,7 @@ def check(path):
 
 
 fails = 0
-for f in ("ibkr_engine.py", "credit_gate.py", "live_config.py", "strategies/multi_strategy_engine.py"):
+for f in ("ibkr_engine.py", "credit_gate.py", "live_config.py", "strategies/multi_strategy_engine.py", "signal_builder.py"):
     bad = check(f)
     print(f"  [{'PASS' if not bad else 'FAIL'}] {f}: {len(bad)} undefined names" + (f" -> {bad[:12]}" if bad else ""))
     fails += bool(bad)

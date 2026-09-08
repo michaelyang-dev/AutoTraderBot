@@ -308,6 +308,35 @@ signal set already carries BNY/ECHO/PPLI/AGNT/DMC and has dropped the old ticker
 
 ---
 
+## 🔴 dist_sma200 coverage alarm #3 — 2026-09-08 16:13 ET — ROOT CAUSE: clock-only partial-session guard. FIXED (pending deploy)
+
+**Symptom.** `/health` coverage `dist_sma200 0.2799`, `coverage_ok False`; forensics
+`data/coverage_forensics_20260908-161334.json`: union index last row 2026-09-08, pool 1,504,
+**1,083 names missing**, sample buckets STALE 399 / SHORT 1 / GAP 0 / ABSENT 0 — i.e. the missing
+names simply had no 2026-09-08 bar yet (last bar 09-04; Labor Day 09-07), `nan_in_trailing_200 = 1`.
+
+**Root cause.** `_is_partial_session()` was clock-only: `idx[-1] == today and hour < 16`. At 16:13 the
+session had closed, so the guard said "final", but the vendor had published the day's bar for only
+421 of 1,504 names. The 1,083 NaNs on the last row made `rolling(200)` NaN and the coverage guard
+fired (correctly) — the engine would have refused to trade on it (correctly). Different mechanism
+from #1/#2 (vendor date hole inside the window, fixed 09-02 with the interior ffill): this is the
+post-close publication lag, which the interior ffill deliberately does not touch (a trailing NaN
+must never be forward-filled — that would be a stale price).
+
+**Fix (`signal_builder.py`).** DATA RULE added to the same single-source guard: the last row is
+also partial when its print count is below **90%** of the max count over the previous 5 rows
+(`_last_row_coverage`, `PARTIAL_ROW_MIN_COVERAGE = 0.90`). Applied at BOTH call sites — the matrix
+trim in `_build_universe` and the `today` selection in `build_signals_v9` (via
+`_raw_last_row_coverage` on the raw bar dict, same measure) — so they cannot diverge. On an
+incomplete row the builder computes on the last completed session, exactly as it does intraday.
+Tests: `tests/test_partial_row_guard.py` (10 checks: the 421/1,504 state is partial, 100% is not,
+89/91% threshold, clock rule unchanged, raw-dict measure equals the matrix measure).
+
+**Why it was harmless to the book.** The engine only trades at the open, after the 09:15 refresh
+rebuilds the universe on complete bars; and `fetch_signals` refuses degraded coverage (2026-09-02
+gate). The alarm is the guard working. This fix removes the false alarm and the 15-minute-cadence
+rebuilds on a half-published day.
+
 ## Tranched rebalance — BUILT 2026-09-08 (FINAL @1.49x), deployment pending the owner's go
 
 **Decision.** Owner chose FINAL @1.49x on 2026-09-08 after the v2 re-verification and the 17-point
@@ -347,9 +376,13 @@ books-equal-broker invariant every session; legacy fallback). `tests/lint_engine
 (AST undefined-name pass, pyflakes-equivalent) clean on all four changed files. Existing engine
 tests (coverage gate 5, cache depth 6, vendor hole 10) unchanged and passing.
 
-**Deploy steps (on the owner's go).** `git pull` on the box → restart `signal-server` (picks up
-`PROD_WEIGHTS_BULL`) → restart `ibkr-engine` → confirm `/rebal` shows "transition pending" →
-first tranche day at the next open. **Rollback:** `IBKR_TRANCHES=1` in the pm2 env restores the
+**Deploy steps (on the owner's go).** The box (`/home/ubuntu/AutoTraderBot`, HEAD 8ac11df) carries
+four locally modified files (`ibkr_engine.py`, `signal_builder.py`, `signal_server.py`,
+`massive_data_provider.py`) that are byte-identical (md5) to the committed 09-02/09-07 fixes — they
+were scp'd, never pulled. So: `git checkout -- ml_service/{ibkr_engine,signal_builder,signal_server,massive_data_provider}.py`
+→ `git pull` → `pm2 restart signal-server` (picks up `PROD_WEIGHTS_BULL` and the partial-row guard)
+→ `pm2 restart ibkr-engine` → confirm `/rebal` shows "transition pending" and `/health` coverage_ok
+→ first tranche day at the next open. Engine runs under `ml_service/venv` (Python 3.12). **Rollback:** `IBKR_TRANCHES=1` in the pm2 env restores the
 20-day path (the state file is ignored); set `credit_gate.DERISK` back to 0.5 if rolling back,
 because 0.0 on a single book is a one-day full liquidation.
 
