@@ -199,9 +199,18 @@ class IBKREngine:
 
     # ── tranche state (persisted; survives restarts) ─────────────────────────────────
     def _tranche_default(self):
-        return {"books": {str(t): {} for t in range(TRANCHES)}, "stride_counter": TRANCHE_STRIDE,
-                "next_tranche": 0, "last_counted_day": None, "initialized": False,
-                "last_tranche_rebal": None, "last_tranche": None}
+        """Fresh state fires on the FIRST trading day AFTER deployment, at the open -- never
+        mid-session on the deploy day. The counter starts one short of the stride; the day that
+        completes it is counted on the first market-open cycle of a NEW day. If the engine is
+        (re)started during a session, today is pre-marked as counted so a fresh state cannot
+        trigger an intraday rebuild on the deploy day (the legacy clock had the same property:
+        day 20 was reached at the next open)."""
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("US/Eastern"))
+        in_session = now.weekday() < 5 and (9, 30) <= (now.hour, now.minute) < (16, 0)
+        return {"books": {str(t): {} for t in range(TRANCHES)}, "stride_counter": TRANCHE_STRIDE - 1,
+                "next_tranche": 0, "last_counted_day": now.date().isoformat() if in_session else None,
+                "initialized": False, "last_tranche_rebal": None, "last_tranche": None}
 
     def _load_tranche_state(self):
         st = self._tranche_default()
@@ -1157,6 +1166,14 @@ class IBKREngine:
         # Transition (first tranche day ever): the existing single book becomes TRANCHES equal books.
         if not st.get("initialized"):
             st["books"] = self._split_books(positions_qty, TRANCHES)
+            # carry the legacy single-book peaks into every book's slice, so a holding that is
+            # already 30% off its high keeps its 40% stop reference instead of resetting to today
+            for sym in positions_qty:
+                legacy_peak = self.trailing_peaks.get(sym)
+                if isinstance(legacy_peak, (int, float)) and legacy_peak > 0:
+                    for tt in range(TRANCHES):
+                        if st["books"][str(tt)].get(sym, 0) > 0:
+                            self.trailing_peaks[f"{tt}:{sym}"] = float(legacy_peak)
             st["initialized"] = True
             log.info(f"Tranche transition: split {len(positions_qty)} holdings across {TRANCHES} books")
             send_telegram(f"🧩 Tranche transition: existing {len(positions_qty)} holdings split into "

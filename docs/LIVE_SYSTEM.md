@@ -330,15 +330,22 @@ per book (`trailing_peaks["<book>:<SYM>"]`) and sell only that book's slice
 
 **Transition.** First tranche day after deploy: existing holdings are split 4 ways in whole
 shares (remainder to the lowest books) and book 0 is rebuilt; books 1–3 follow at 5-session
-intervals, so the whole account is on the new schedule after 20 sessions. The state file's
-counter starts at the stride, so the first tranche day is the first trading day after the
-restart — deploy before the 2026-09-09 open, which is when the legacy 20-day clock (day 20)
-would have fired anyway.
+intervals, so the whole account is on the new schedule after 20 sessions. A fresh state fires on
+the first NEW trading day after the restart, at the open — never mid-session on the deploy day
+(the counter starts one short of the stride and, if the engine starts during a session, today is
+pre-marked as counted). Legacy single-book trailing peaks are carried into every book's slice at
+the transition, so a holding already 30% off its high keeps its 40% stop reference. Deploying any
+time on 2026-09-08 therefore gives the first tranche day at the 09-09 open, which is when the
+legacy 20-day clock (day 20) would have fired anyway.
 
-**Tests.** `tests/test_tranche_engine.py` (31 checks, offline: split conservation, reconcile
+**Tests.** `tests/test_tranche_engine.py` (39 checks, offline: split conservation, reconcile
 shortfall/surplus, bounded sells, tiny-delta skip, cap/closed-loop sizing on NAV/4, gate ×0.00
-→ empty book, cadence and same-day idempotence, per-book stop sells only that slice, legacy
-fallback). Existing engine tests unchanged and passing.
+→ empty book, deploy-day guard, legacy-peak carry-over, cadence and same-day idempotence,
+per-book stop sells only that slice, a 22-session fake-clock scenario with rotation 0-1-2-3-0, an
+external sell absorbed by reconcile, a mid-cycle restart reloading the state file, and the
+books-equal-broker invariant every session; legacy fallback). `tests/lint_engine_names.py`
+(AST undefined-name pass, pyflakes-equivalent) clean on all four changed files. Existing engine
+tests (coverage gate 5, cache depth 6, vendor hole 10) unchanged and passing.
 
 **Deploy steps (on the owner's go).** `git pull` on the box → restart `signal-server` (picks up
 `PROD_WEIGHTS_BULL`) → restart `ibkr-engine` → confirm `/rebal` shows "transition pending" →

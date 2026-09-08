@@ -151,8 +151,22 @@ eng = FakeEngine({"AAPL": 120, "OLDCO": 80, "MSFT": 40}, 60_000.0, signals, pric
 eng._cur_sym_price = None
 E.datetime = __import__("datetime").datetime            # real clock for the day-count
 st = eng._tranche
-check("fresh state fires on the first trading day (counter starts at the stride)", st["stride_counter"] == E.TRANCHE_STRIDE)
+check("fresh state: counter one short of the stride (fires on the first NEW trading day, never mid-session on deploy day)",
+      st["stride_counter"] == E.TRANCHE_STRIDE - 1)
+# deploy-day guard: if the engine starts DURING a session, today is pre-marked as counted -> no rebuild today
+from zoneinfo import ZoneInfo
+_now = E.datetime.now(ZoneInfo("US/Eastern"))
+_in_session = _now.weekday() < 5 and (9, 30) <= (_now.hour, _now.minute) < (16, 0)
+check("deploy-day guard marks today as counted iff started in-session", (st["last_counted_day"] == _now.date().isoformat()) == _in_session, f"in_session={_in_session} last_counted_day={st['last_counted_day']}")
+if _in_session:
+    asyncio.run(eng.rebalance_tranche())
+    check("started in-session: no trade on the deploy day", not eng.sold and not eng.bought and not st["initialized"])
+# simulate the next trading day: clear the day mark so the count runs
+st["last_counted_day"] = None
+eng.trailing_peaks["AAPL"] = 130.0                      # legacy single-book peak to be carried into the books
 asyncio.run(eng.rebalance_tranche())
+check("legacy peak carried into every book slice at the transition (plain key pruned at the first stop check)",
+      all(eng.trailing_peaks.get(f"{t}:AAPL") == 130.0 for t in ("0", "1", "2", "3")), str({k: v for k, v in eng.trailing_peaks.items() if "AAPL" in k}))
 st = eng._tranche
 check("transition initialized and book 0 rebuilt", st["initialized"] and st["last_tranche"] == 0 and st["next_tranche"] == 1)
 check("counter reset after the tranche day", st["stride_counter"] == 0)
@@ -193,6 +207,102 @@ check("book 0 (peak 100, price 100) not stopped", "AAPL" in eng._tranche["books"
 E.TRANCHES = 1
 check("_rebal_left falls back to the 20-day clock", eng._rebal_left() == max(0, E.REBAL_DAYS - eng._trading_days_since_rebal))
 E.TRANCHES = 4
+
+# ── 8. multi-week scenario with a fake clock: rotation, external sell, restart, invariants ──
+import datetime as _dt
+import json as _json
+import tempfile
+from pathlib import Path
+from zoneinfo import ZoneInfo as _ZI
+
+
+class FakeDT(_dt.datetime):
+    _now = _dt.datetime(2026, 9, 9, 10, 0, tzinfo=_ZI("US/Eastern"))
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._now
+
+
+def advance_session():
+    d = FakeDT._now + _dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d += _dt.timedelta(days=1)
+    FakeDT._now = d
+
+
+E.datetime = FakeDT
+tmp = Path(tempfile.mkdtemp()) / "tranche_state.json"
+E.TRANCHE_STATE_FILE = tmp
+
+
+class ScenarioEngine(FakeEngine):
+    def _save_tranche_state(self):
+        E.IBKREngine._save_tranche_state(self)
+
+    def _save_trailing_peaks(self):
+        pass
+
+
+N = 25
+sig25 = [{"symbol": f"N{i:02d}", "signal": "BUY", "probability": 0.95 - i * 0.02} for i in range(N)]
+px25 = {f"N{i:02d}": 20.0 + 2 * i for i in range(N)}
+NAV = 60_000.0
+legacy = {f"N{i:02d}": int(1.49 * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
+eng = ScenarioEngine(legacy, NAV, sig25, px25)
+eng._cur_sym_price = None
+eng._tranche = eng._tranche_default(); eng._tranche["last_counted_day"] = None   # deployed after the close
+rebuilt = []
+inv_ok = True
+
+
+def invariants(e, label):
+    global inv_ok
+    books = e._tranche["books"]
+    tot = {}
+    for b in books.values():
+        for s_, q_ in b.items():
+            tot[s_] = tot.get(s_, 0) + q_
+            if q_ <= 0:
+                inv_ok = False; print(f"    non-positive book qty at {label}: {s_} {q_}")
+    actual = {s_: p_["qty"] for s_, p_ in e.positions.items() if p_["qty"] > 0}
+    if tot != actual:
+        inv_ok = False; print(f"    books != broker at {label}: {tot} vs {actual}")
+
+
+for session in range(1, 23):
+    before = dict(eng._tranche)
+    asyncio.run(eng.rebalance_tranche())
+    if eng._tranche["last_tranche_rebal"] == FakeDT._now.date().isoformat() and eng._tranche.get("last_tranche") is not None and eng._tranche["stride_counter"] == 0 and before.get("stride_counter") != 0:
+        rebuilt.append((session, eng._tranche["last_tranche"]))
+        b = eng._tranche["books"][str(eng._tranche["last_tranche"])]
+        gross = sum(q_ * px25[s_] for s_, q_ in b.items())
+        if not (1.30 <= gross / (NAV / 4) <= 1.60):
+            inv_ok = False; print(f"    rebuilt book gross {gross/(NAV/4):.2f}x at session {session}")
+        if not set(b) <= set(px25):
+            inv_ok = False
+    if session == 8:                                    # external event: broker shows a stop/manual sell of N03
+        eng.positions["N03"]["qty"] = max(1, eng.positions["N03"]["qty"] // 2)
+    if eng._tranche.get("initialized"):                 # the engine runs the (reconciling) stop check every cycle
+        asyncio.run(eng._check_trailing_stops_tranched())
+    invariants(eng, f"session {session}")
+    if session == 12:                                   # restart: a NEW engine instance loads the persisted state
+        saved = _json.load(open(tmp))
+        eng2 = ScenarioEngine({s_: p_["qty"] for s_, p_ in eng.positions.items()}, NAV, sig25, px25)
+        eng2._cur_sym_price = None
+        eng2._tranche = eng2._load_tranche_state()
+        eng2.trailing_peaks = dict(eng.trailing_peaks)
+        check("restart reloads the persisted tranche state", eng2._tranche["next_tranche"] == saved["next_tranche"] and eng2._tranche["books"] == {k: {s: int(q) for s, q in v.items()} for k, v in saved["books"].items()})
+        eng = eng2
+    advance_session()
+
+check("rotation: books rebuilt on sessions 1,6,11,16,21 as 0,1,2,3,0", rebuilt == [(1, 0), (6, 1), (11, 2), (16, 3), (21, 0)], str(rebuilt))
+check("invariants held every session (books == broker, positive qty, rebuilt book ~1.49x NAV/4, signal names only)", inv_ok)
+check("external sell on session 8 was absorbed by reconcile (N03 books == broker)", sum(b.get("N03", 0) for b in eng._tranche["books"].values()) == eng.positions.get("N03", {"qty": 0})["qty"])
+sells_by_kind = {}
+for _, _, why in eng.sold:
+    sells_by_kind[why.split(" ")[0]] = sells_by_kind.get(why.split(" ")[0], 0) + 1
+check("no legacy-style full-book liquidation occurred (sells are tranche_exit/trim only)", set(sells_by_kind) <= {"tranche_exit", "tranche_trim"}, str(sells_by_kind))
 
 print(f"\n{len(FAILS)} failures" + (": " + ", ".join(FAILS) if FAILS else " — all tranche tests passed"))
 sys.exit(1 if FAILS else 0)
