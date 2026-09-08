@@ -266,6 +266,7 @@ gvkey+datadate) for 2015→2026-08-31, back-filled with every row of the previou
 the old file's SP1500 rows present; through the live loader's own view (latest row per tic by rdq)
 **1,964 SP1500 names get a newer quarter, 760 unchanged, 0 older.** rdq through 2026-09-03. Old file
 kept as `compustat_fundamentals_quarterly.bak-2026-07-12.parquet` on both machines.
+**Verified live 2026-09-07 20:46 ET:** post-restart build logged `Fundamentals loaded from WRDS Compustat (13232 tickers)` (was 13,022); coverage dist_sma200 99.1% / roe 94.5%; no alarms.
 
 **Known gap in the new pull:** it is INDL-format only, so ~25 US financials that file under FS (BK,
 BRKL, PINC…) have no fresh rows — they are carried from the old file (stale to 2026-04-30). Fix =
