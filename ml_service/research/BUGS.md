@@ -321,6 +321,27 @@ WAMUQ→Wampler Longacre, wrong 3 of 4 times. Clean fix is a WRDS re-download wi
 
 ---
 
+### D12 (found 2026-09-07, v2 rebuild) — three harness/data defects caught by the audit gate BEFORE any number was reported
+
+All three were found on 2026-09-07 while rebuilding both universes PERMNO-keyed from the refreshed WRDS pull
+(`scripts/build_universe_v2.py`). Each would have produced a plausible-looking, wrong result. None reached LOG.md.
+
+| # | defect | how it showed | consequence if missed | fix |
+|---|---|---|---|---|
+| D12a | `load_fundamentals` pre-created an all-NaN `LPERMNO` column on the new 2026-09 rows before the CCM merge; the merge produced `LPERMNO_x/_y`, the concat kept the NaN one, `dropna(subset=["LPERMNO"])` deleted **every** new row. | build log: `fund rows == cq rows`, `datadate max 2026-03-31` while the RAW pull reaches 2026-08-31 | Jul–Sep 2026 value/quality decisions on Q1-2026 fundamentals; 8,169 restated/new 2025Q3–2026Q1 rows dropped | do not pre-create link columns; two hard asserts (row arithmetic, `datadate.max() >= 2026-06-30`) |
+| D12b | `EXP057._engine()` set `V.END = 2026-08-31` **after** `ns = dict(V.__dict__)`; the exec'd `run()` read `END` from the copy, so every curve ended 2025-12-31 while the header said "through 2026-08-31". | cache inspection: last index 2025-12-31 | Eight months of 2026 silently excluded from a report claiming to include them | set `V.END` before the copy + `assert ns["END"] == END`; EXP058 checks every cached curve's end date |
+| D12c | 2026 ETF extension filtered `tpci == "F"`; Compustat tags ETFs `tpci == "%"`. SPY, GLD, VIXM, SH and 11 sector ETFs had **zero** 2026 prices. | `prices_df["SPY"].loc["2026":]` all NaN | momentum sleeve's SPY-above-SMA200 regime and bear-market sector tilt frozen on 2025-12-31 values for all of 2026, both arms | accept `F` and `%`; builder asserts ≥150 2026 prints per ETF (got 170/170) |
+
+Also fixed the same day: the serial pipeline's wait loop (`pgrep -f` matched its own `bash -c` text, then a second
+version missed the `Python.app` binary name) — replaced by a strictly sequential script; the v1-vs-v2 verifier assumed
+features exist on the 400-day price warm-up before START.
+
+**Status of D9/D10 after the v2 rebuild:** D9 closed (members on 2025-06-30 without a price: 26yr 109→1, 8yr 29→1, the one
+being PSKY, listed 2025-08-07); D10 closed (PERMNO-keyed, 0 suffixed tickers, 26yr splice count 22→16 and every remaining
+>300% bar is a genuine print — TSE/TSEOQ bankrupt OTC pennies, BNED 1:100 reverse split + rights offering, VNDA FDA approval).
+2026 extension cross-checked against Polygon on 1,450 names: return corr 0.9993, all >10% disagreements are 2026 spin-offs
+(FDX, MIDD, BDX, APTV, CMCSA) where the total-return series is the correct one.
+
 ## E. RESEARCH-HARNESS BUGS THAT PRODUCED CONVINCING FAKE RESULTS
 
 Every one of these ran without error and produced a plausible equity curve.
