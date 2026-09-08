@@ -101,7 +101,31 @@ machine for 2001–2015; CRSP is the only one).
 | D12c | ETFs tagged `tpci="%"` not `"F"`: no 2026 SPY/sector-ETF prices | frozen regime + sector tilt in 2026 (measured effect <0.01pp, but real) |
 | D12d | membership symbols resolved to CRSP ticker eras by date | 197 renamed symbols mapped to the wrong company (2.7% of member-days); twins collapsed; bankruptcies (AMR, Kodak, Frontier, Chesapeake…) missing until a CUSIP bridge recovered them |
 
-### 0.5 Caveats that survive
+### 0.5 Leakage / inflation audit (2026-09-08, user checklist 1–17) — all PASS; scripts `AUDIT_leakage_v2.py`, `AUDIT_harness_v2.py`, `AUDIT_origengine_v2.py`, `AUDIT_enginegap_v2.py`
+
+| # | check | result | evidence |
+|---|---|---|---|
+| 1 | 10 random (PERMNO, decision date) rows: every feature's source timestamp ≤ T | PASS ×2 | price windows end on T; fundamentals row = last filing with avail_date (rdq, else datadate+90d) ≤ T, next filing dated after T; ret_20d/dist_sma200/vol_20d/roe recomputed to 1e-6; estimates/targets/earnings/short-interest maps are EMPTY (deployed parity) |
+| 2 | label / forward return | N/A + evidence | no ML, no label; sleeves rank on trailing windows only. Fill = close of the signal bar (e.g. EGRX 2018-01-03 fill 58.6888 = close), P&L from T+1 — the optimistic convention, quantified in #10 |
+| 3 | shift/rolling/resample/merge direction | PASS | all `rolling`/`ewm` trailing (no `center=` anywhere); credit-gate percentile `.shift(1)` (uses yesterday); only merge is on gvkey; `si.shift(2)` is backtest-only and zeroed |
+| 4 | membership as-of-date | PASS ×2 | 142 adds+drops per year (26yr: 189 in 2000 … 26 in Jan–May 2026); today's list applied backward would show 0 |
+| 5 | top-20 single-day returns of HELD names vs raw CRSP DlyRet / Polygon | PASS ×2 | 40/40 match (GME 2021-01-27 +134.8%, CAR +108.3%, CORT +109.1% …), 0 mismatches |
+| 6–7 | train/test, scaler/imputer/tuning | N/A | no model in the path: `strategy1_momentum_reversal(... ml_ranker=None)` default, never passed by the clean room, the live signal builder or the engine |
+| 8 | was the improvement tuned on the evaluation period? | DISCLOSED | structure chosen (EXP-047…056) on the 12 odd-month starts, old universes, through 2025. Out-of-sample components: the 12 untouched even-month starts (LIVE +29.97/0.967 vs FINAL +31.62/1.067 8yr; +16.24/0.655 vs +17.30/0.731 26yr — same deltas) and Jan–Aug 2026. Calendar periods overlap the selection period |
+| 9 | cost per fill from the ledger | PASS ×2 | every fill (entry, exit, stop) carries cost = |shares×px|×10 bp, max deviation 0.00, min 0.0975; financing separately |
+| 10 | fills after the signal | FAIL by construction → QUANTIFIED | next-close fills: 8yr LIVE −0.20pp/−0.011 Sharpe, FINAL −0.34pp/−0.011; 26yr −0.10pp/−0.004, −0.54pp/−0.019. FINAL−LIVE delta under next-close: 26yr +0.093 Sharpe/+11.4pp MaxDD; 8yr 4-start subset −0.005/+1.7pp |
+| 11 | sizing respects cash; leverage intended; slot size | PASS ×2 | negative cash = margin debit at 1.49×/1.25× (intended, financed daily); gross/NAV max 1.57–1.62 (LIVE) 1.27–1.29 (FINAL); no entry above 15.00% |
+| 12 | duplicate / overlapping trades | PASS ×2 | 0 duplicate fills; same-ticker overlap only across the 4 tranche books (by design) |
+| 13 | equity rebuilt from the raw fill log by a separate loop | PASS ×4 | max |ΔNAV|/NAV 2e-15 … 6e-15; CAGR/Sharpe/MaxDD identical to 4 decimals |
+| 14 | per-year / per-quarter; dominance | INFO | 8yr LIVE top years 2021 29%, 2026 25%, 2024 23% of log-return; 26yr 2021 17%, 2003 14%, 2024 13%, 2026 12%; best quarter 2021Q1 +56% (8yr) / +88% (26yr), worst 2018Q4 −28% / 2001Q3 −30% |
+| 15 | random signal / EW buy-and-hold through the same harness | PASS ×2 | random 25-name basket, identical leverage/overlay/gate/stops/costs: 8yr +4.5% / Sharpe 0.30 / −50% (real +31.5% / 1.00); 26yr +7.4% / 0.40 (real +13.6% / 0.57). EW buy-and-hold of the same members: +10.7% / 0.59 (8yr), +10.9% / 0.63 (26yr) |
+| 16 | vs previously validated canon | EXPLAINED | canon (original engine, old universe, Aug 2026): 8yr +23.58% / 0.84 / −38.2%, 26yr +11.29% / 0.51 / −64.8%. v2 clean room **through 2025-12-31**: 8yr +23.26% / 0.805 / −38.6%, 26yr +14.27% / 0.600 / −54.1%. The headline +29.52% / +16.34% is entirely Jan–Aug 2026 (+68% YTD, prices verified vs Polygon). Original engine re-run on v2: 26yr agrees to 0.2pp; 8yr clean room +3.1pp higher — decomposed: position cap 0.10 (mirror) vs 0.15 (clean room = `ibkr_engine.py` POSITION_CAP) explains 2–3.8pp, financing curve 0.44pp; residual <1pp |
+| 17 | too-good flags | PASS ×2 | max per-start Sharpe 1.22 / 0.82; win rates 49.8–53.2%; MaxDD −29% … −59%; log-equity R² vs time 0.81–0.90 |
+
+**Correction to what I wrote earlier:** "the rebuild moved levels by <1pp" was wrong — it compared different windows. On the same window (through 2025) the rebuilt data LOWERS the 8yr LIVE from +26.85% to +23.26% and moves the 26yr from +13.93% to +14.27%. The rise to +29.52% / +16.34% is 2026.
+**Least confident check:** #10/#16 on the 8yr — the 8yr headline depends on a single 8-month period (2026) that is verified as real prices but has one out-of-sample observation, and the two engines still differ by ~1pp after the cap is matched (marking/fill conventions), which I have not decomposed further.
+
+### 0.6 Caveats that survive
 * Membership is known only to **2026-05-01**; index changes May–Aug 2026 are not reflected.
 * 19 membership symbols (109 symbol-years, 0.2%) remain unresolvable: obscure 2000s bankruptcies (BHMSQ, SOGCQ…), two class-B tickers (TAP.B, TRY.B), VGNT. Direction: excludes a few collapsing names → slightly flatters both arms equally.
 * Two twin pairs (USB/USB-200102, BDC/BWC-200407) collapse to one PERMNO because CRSP and Compustat disagree on which security survived the merger (1,955 symbol-days, 0.02%).

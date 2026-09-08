@@ -3092,6 +3092,27 @@ survivor disagreements (USB, BDC) collapse (0.02%); 2026 is a different vendor c
 
 Configs tested this cycle: 6 arms × 24 starts × 2 horizons (no new search). Program total ≈4,452.
 
+## Cycle 54 — LEAKAGE / INFLATION AUDIT of the v2 result (user checklist 1-17): nothing found; the "too good" is 2026
+
+Treated the v2 numbers as wrong until proven otherwise. Scripts: `AUDIT_leakage_v2.py` (features' source
+timestamps for 10 random rows, one trade's exact rows, membership turnover, top-20 held-name daily returns vs raw
+CRSP/Polygon, per-fill costs, equity rebuilt from the fill log by a separate loop, quarterly attribution,
+truncation to 2025, untouched starts only, EW buy-and-hold), `AUDIT_harness_v2.py` (next-close fills; random
+signal through the identical harness), `AUDIT_origengine_v2.py` + `AUDIT_enginegap_v2.py` (the original live-mirror
+engine on the same v2 data). Results table in `FINAL_RECOMMENDATION.md` §0.5.
+
+Findings: (1) no leakage signature anywhere — 10/10 rows, 40/40 daily returns, 0 accesses beyond T, fill log
+reconstructs to 2e-15; (2) random signal through the same harness: 8yr +4.5%/0.30, 26yr +7.4%/0.40 (real +31.5%,
++13.6%) — the harness does not manufacture returns; (3) next-close fills cost 0.1-0.5pp, delta intact; (4) the
+plausibility question is answered by the WINDOW: through 2025 the v2 clean room gives 8yr +23.26% (canon +23.58%)
+and 26yr +14.27%; the headline +29.52%/+16.34% is Jan-Aug 2026 (+68% YTD, prices verified against Polygon);
+(5) the two engines agree to 0.2pp on the 26yr; on the 8yr the clean room is +3.1pp higher, decomposed to the
+position cap (mirror config 0.10 vs live/clean-room 0.15 = `ibkr_engine.POSITION_CAP`) 2-3.8pp + financing 0.4pp.
+
+Correction logged: cycle 53's "levels moved <1pp" compared different windows; on the same window the rebuild
+LOWERED the 8yr by 3.6pp. Least-confident check: the 8yr headline rests on one 8-month period, and ~1pp of
+engine disagreement (marking/fill conventions) is not decomposed.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
