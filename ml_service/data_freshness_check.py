@@ -143,11 +143,21 @@ def _check_wrds_compustat():
     if cqd is None:
         return ("WRDS Compustat", "STALE", "missing / unreadable")
     old = (date.today() - cqd).days
-    if date.today() < WRDS_EXPECTED_BY:
-        return ("WRDS Compustat", "EXPECTED", f"datadate {cqd} — next upload ~Sept")
+    # Next upload is derived from the data, not a hardcoded date (the old "~Sept" hint kept
+    # showing after the 2026-09-07 upload had already landed). Quarterly filings for the quarter
+    # ending after `cqd` are mostly in ~6 weeks after that quarter end, so suggest uploading then.
+    q_end_month = ((cqd.month - 1) // 3 + 1) * 3            # calendar quarter containing cqd
+    q_end = (date(cqd.year + (q_end_month == 12), 1 if q_end_month == 12 else q_end_month + 1, 1) - timedelta(days=1))
+    if cqd >= q_end:                                         # cqd IS a quarter end -> that quarter is in hand, look to the next
+        m = q_end.month + 3
+        q_end = date(q_end.year + (m > 12), (m - 1) % 12 + 1, 1) + timedelta(days=31)
+        q_end = date(q_end.year, q_end.month, 1) - timedelta(days=1)
+    next_upload = (q_end + timedelta(days=45)).replace(day=15)   # ~6 weeks after that quarter end
     if old > 200:
         return ("WRDS Compustat", "STALE", f"datadate {cqd} ({old}d) — upload overdue")
-    return ("WRDS Compustat", "OK", f"datadate {cqd}")
+    if old > 120:
+        return ("WRDS Compustat", "EXPECTED", f"datadate {cqd} ({old}d) — upload due ~{next_upload:%b %d}")
+    return ("WRDS Compustat", "OK", f"datadate {cqd} (uploaded; next ~{next_upload:%b %d})")
 
 
 def _check_edgar_overlay():

@@ -51,5 +51,25 @@ check("unparseable Compustat date with low patched -> STALE (fail loud)", r[1] =
 r = run(1339, 4, (today - timedelta(days=8)).strftime("%Y-%m-%d"), gen=today - timedelta(hours=30))
 check("missed patcher run still -> STALE", r[1] == "STALE", r[2])
 
+# ── WRDS Compustat line: next upload derived from the data (the hardcoded "~Sept" hint outlived the upload) ──
+from datetime import date as _date  # noqa: E402
+
+
+def wrds(cqd):
+    F._parquet_last_date = lambda *a, **k: cqd
+    return F._check_wrds_compustat()
+
+
+r = wrds(_date(2026, 8, 31))
+check("datadate 2026-08-31 (fresh upload) -> OK, next ~Nov 15 (Q3 filings)", r[1] == "OK" and "Nov 15" in r[2], r[2])
+r = wrds(_date(2026, 6, 30))
+check("datadate at a quarter end (Jun 30) -> next ~Nov 15", "Nov 15" in r[2], r[2])
+r = wrds(_date(2026, 9, 30))
+check("datadate Sep 30 -> next ~Feb 15", "Feb 15" in r[2], r[2])
+r = wrds(_date.today() - timedelta(days=150))
+check("150 days old -> EXPECTED (due), not STALE", r[1] == "EXPECTED", r[2])
+r = wrds(_date.today() - timedelta(days=230))
+check("230 days old -> STALE (overdue)", r[1] == "STALE", r[2])
+
 print(f"\n{len(FAILS)} failures" + (": " + ", ".join(FAILS) if FAILS else " — all freshness-rule tests passed"))
 sys.exit(1 if FAILS else 0)
