@@ -337,7 +337,19 @@ rebuilds the universe on complete bars; and `fetch_signals` refuses degraded cov
 gate). The alarm is the guard working. This fix removes the false alarm and the 15-minute-cadence
 rebuilds on a half-published day.
 
-## Tranched rebalance — BUILT 2026-09-08 (FINAL @1.49x), deployment pending the owner's go
+## Tranched rebalance — DEPLOYED 2026-09-08 17:43 ET (FINAL @1.49x), first tranche day 2026-09-09 open
+
+**Deployed** on the owner's go: box fast-forwarded 8ac11df → d59d550 (126 files; the four scp'd
+files were reset first, three scp'd test files removed), pushed to GitHub from the box, tree clean.
+`signal-server` restarted 17:40 (weights 70/21/9, gate DERISK 0.0, partial-row guard all confirmed
+loaded from the venv; first rebuild saw only 29% of names printed for 09-08 → computed on 09-04,
+coverage dist_sma200 99.1%, coverage_ok True, 25 BUY). `ibkr-engine` restarted 17:43 (NAV $61,705,
+vol-scale 0.86 on 26% realized vol, "Market closed — waiting"). Fresh tranche state → first tranche
+day (transition + book 0) at the 09-09 open. Expected book-0 orders from the 09-04-close signals:
+~18 sells (~$10.5k, mostly quarter-slices of names leaving the signals) and ~19 buys (~$12.9k)
+against a book NAV of ~$15.4k at a 1.31× target; the 09-15 refresh recomputes on 09-08 closes so the
+exact names may shift. Local `git push` over HTTPS needs `gh auth login` (token expired); pushes
+went through the box's deploy key.
 
 **Decision.** Owner chose FINAL @1.49x on 2026-09-08 after the v2 re-verification and the 17-point
 leakage audit (`ml_service/research/FINAL_RECOMMENDATION.md` §0). Three changes, everything else
