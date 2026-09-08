@@ -174,15 +174,35 @@ def _check_edgar_overlay():
         age_h = (datetime.now() - gen_dt).total_seconds() / 3600
         return ("EDGAR overlay", "STALE",
                 f"generated {age_h:.0f}h ago — MISSED the {expected:%a %H:%M} patcher run")
-    if roe_patched < 30:
-        return ("EDGAR overlay", "STALE", f"roe patched COLLAPSED to {roe_patched} — patcher broken?")
+    # HEALTH is "did the patcher evaluate the universe", NOT "how many names it patched".
+    # 2026-09-08 false alarm: the 09-07 WRDS refresh brought Compustat to datadate 2026-08-31,
+    # so EDGAR had newer data for only 4 names (validated 1,339, failed 157, no errors; the
+    # 18:55 reconcile matched the overlay's earlier patches to the new Compustat values at 99.6%).
+    # A patched count near zero is therefore EXPECTED while Compustat is current, and a genuine
+    # breakage shows up as a collapsed validated+patched count or a traceback, both checked here.
+    roe_stats = o.get("stats", {}).get("roe", {})
+    roe_evaluated = int(roe_stats.get("validated", 0)) + int(roe_patched)
+    if roe_evaluated < 1000:
+        return ("EDGAR overlay", "STALE",
+                f"roe evaluated COLLAPSED to {roe_evaluated} (validated {roe_stats.get('validated', 0)}, "
+                f"patched {roe_patched}) — patcher broken?")
+    cq_days = None
+    try:
+        cq_days = (datetime.now() - datetime.fromisoformat(str(o.get("compustat_max_datadate")))).days
+    except Exception:
+        pass
+    if roe_patched < 30 and (cq_days is None or cq_days > 75):
+        return ("EDGAR overlay", "STALE",
+                f"roe patched COLLAPSED to {roe_patched} while Compustat is {cq_days}d old — patcher broken?")
     # recent patcher-log traceback (only if the log was written this cycle)
     logf = BASE.parent / "logs" / "edgar_patch.log"
     if logf.exists() and (datetime.now().timestamp() - logf.stat().st_mtime) < 30 * 3600:
         tail = logf.read_text(errors="ignore").splitlines()[-80:]
         if any(("Traceback" in ln or "Error" in ln) for ln in tail):
             return ("EDGAR overlay", "STALE", f"patcher LOG has a recent error (roe {roe_patched})")
-    return ("EDGAR overlay", "OK", f"roe patched {roe_patched}, {gen_dt:%b %d %H:%M}")
+    note = " (Compustat current — few patches needed)" if roe_patched < 30 else ""
+    return ("EDGAR overlay", "OK",
+            f"roe validated {roe_stats.get('validated', 0)}, patched {roe_patched}{note}, {gen_dt:%b %d %H:%M}")
 
 
 def _check_fmp():
