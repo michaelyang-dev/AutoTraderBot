@@ -257,6 +257,45 @@ a hole ever exceeds the fill limit, the engine still refuses to rebalance on a d
 
 ---
 
+## WRDS refresh 2026-09-07 — fundamentals DEPLOYED; daily price panel added; what WRDS can and cannot give us now
+
+**Deployed live (box + local, signal-server restarted):** `compustat_fundamentals_quarterly.parquet`
+rebuilt as a HYBRID — fresh Compustat Fundamentals Quarterly (INDL/STD/C/USD, deduped on
+gvkey+datadate) for 2015→2026-08-31, back-filled with every row of the previous file it lacked.
+558,037 rows, unique on (tic, datadate), columns/dtypes identical to the old file. Verified: 100% of
+the old file's SP1500 rows present; through the live loader's own view (latest row per tic by rdq)
+**1,964 SP1500 names get a newer quarter, 760 unchanged, 0 older.** rdq through 2026-09-03. Old file
+kept as `compustat_fundamentals_quarterly.bak-2026-07-12.parquet` on both machines.
+
+**Known gap in the new pull:** it is INDL-format only, so ~25 US financials that file under FS (BK,
+BRKL, PINC…) have no fresh rows — they are carried from the old file (stale to 2026-04-30). Fix =
+re-pull Fundamentals Quarterly with Industry Format **FS** only (small) and merge.
+
+**New research assets (not used live):**
+- `compustat_security_monthly.parquet` — 7.0M rows, every security 1990-01→2026-09, tic/gvkey/iid
+  + monthly prices. Resolves 64 of the 102 membership tickers the CRSP-ticker join could not (60 of
+  them link to a PERMNO); total membership resolution now ~99%.
+- `compustat_security_daily/secd_YYYY.parquet` — 2010-01-04→2026-09-04, USD-priced, all
+  domiciles (first pass wrongly dropped non-US-incorporated S&P members like APTV/JCI/NXPI; re-run
+  without the `fic` filter). Matches CRSP **exactly** on the 2025 overlap (7/7 names, corr 1.0000,
+  raw closes identical). This is the 2026 price source for the universe rebuild, since CRSP cannot
+  supply it (below).
+- `compustat_fundamentals_quarterly_2026-09_RAW.parquet` — all 679 columns, 1980→2026-08.
+- Raw zips archived under `data/wrds/raw_downloads_2026-09-07/` with a README.
+
+**What WRDS can no longer give us (important for anyone planning a re-download):**
+- **S&P historical index constituents have been REMOVED from Compustat** (S&P licensing). Only
+  "S&P Current" (today's snapshot, gvkey-keyed) remains. Our four `*_membership_history.parquet`
+  files (daily, 1990→2026-05-01) are therefore **irreplaceable — never delete or overwrite them.**
+  Membership after 2026-05 must be maintained from periodic S&P-Current snapshots.
+- **CRSP is annual-update only on this subscription** (quarterly Stock/CCM are greyed out): daily
+  prices, delistings, names and the CCM link refresh once a year in February. CRSP data ends
+  2025-12-31 until Feb 2027. 2026 prices come from Compustat Security Daily instead.
+- Still wanted: **Index Constituents – S&P Current** for 500/400/600 (small), to extend membership
+  forward and validate the identifier map.
+
+---
+
 ## Gotchas that previously caused misdiagnosis
 - **Alpaca multi-strategy buckets are DISABLED**: `momentum: 0, mean_reversion: 0,
   mega_cap: 0` — all 30 slots are the v12 factor bucket. Log labels "ML 22/30, MOM 0/0"
