@@ -173,6 +173,32 @@ def _is_partial_session(idx, coverage=None):
 
 
 PARTIAL_ROW_MIN_COVERAGE = 0.90   # last row must carry >= 90% of the recent per-session print count
+SPLICE_MAX_RATIO = 4.0            # one-day close ratio above this = two securities under one ticker (BNY 12.6x, SOLS 487,000x; GME's record day was 2.35x)
+
+
+def _splice_guard(raw):
+    """Truncate each symbol's bars at the last one-day close ratio > SPLICE_MAX_RATIO (see the
+    guard's comment in _build_universe). Returns (new_raw, [(sym, jump_date, ratio), ...]).
+    Pure: never mutates the input frames."""
+    out, spliced = {}, []
+    for sym, df in raw.items():
+        try:
+            if df is None or len(df) < 3 or "close" not in df.columns:
+                out[sym] = df
+                continue
+            c = pd.to_numeric(df["close"], errors="coerce")
+            ratio = (c / c.shift(1))
+            jumps = ratio[ratio > SPLICE_MAX_RATIO]
+            if len(jumps) == 0:
+                out[sym] = df
+                continue
+            cut = jumps.index[-1]                      # the jump bar is the NEW security's first close: keep it and what follows
+            pos = df.index.get_loc(cut)
+            out[sym] = df.iloc[pos:]
+            spliced.append((sym, str(pd.Timestamp(cut).date()), float(jumps.iloc[-1])))
+        except Exception:
+            out[sym] = df
+    return out, spliced
 
 
 def _last_row_coverage(prices):
@@ -211,6 +237,22 @@ def _raw_last_row_coverage(raw, last_date):
 def _build_universe(raw, enhanced_data=None):
     """Build FastUniverse from raw bar data."""
     DATA_DIR = Path(__file__).resolve().parent / "data"
+
+    # ── TICKER-REUSE SPLICE GUARD (2026-09-08) ──────────────────────────────────
+    # The vendor keys history by TICKER. When a company adopts a ticker that another security
+    # used before, the per-ticker history is a splice of two securities. Found live 2026-09-08:
+    # "BNY" (BNY Mellon since 2026-05-21) carried a ~$10.5 closed-end muni fund before that
+    # date -> a +1,263% one-day jump -> fake +1,608% 12-month momentum -> ranked #2 in the
+    # momentum sleeve and was the largest planned buy. The backtest is PERMNO-keyed and ranks
+    # the real BNY at +53%. Rule: a one-day close/close ratio above SPLICE_MAX_RATIO cannot be a
+    # single security (the largest genuine S&P 1500 day in 8 years of data is GME +134.8%), so
+    # everything up to and including that bar is discarded; the name is then simply too short
+    # for the 200/252-bar features until real history accrues, which is also what the
+    # backtest sees for a fresh listing.
+    raw, _spliced = _splice_guard(raw)
+    if _spliced:
+        log.warning("SPLICE GUARD: %d symbol(s) truncated at a >%.0fx one-day jump: %s", len(_spliced),
+                    SPLICE_MAX_RATIO, ", ".join(f"{s}@{d} x{r:.0f}" for s, d, r in _spliced[:10]))
 
     # Build prices DataFrame
     close_frames = {}
