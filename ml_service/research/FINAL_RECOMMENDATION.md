@@ -125,6 +125,19 @@ machine for 2001–2015; CRSP is the only one).
 **Correction to what I wrote earlier:** "the rebuild moved levels by <1pp" was wrong — it compared different windows. On the same window (through 2025) the rebuilt data LOWERS the 8yr LIVE from +26.85% to +23.26% and moves the 26yr from +13.93% to +14.27%. The rise to +29.52% / +16.34% is 2026.
 **Least confident check:** #10/#16 on the 8yr — the 8yr headline depends on a single 8-month period (2026) that is verified as real prices but has one out-of-sample observation, and the two engines still differ by ~1pp after the cap is matched (marking/fill conventions), which I have not decomposed further.
 
+### 0.7 Deployment-day audit (2026-09-08 evening, LOG cycle 55) — universe → backtest → live
+
+| check | result | evidence |
+|---|---|---|
+| membership vs public index-change dates | 12/12 exact | TSLA 2020-12-21, META 2013-12-23, GOOGL 2006-04-03, UBER, SMCI, PLTR, DELL, CRWD, ABNB, NFLX; LEH/ENRN removals exact; TWTR/FRC/SIVB last day = last trading day |
+| split / dividend continuity vs independent source | 7/7 within 0.03% | AAPL 4:1, NVDA 10:1, AMZN 20:1, TSLA 3:1, GOOGL 20:1, MSFT & XOM ex-div |
+| one-bar signal delay (SHIFT) | no leak signature | LIVE +1.06pp / +0.024, FINAL_1.49 +0.33pp / +0.011 (8 starts) |
+| outlier dependence | fat-tailed, edge intact | best 5 days = 25% (LIVE) / 22% (FINAL) of 8yr log-return; Sharpe edge with them removed from both arms +0.101 / +0.076 |
+| live vs clean room since 2026-08-11 (no deposits) | consistent | live +7.05% vs backtest +5.46%; daily corr 0.72; holdings 21/25 common |
+| same-day signal parity 2026-09-04 | **bug found, fixed** | 17/25 before: live ranked BNY #2 on a ticker-reuse splice (muni fund $10.5 → BNY Mellon $137, fake +1,608% momentum). `_splice_guard` deployed 23:10 → **21/23**, momentum top-5 identical |
+| credit-gate percentile parity | 0.0214 live vs 0.0210 recomputed | gate OFF in both |
+| **cost realism** | **live costs ≈ 2× model** | $61k / 4 books → ~$600 median order → IBKR $1 minimum ≈ 16 bp + ~5 bp slippage. At 2× costs: 8yr FINAL_1.49 +28.39% / 0.933 / −39.0% vs LIVE +26.52% / 0.887 / −39.7% (8 starts); 26yr FINAL_1.49 +15.57% / 0.642 / −49.2% vs LIVE +13.59% / 0.577 / −56.0% (4 starts). **Quote these for live expectations until NAV grows.** |
+
 ### 0.6 Caveats that survive
 * Membership is known only to **2026-05-01**; index changes May–Aug 2026 are not reflected.
 * 19 membership symbols (109 symbol-years, 0.2%) remain unresolvable: obscure 2000s bankruptcies (BHMSQ, SOGCQ…), two class-B tickers (TAP.B, TRY.B), VGNT. Direction: excludes a few collapsing names → slightly flatters both arms equally.

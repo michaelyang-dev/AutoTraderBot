@@ -337,6 +337,39 @@ rebuilds the universe on complete bars; and `fetch_signals` refuses degraded cov
 gate). The alarm is the guard working. This fix removes the false alarm and the 15-minute-cadence
 rebuilds on a half-published day.
 
+## 🔴 Ticker-reuse SPLICE in live prices (BNY) — FOUND + FIXED + DEPLOYED 2026-09-08 23:10 ET
+
+**Found by** the same-day signal-parity test (backtest sleeves on the CRSP/Compustat universe vs the live
+server's BUYs for 2026-09-04): overlap 17/25, and the live momentum sleeve ranked **BNY #2** while the backtest
+ranked the real BNY Mellon at +53% (not top-5). The live per-ticker history for "BNY" (`massive_cache/BNY_adj`)
+starts 2025-03-07 at **$10.52** — the closed-end muni fund that held the ticker — and jumps to $137 on
+2026-05-21, the day BK renamed to BNY: a **+1,263% one-day return** and a fake +1,608% 12-month momentum. The
+vendor keys history by ticker; the backtest keys by PERMNO and is immune. Cache scan: 2 splices in 1,539
+names (BNY x14, SOLS x487,400); the other large days (MRNA +177% 2026-08-19, APLS +135%, CORT +109%) are
+genuine and below the threshold. It would have been the largest buy of the first tranche day.
+
+**Fix (`signal_builder._splice_guard`, `SPLICE_MAX_RATIO = 4.0`):** any one-day close ratio above 4x is two
+securities under one ticker; everything before that bar is discarded (the jump bar is the new security's first
+close). The name is then too short for the 200/252-bar features until real history accrues — exactly what the
+backtest sees for a fresh listing. GME's record +134.8% day (2.35x) is untouched. Tests
+`tests/test_splice_guard.py` (7). Deployed 23:10; rebuild: `SPLICE GUARD: 2 symbol(s) truncated ... BNY@2026-05-21
+x14, SOLS@2025-10-30 x487400`; BUY list 23 names, BNY gone, coverage 99.1%.
+
+**Parity after the fix:** live vs backtest BUY overlap on 2026-09-04 **21/23** (was 17/25); remaining
+differences PAYX/RDDT (live-only) and PTC (backtest-only) are vendor/fundamentals noise. Momentum top-5
+identical (SNDK, MU, LITE, WDC, STX).
+
+**Other parity evidence gathered the same evening** (`research/AUDIT_final_parity.py`,
+`AUDIT_cost2_final149.py`): one-bar signal delay does not hurt (LIVE +1.1pp, FINAL +0.3pp CAGR → no
+look-ahead); live account vs clean-room since the 2026-08-11 rebalance (no deposits in window): live +7.05%
+vs backtest +5.46%, daily-return corr 0.72, holdings overlap 21/25; membership file matches public
+index-change dates on 12/12 events tested; split/dividend continuity 7/7 vs an independent source; best-5-day
+dependence ~25% of 8yr log-return for LIVE, ~22% for FINAL (structure advantage intact with those days
+removed); **realistic costs for a $61k / 4-book account are ~2x the modelled 10 bp** (IBKR $1 minimums on
+~$600 median orders → ~16 bp + slippage): at 2x costs 8yr FINAL_1.49 +28.4% / 0.933 / −39.0% vs LIVE +26.5% /
+0.887 / −39.7% (8 starts); 26yr FINAL_1.49 +15.6% / 0.642 / −49.2% vs LIVE +13.6% / 0.577 / −56.0% (4 starts).
+Quote the cost-2x line as the live expectation until NAV grows enough for the $1 minimum to stop binding.
+
 ## Tranched rebalance — DEPLOYED 2026-09-08 17:43 ET (FINAL @1.49x), first tranche day 2026-09-09 open
 
 **Deployed** on the owner's go: box fast-forwarded 8ac11df → d59d550 (126 files; the four scp'd

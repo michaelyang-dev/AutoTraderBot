@@ -3113,6 +3113,36 @@ Correction logged: cycle 53's "levels moved <1pp" compared different windows; on
 LOWERED the 8yr by 3.6pp. Least-confident check: the 8yr headline rests on one 8-month period, and ~1pp of
 engine disagreement (marking/fill conventions) is not decomposed.
 
+## Cycle 55 — DEPLOYMENT DAY AUDIT (2026-09-08 evening): universe -> backtest -> live parity, one live bug found and fixed before the first tranche day
+
+Owner asked whether the numbers are real, end to end. New tests (not repeats): membership file vs public
+index-change effective dates — 12/12 exact (TSLA 2020-12-21, META 2013-12-23, GOOGL 2006-04-03, UBER, SMCI,
+PLTR, DELL, CRWD, ABNB, NFLX adds; LEH 2008-09-16, ENRN 2001-11-29 removals; TWTR/FRC/SIVB last day = last
+trading day before removal). Split/dividend continuity vs an independent adjusted source: 7/7 to 0.00-0.03%.
+SHIFT test (decide on T-1, execute at T close): LIVE +1.06pp / +0.024 Sharpe, FINAL_1.49 +0.33pp / +0.011 —
+a leak would die; nothing does. Outlier dependence: best 5 of ~2,170 days = 25% (LIVE) / 22% (FINAL) of the
+8yr log-return; with those days removed from BOTH arms the structure's Sharpe edge is +0.101 (8yr) / +0.076
+(26yr). Live vs clean room since the 2026-08-11 rebalance (no deposits): live +7.05% vs backtest +5.46%,
+daily corr 0.72, holdings 21/25 in common. Credit-gate percentile parity: live 0.0214 vs recomputed 0.0210.
+
+**Cost realism:** with $61k split into 4 books the median order is ~$600 and IBKR's $1 minimum makes commissions
+~16 bp of notional (+~5 bp slippage) ≈ 2x the modelled 10 bp. At 2x costs (8 starts, 8yr): FINAL_1.49 +28.39% /
+0.933 / -39.0% vs LIVE +26.52% / 0.887 / -39.7% (delta intact: +1.87pp, +0.045). 26yr in `_audit_cost2_149_26yr.out`.
+
+**BUG FOUND LIVE (the point of the exercise):** same-day signal parity on 2026-09-04 was 17/25 and the live
+momentum sleeve ranked BNY #2. The vendor's per-TICKER history for "BNY" begins with the ~$10.5 closed-end fund
+that held the ticker before BNY Mellon adopted it on 2026-05-21 -> +1,263% one-day jump -> fake +1,608%
+momentum. The PERMNO-keyed backtest is immune. Fix: `signal_builder._splice_guard` (one-day ratio > 4x =
+splice; keep only the new security's bars), tests 7/7, deployed 23:10 (e0ac1bd). After the fix: BUY overlap
+21/23, momentum top-5 identical (SNDK, MU, LITE, WDC, STX). Also fixed today: partial-session guard data rule
+(alarm #3), freshness-check false alarms (EDGAR patched-count, WRDS "next upload").
+
+Verdict: universe (PIT membership, total-return prices, PIT fundamentals), backtest (no leak signature under
+shift/delay/recorder/random-null, ledger-exact, two engines agree once the cap is matched), and live (same
+sleeves, same constants, 21/23 same-day picks after the splice fix) are consistent. Honest expectation for the
+live account is the cost-2x line, and the strategy's return is fat-tailed (a quarter of it comes from ~5 days
+per 8 years).
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
