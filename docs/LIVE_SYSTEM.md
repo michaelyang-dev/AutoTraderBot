@@ -370,6 +370,24 @@ removed); **realistic costs for a $61k / 4-book account are ~2x the modelled 10 
 0.887 / −39.7% (8 starts); 26yr FINAL_1.49 +15.6% / 0.642 / −49.2% vs LIVE +13.6% / 0.577 / −56.0% (4 starts).
 Quote the cost-2x line as the live expectation until NAV grows enough for the $1 minimum to stop binding.
 
+## ✅ First tranche day 2026-09-09 — executed as designed (verified 09-10 01:45 ET)
+
+09:31:50 `Tranche day count: 5/5` → transition split of the 25 holdings into 4 books (books 1–3 verified equal
+to the exact whole-share 4-way split of the 09-08 positions, untouched) → credit gate off (HY-OAS 2.68,
+pctile 2.9%) → vol-scale 0.86 (realized 26.1%) → book-0 target 1.27x → `SIZING book 0: NAV/4=$15,444, mult 1.58
+→ projected gross $19,802 = 1.28x`. Orders 09:33:38–09:35:32, all market, all filled, no duplicates, no price
+failures: 14 exits of book-0 slices (SEZL, PAYC, STX, APPF, DDOG, DUOL, LITE, PANW, BKNG, META, CRWD, YELP,
+RNG — plus STX/LITE, which ARE in the signals but round to 0 shares at $898/$1,018 on a $15.4k book, exactly
+the backtest's `int()` truncation), 3 trims (SNDK, MU, WDC), 17 buys (CORT, NTNX, DELL, MXL, OGN, GKOS,
+ADSK, FTNT, PAYO, TGTX, ADBE, RDDT, BSY, CARG, NFLX, PTC, WDAY). Book 0 after: 21 names, gross 1.28x of
+NAV/4, max weight 11.3% (SNDK), min 3.1%. Books ledger == IBKR positions exactly (34 names). Trailing peaks
+all book-keyed (87). Account after: NAV $61,662, gross $57,098 = 0.93x (books 1–3 still legacy-sized), cash
++$4,562. Fills vs the 09:30 open: median −14 bp, mean +16 bp (TGTX bought at the day's high, +286 bp — market
+orders in thin names at the open; the cost of the design, not a defect). No stops fired. Overnight 00:14–00:20
+the Gateway's nightly restart produced Error 1100/326; the watchdog force-restarted the engine, which
+reconnected at 00:20:03 and reloaded `tranche state: counter 0/5, next book 1, initialized=True`. Next: book 1
+on 2026-09-16.
+
 ## Tranched rebalance — DEPLOYED 2026-09-08 17:43 ET (FINAL @1.49x), first tranche day 2026-09-09 open
 
 **Deployed** on the owner's go: box fast-forwarded 8ac11df → d59d550 (126 files; the four scp'd
