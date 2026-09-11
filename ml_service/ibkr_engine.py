@@ -1512,6 +1512,32 @@ class IBKREngine:
         except Exception:
             return None
 
+    @staticmethod
+    def _ibkr_fallback_bars(items, snap, today):
+        """Price the IBKR book WITHOUT the Alpaca data API: px = IBKR's own portfolio mark
+        (ib.portfolio() marketPrice), prev = the last 4pm close snapshot's value/qty. Only
+        symbols with both numbers are returned; a snapshot dated today is not a 'previous'
+        close and yields nothing. Pure: no I/O, unit-testable."""
+        out = {}
+        try:
+            if not snap or not snap.get("positions") or str(snap.get("date")) == str(today):
+                return out
+            prev = {}
+            for p in snap["positions"]:
+                q = float(p.get("qty") or 0)
+                v = float(p.get("value") or 0)
+                if q > 0 and v > 0:
+                    prev[p["symbol"]] = v / q
+            for it in items or []:
+                sym = getattr(getattr(it, "contract", None), "symbol", None)
+                px = float(getattr(it, "marketPrice", 0) or 0)
+                if sym and px > 0 and prev.get(sym, 0) > 0:
+                    out[sym] = {"px": px, "close": px, "prev": prev[sym],
+                                "bar_date": str(today), "src": "ibkr"}
+        except Exception:
+            return {}
+        return out
+
     def _alpaca_daily_bars(self, symbols):
         """Per-symbol daily price data from the Alpaca DATA API (works for ANY symbol,
         not just Alpaca holdings — used to price the IBKR book's daily moves too).
@@ -1905,8 +1931,10 @@ class IBKREngine:
 
         # collect both books first so one data-API call prices everything
         ib_entries, ib_nav, ib_live_nav, ib_err = [], 0, 0, None
+        ib_items = []
         try:
             s = await self._ibkr_snapshot()
+            ib_items = s["items"]
             ib_entries = [(it.contract.symbol, it.position) for it in s["items"]]
             ib_nav = ib_live_nav = s["nav"]   # ib_live_nav stays live (for the dailyPnL split)
         except Exception as e:
@@ -1916,6 +1944,14 @@ class IBKREngine:
         acct = self._alpaca_get("/v2/account") or {}
         al_nav = float(acct.get("equity", 0) or 0)
         bars = self._alpaca_daily_bars([sym for sym, _ in ib_entries + al_entries])
+        # VENDOR-OUTAGE FALLBACK (2026-09-11: Alpaca's data API returned 504 all morning and
+        # /daily listed NO stocks). The IBKR book can always be priced from IBKR itself:
+        # px = the engine's own portfolio mark, prev = yesterday's 4pm close snapshot.
+        _fb = self._ibkr_fallback_bars(ib_items, self._load_close_snapshot(),
+                                       datetime.now().date().isoformat())
+        _fb_used = [sym for sym in _fb if sym not in bars]
+        for sym in _fb_used:
+            bars[sym] = _fb[sym]
         if not mkt_open:
             # CONSISTENCY with /pnl: after the bell, headers show the 4pm close, not the
             # after-hours-drifting live NAV (the two commands used to disagree at night).
@@ -1957,6 +1993,9 @@ class IBKREngine:
         elif ib_entries:
             day, tbl = table(ib_entries, bars, ib_pct_base, ib_pnl)
             block = f"<b>🟢 IBKR · ${ib_nav:,.0f} · {day}</b>\n{tbl}"
+            if _fb_used:
+                block += (f"\n<i>{len(_fb_used)} row(s) priced from IBKR marks vs yesterday's close "
+                          f"(Alpaca data API unavailable)</i>")
             if ib_ah is not None:   # after-hours drift on its own line (matches /pnl)
                 ah_base = (ib_pct_base + ib_pnl) or ib_nav
                 block += "\n" + self._tg_table(
