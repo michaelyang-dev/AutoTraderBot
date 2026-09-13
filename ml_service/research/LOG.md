@@ -3143,6 +3143,37 @@ sleeves, same constants, 21/23 same-day picks after the splice fix) are consiste
 live account is the cost-2x line, and the strategy's return is fat-tailed (a quarter of it comes from ~5 days
 per 8 years).
 
+## Cycle 56 — "ARE YOU SURE IT IS BETTER?" (2026-09-13): statistical strength, decomposition, fuller risk. Verdict TONED DOWN.
+
+Owner asked for deep research that the deployed structure beats the old one. New evidence, all on the v2 caches
+at the deployed 1.49x (`research/AUDIT_decompose_v2.py` + inline bootstrap/risk script):
+
+**1. Statistical strength (the part earlier cycles overstated).** The 24 starts overlap almost entirely, so
+"17/24 starts" is not 17 independent wins. Block bootstrap (60-day blocks, 2,000 draws) of the paired daily
+difference FINAL_1.49 - LIVE: 8yr Sharpe diff +0.075, 90% CI [-0.195, +0.392], P(>0)=63%; 26yr +0.059,
+[-0.081, +0.209], P(>0)=75%. Annualised return diff 8yr +2.4pp [-7.8, +13.9], 26yr +1.4pp [-3.3, +6.0].
+=> the return/Sharpe advantage is plausible but NOT statistically decisive.
+
+**2. Decomposition at 1.49x (8yr 8 starts / 26yr 6 starts).** Tranches alone: Sharpe +0.038 / +0.033 (4/8, 5/6),
+MaxDD ~0 on BOTH horizons. Gate 0.50->0.00: Sharpe +0.003 / +0.016, MaxDD +0.0pp / **+8.5pp (6/6)**. Sleeves
+70/21/9: Sharpe +0.004 / +0.009, CAGR +1.3pp / +0.6pp, MaxDD +0.4pp / -1.1pp. => the headline "MaxDD shallower
+24/24 starts" is the CREDIT GATE at 0.00, i.e. the 2008 (and 2020) episodes, not tranching. The gate is
+insurance priced off a handful of crises; tranching is a small, plausible Sharpe gain plus a large reduction in
+start-date luck; the sleeve change is a marginal return tilt that gives back a little drawdown.
+
+**3. What IS robust.** Outcome dispersion across start dates falls by a third to a half (26yr CAGR sd 3.1->1.6pp,
+Sharpe sd 0.089->0.048; 8yr 5.5->4.0pp). 26yr: better on all three metrics in 18/24 starts, worse on all three
+in 0/24; worst-start CAGR +11.1->+15.2%, worst-start MaxDD -58.9->-51.6%, worst month -25.1->-20.9%, longest
+time under water 1,176->969 days, Calmar 0.30->0.40, 2008 episode -52->-45%. 8yr: worst month -20.7->-16.5%,
+but all-three-better 11/24 vs all-three-worse 9/24 (a coin flip at 1.49x on that horizon). Rolling 3-year
+windows favour FINAL 56-63% of the time. Cost-2x, next-close and shift tests: delta intact (cycles 54-55).
+
+**Verdict (replaces "dominates").** The deployed structure is a RISK-SHAPING change with a modest, unproven
+return edge: same signals, same leverage, less dependence on one rebalance date, a credit-stress cutoff that
+made the worst historical episodes ~7pp shallower, and no scenario in which it is systematically worse. It is
+not a demonstrated alpha improvement and should not be described as one. Where it will lag: momentum melt-up
+years (2003, 2013, 2021, 2023, 2025) and any period where the gate flattens a book that then rallies.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

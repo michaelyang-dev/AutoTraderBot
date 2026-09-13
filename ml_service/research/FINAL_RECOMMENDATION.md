@@ -138,6 +138,20 @@ machine for 2001–2015; CRSP is the only one).
 | credit-gate percentile parity | 0.0214 live vs 0.0210 recomputed | gate OFF in both |
 | **cost realism** | **live costs ≈ 2× model** | $61k / 4 books → ~$600 median order → IBKR $1 minimum ≈ 16 bp + ~5 bp slippage. At 2× costs: 8yr FINAL_1.49 +28.39% / 0.933 / −39.0% vs LIVE +26.52% / 0.887 / −39.7% (8 starts); 26yr FINAL_1.49 +15.57% / 0.642 / −49.2% vs LIVE +13.59% / 0.577 / −56.0% (4 starts). **Quote these for live expectations until NAV grows.** |
 
+### 0.8 Is it actually better? (2026-09-13, LOG cycle 56) — verdict toned down from "dominates"
+
+| question | answer | evidence (v2 caches, deployed 1.49×) |
+|---|---|---|
+| Is the Sharpe/return edge statistically decisive? | **No.** Plausible, not proven | block bootstrap of the paired daily difference: Sharpe +0.075 [−0.20, +0.39] 8yr (P>0 63%); +0.059 [−0.08, +0.21] 26yr (75%). The 24 starts overlap; they are not 24 samples |
+| Which change carries what? | tranches → small Sharpe gain, ~0 MaxDD; **gate 0.00 → the MaxDD improvement (26yr +8.5pp, 6/6)**; sleeves → +0.6–1.3pp CAGR, gives back ~1pp MaxDD | decomposition A→B→C→D, 8yr 8 starts / 26yr 6 starts |
+| What is robust? | less dependence on the rebalance date; shallower worst cases | start-date CAGR spread 3.1→1.6pp (26yr), 5.5→4.0pp (8yr); 26yr all-three-better 18/24, all-three-worse 0/24; worst month −25.1→−20.9%; time under water 1,176→969 days; Calmar 0.30→0.40; 2008 −52→−45% |
+| Where is it a coin flip? | 8yr at 1.49× | all-three-better 11/24 vs all-three-worse 9/24; rolling 3-yr windows 56% |
+| Where will it lag? | momentum melt-ups; a gate-flattened book that then rallies | 2003, 2013, 2021, 2023, 2025 |
+
+**Verdict:** a risk-shaping change (same signals, same leverage) with a modest, unproven return edge, no scenario in
+which it is systematically worse, and its drawdown benefit resting on the credit gate's behaviour in a handful of
+crises. Not a demonstrated alpha improvement; do not describe it as one.
+
 ### 0.6 Caveats that survive
 * Membership is known only to **2026-05-01**; index changes May–Aug 2026 are not reflected.
 * 19 membership symbols (109 symbol-years, 0.2%) remain unresolvable: obscure 2000s bankruptcies (BHMSQ, SOGCQ…), two class-B tickers (TAP.B, TRY.B), VGNT. Direction: excludes a few collapsing names → slightly flatters both arms equally.
