@@ -3174,6 +3174,22 @@ made the worst historical episodes ~7pp shallower, and no scenario in which it i
 not a demonstrated alpha improvement and should not be described as one. Where it will lag: momentum melt-up
 years (2003, 2013, 2021, 2023, 2025) and any period where the gate flattens a book that then rallies.
 
+## Cycle 57 — EXP-059 · FRONTIER SEARCH opened (2026-09-13): owner asks for more return, higher Sharpe, lower drawdown, consistently
+
+Base = the DEPLOYED structure (4 tranches / 5-session stride, gate 0.00, sleeves 70/21/9, 1.49x) on the v2
+universes: 8yr +32.42% / 1.026 / -36.7%, 26yr +18.16% / 0.719 / -46.6% (24 starts). Everything below is measured
+as a DELTA to that base. Promotion gate (`research/GATE059.py`): 24 starts x 2 horizons, block-bootstrap 90% CI on
+dSharpe with P(>0) >= 70% on both horizons, better in >= 50% of calendar years with no single year > 40% of the
+positive delta, every sub-period dSharpe >= -0.02, untouched even-month starts agree in sign, and the edge survives
+removing the best 5 days from both arms. Stage 1 = 8 starts (every third of the 24) per horizon; stage 2 = 24.
+
+Candidates (all switches in `EXP059_frontier.py`, default OFF = deployed engine): I-34 exit_all (mid-cycle signal
+exit for every book on tranche days), I-35 overlay_all (prompt vol x gate rescale of every book on tranche days),
+I-02 waterfill cap, I-36 min-trade band 1%/2%, I-37 slow value/lowvol refresh, I-05 vol-normalised stop (1.5x, 2x),
+I-06 exclude recent index additions (60/120 sessions), and a K re-sweep (2/5/8/10 books) on the corrected data.
+Dead families are NOT re-tested (memory: timing rules, lever-up, ML ranking, sentiment, alt-data, idio-vol screen,
+sleeve risk parity, hysteresis, aging, dispersion, book-crowding, residual momentum).
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

@@ -382,3 +382,24 @@ overlay unless you want low-risk operation", and it is one cheap sweep.
   survives the 2001/2022 losses. Also needs new `ibkr_engine` code.
 - **WRDS membership re-download with PERMNO/GVKEY** (~Sept 2026) — closes the 9.3% join gap and
   un-blinds EDGAR go-forward reconciliation. Blocks nothing here but improves every 26yr number.
+
+## Tier 7 — post-deployment frontier (opened 2026-09-13, EXP-059). Base = deployed FINAL @1.49x on the v2 universes.
+
+### I-34 · Mid-cycle signal exit for ALL books on every tranche day · **TESTING (EXP-059 exit_all)** · EV: MED (drawdown)
+I-29 re-cast for the tranche structure: the stride is 5, so "exit a name no sleeve wants" is now a cheap weekly
+adjustment for every book, not a re-pick. EXP-026 (old universe, single book): +5.6-7.8pp matched MaxDD for -0.02 Sharpe.
+Question: does the tranche structure change that trade-off?
+
+### I-35 · Prompt overlay: rescale ALL books to today's vol_scale x gate on every tranche day · **TESTING (EXP-059 overlay_all)** · EV: MED-HIGH (drawdown)
+Cycle 13 found the overlay/gate were applied up to 20 sessions late; the deployed tranches cut that to <=5 sessions for
+the rebuilding book only. This applies it to every book weekly (small proportional trades). Costs turnover.
+
+### I-36 · No-trade band for resizes (1-2% of book instead of 0.3%) · **TESTING (EXP-059 min_trade)** · EV: LOW-MED (cost)
+Pure cost lever: fewer one-share trims. Must be evaluated at cost 2x, where it matters.
+
+### I-37 · Slow value/lowvol refresh (every 2nd rebuild) · **TESTING (EXP-059 slow_vl)** · EV: LOW-MED (cost)
+Value and quality signals are slow; refreshing them every 40 sessions per book halves their turnover.
+
+(I-02 water-filling, I-05 vol-normalised stop, I-06 exclude recent index additions, I-09 multi-horizon momentum
+ensemble, I-10 52-week-high proximity, I-14 VIX term-structure gate (8yr only, data from 2016), and I-03 ex-ante
+holdings vol (two variants + combined with the prompt overlay): now TESTING in EXP-059.)
