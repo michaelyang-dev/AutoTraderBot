@@ -3190,6 +3190,29 @@ I-06 exclude recent index additions (60/120 sessions), and a K re-sweep (2/5/8/1
 Dead families are NOT re-tested (memory: timing rules, lever-up, ML ranking, sentiment, alt-data, idio-vol screen,
 sleeve risk parity, hysteresis, aging, dispersion, book-crowding, residual momentum).
 
+### Stage 1, 8yr (8 starts) — PRELIMINARY, UNAUDITED. Base +30.46% / 0.983 / -38.0%.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD (+) | years better |
+|---|---|---|---|---|
+| exit_all (I-34) | -0.64pp | +0.062 (7/8) | **+8.43pp (8/8)** | 4/8 |
+| overlay_all (I-35) | +2.74pp | +0.083 (7/8) | +5.61pp (8/8) | 4/8 |
+| **exit + overlay** | **+6.20pp** | **+0.108 (7/8)** | +5.37pp (8/8) | 5/8 |
+| slow_vl_2 (I-37) | +2.21pp | +0.050 (8/8) | +1.23pp (6/8) | 6/8 |
+| waterfill (I-02) | -0.26pp | +0.015 (8/8) | -0.06pp | 6/8 |
+| K5_s4 | +1.13pp | +0.028 (5/8) | +3.17pp (6/8) | 5/8 |
+| min_trade 1%/2% (I-36) | ~0 | 0.000 (4/8) | ~0 | 3/8 |
+| exante_vol / exante_max (I-03) | -0.1 / -1.7pp | -0.013 / -0.010 (1/8) | -1.9 / +0.8pp | 4/8, 3/8 |
+| vol_stop 1.5 / 2.0 (I-05) | -2.2pp | **-0.070 (0/8)** | -0.2pp | 3-4/8 |
+| excl_adds 60 / 120 (I-06) | +0.8 / -1.6pp | +0.023 (7/8) / -0.026 (2/8) | -1.4 / -3.1pp | 4/8 |
+| K2 / K8 / K10 | -0.8 / -1.1 / +0.4pp | -0.030 / -0.018 / +0.008 | mixed | 2-5/8 |
+
+Read: the two "prompt adjustment" switches (exit names no sleeve wants; rescale every book to today's vol x gate)
+are the only large effects and they stack; both REDUCE exposure in stress, so the +6.2pp CAGR of the pair is
+exactly the kind of number that must be vol-matched and bootstrapped before it means anything. slow_vl_2 is a
+turnover reduction that helps at 1x cost already (it will help more at 2x). Water-filling is tiny but consistent.
+I-03 (ex-ante vol), I-05 (vol-normalised stop) and I-06 (exclude additions) are dead on the 8yr; K=4 stands
+(K=5 is noise-level). Stage 2 (24 starts x 2 horizons) queued for the survivors and their combinations.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

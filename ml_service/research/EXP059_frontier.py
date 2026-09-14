@@ -46,6 +46,18 @@ ARMS = {
     "mom_52wh":        dict(BASE, top_n=30, mom_52wh=True),
     # I-14 VIX term structure (VIX > VIX3M = backwardation) -> gross x0.5 on rebuild days (8yr only: data from 2016)
     "vix_gate_0.5":    dict(BASE, vix_gate=0.5),
+    # stage-2 combinations of the stage-1 survivors
+    "exit+overlay+slow":      dict(BASE, exit_all=True, overlay_all=True, slow_vl=2),
+    "exit+overlay+slow+wf":   dict(BASE, exit_all=True, overlay_all=True, slow_vl=2, waterfill=True),
+    "overlay+slow":           dict(BASE, overlay_all=True, slow_vl=2),
+    "exit+overlay_K5":        dict(BASE, exit_all=True, overlay_all=True, tranches=5, tranche_stride=4),
+    # exposure-matched versions: the prompt switches cut exposure in stress, so re-lever until realized vol matches the base
+    "exit+overlay_L1.65":     dict(BASE, exit_all=True, overlay_all=True, leverage=1.65),
+    "exit+overlay_L1.80":     dict(BASE, exit_all=True, overlay_all=True, leverage=1.80),
+    "exit+overlay+slow_L1.65": dict(BASE, exit_all=True, overlay_all=True, slow_vl=2, leverage=1.65),
+    # cost-2x versions of the leading candidates (realistic cost level for this account size)
+    "exit+overlay+slow_cost2": dict(BASE, exit_all=True, overlay_all=True, slow_vl=2, cost_mult=2.0),
+    "base_cost2":              dict(BASE, cost_mult=2.0),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)

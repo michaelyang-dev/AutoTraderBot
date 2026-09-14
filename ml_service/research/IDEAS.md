@@ -32,7 +32,7 @@ implementable answer.
 **Falsification:** if per-start σ does *not* fall by ≈√K, the phases are far more correlated
 than assumed and the idea is void.
 
-### I-02 · Fix cap-then-renormalize · **OPEN** · EV: MED-HIGH
+### I-02 · Fix cap-then-renormalize · **STAGE 2 (EXP-059: +0.015 Sharpe 8/8 on 8yr stage 1, tiny)** · EV: LOW
 The 10%-of-book position cap is applied, then gross is renormalised to 1.0 — which pushes
 capped names straight back above the cap. Documented in `multi_strategy_engine`, never
 measured. Replace with iterative water-filling (cap, redistribute the excess to uncapped
@@ -43,7 +43,7 @@ lower single-name concentration, therefore lower idiosyncratic variance, therefo
 slightly and tail-DD down. If the measured effect is zero, the cap never binds and we can stop
 worrying about it.
 
-### I-03 · Ex-ante (holdings-based) portfolio-vol estimate instead of 40d realised · **OPEN** · EV: HIGH
+### I-03 · Ex-ante (holdings-based) portfolio-vol estimate instead of 40d realised · **KILLED on 8yr stage 1 (EXP-059: dSharpe -0.013 / -0.010, 1/8 starts)** · EV: was HIGH
 Current `vol_scale` divides the vol target by the **trailing 40-day realised vol of the book**.
 After a rebalance rotates into five different names, that estimate still describes the *old*
 book for up to 40 sessions.
@@ -76,7 +76,7 @@ uncompensated regime bet. Note `use_rp` is inverse-vol *within* mom/val (a diffe
 tested dead; sleeve-level parity is untested.
 **Caution:** this WILL change avg_gross → matched-exposure control mandatory.
 
-### I-05 · Vol-normalised trailing stop · **OPEN** · EV: MED
+### I-05 · Vol-normalised trailing stop · **KILLED (EXP-059 stage 1: dSharpe -0.070, 0/8 starts, both k)** · EV: was MED
 The stop is a flat 40% for every name. On a 20%-vol name that is a ~2σ annual event; on a
 60%-vol name it is ordinary noise. Replace with `k × annualised vol`, floored and capped
 (e.g. 25%…55%).
@@ -89,7 +89,7 @@ equalises the false-positive rate. Expect fewer whipsaw exits and lower turnover
 
 ## Tier 2 — structural flows. There is an identifiable forced participant on the other side.
 
-### I-06 · Exclude recent index ADDITIONS from the momentum sleeve · **OPEN** · EV: MED-HIGH
+### I-06 · Exclude recent index ADDITIONS from the momentum sleeve · **KILLED (EXP-059 stage 1: N=60 +0.023 Sharpe but -1.4pp MaxDD; N=120 -0.026 / -3.1pp)** · EV: was MED-HIGH
 Do not buy a name that entered SP500/400/600 within the last N sessions (test N = 20/60/120).
 
 **Mechanism:** index funds are **forced buyers** into the effective date. The pop is mechanical
