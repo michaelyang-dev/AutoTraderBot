@@ -68,6 +68,10 @@ ARMS = {
     "overlay_down_cost2":      dict(BASE, overlay_down=True, cost_mult=2.0),
     "exit_all_cost2":          dict(BASE, exit_all=True, cost_mult=2.0),
     "exit+overlay_down_cost2": dict(BASE, exit_all=True, overlay_down=True, cost_mult=2.0),
+    # with the overlay applied promptly, does the gate still need to be fully flat?
+    "overlay_down_gate0.25":   dict(BASE, overlay_down=True, credit_derisk=0.25),
+    "overlay_down_gate0.50":   dict(BASE, overlay_down=True, credit_derisk=0.50),
+    "overlay_all_gate0.25":    dict(BASE, overlay_all=True, credit_derisk=0.25),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
