@@ -3239,6 +3239,10 @@ vol x gate calls for it; never lever them back up between rebuilds — the deplo
 stage 2 (24 starts x 2 horizons): base, exit_all, overlay_all, overlay_down, exit+overlay_down, their 1.65x
 exposure-matched versions, and cost-2x versions of each. The 8yr-only combos are dropped.
 
+8yr results for the three signal/timing arms confirm the 26yr: mom_ens -0.193 (0/8), mom_52wh -0.290 (0/8),
+vix_gate_0.5 -0.010 (2/8; +2.6pp MaxDD but better in 1/8 years). The sleeve's own composite momentum score beats
+both textbook alternatives by a wide margin on both horizons — the signal is not the place to look.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
