@@ -362,6 +362,8 @@ Every one of these ran without error and produced a plausible equity curve.
 
 ---
 
+| E-059a | **A switch that never fired returned numbers byte-identical to the base** (`overlay_down` alone, EXP-059 stage 1b, 2026-09-15): the flag was added to the inner condition of the prompt-overlay block but not to the outer `if exit_all or overlay_all:` gate, so the arm silently ran the deployed engine. Caught by the suspicious-roundness tell (every delta exactly 0.000) — the same tell that caught `park idle cash IEF` (EXP-021) and `signal_exit` under the stride (cycle 36). Fix: outer gate includes the flag; the analyser now REMOVES and flags any arm whose curves are identical to the base on every start. | `EXP059_frontier.py` |
+
 ## F. STATISTICAL INFLATION MECHANISMS FOUND IN THIS REPO'S OWN CONCLUSIONS
 
 | # | mechanism | evidence |
