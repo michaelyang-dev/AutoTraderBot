@@ -3213,6 +3213,32 @@ turnover reduction that helps at 1x cost already (it will help more at 2x). Wate
 I-03 (ex-ante vol), I-05 (vol-normalised stop) and I-06 (exclude additions) are dead on the 8yr; K=4 stands
 (K=5 is noise-level). Stage 2 (24 starts x 2 horizons) queued for the survivors and their combinations.
 
+### Stage 1, 26yr (8 starts) — the 8yr's star COLLAPSES; two switches survive on both horizons. Base +18.11% / 0.717 / -47.1%.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD (+) | years better |
+|---|---|---|---|---|
+| exit_all (I-34) | -0.94pp | +0.036 (8/8) | **+5.99pp (8/8)** | 10/25 |
+| overlay_all (I-35) | +0.87pp | +0.031 (8/8) | **+6.23pp (8/8)** | 13/25 |
+| **exit + overlay** | +0.26pp | **-0.011 (3/8)** | +0.33pp (4/8) | 14/25 |
+| exante+overlay | +0.05pp | +0.024 (8/8) | +5.88pp (8/8) | 10/25 |
+| slow_vl_2 / waterfill / min_trade / exante / K2 / K5 / K10 | ~0 | -0.007 … +0.003 | -0.7 … +0.5pp | 10-16/25 |
+| K8_s2 | -2.62pp | -0.076 (3/8) | -7.09pp | 9/25 |
+| vol_stop / excl_adds_120 / vix_gate_0.5 | -0.5 … -0.6pp | -0.024 / -0.009 / -0.007 (0/8) | mixed | — |
+| **mom_ens (I-09) / mom_52wh (I-10)** | **-3.8 / -4.6pp** | **-0.125 / -0.113 (0/8)** | -2.9 / -1.7pp | 9-10/25 |
+
+Read: the +6.2pp / +0.108 8yr result for exit+overlay is HORIZON-SPECIFIC and dead — mechanism identified in the
+code: after exit_all empties part of a book, overlay_all re-levers the REMAINING names of that book back to the
+target every week (f2 > 1), i.e. it concentrates and churns; that paid in the 2018-26 momentum melt-ups and cost
+over 26 years. The two switches ALONE survive both horizons with the same profile each time: exit_all = drawdown
+instrument (-0.6/-0.9pp CAGR, +0.04-0.06 Sharpe, +6-8pp MaxDD); overlay_all = both (+0.9/+2.7pp, +0.03-0.08,
++5.6-6.2pp). Signal-construction changes (I-09, I-10) are badly negative on the long horizon — the cross-sectional
+axis is exhausted, as the memory said. I-14 VIX gate dead. K=4 confirmed again (K=8 clearly worse).
+
+Redesign for stage 2: `overlay_down` = the prompt overlay applied DE-RISK ONLY (scale other books down when
+vol x gate calls for it; never lever them back up between rebuilds — the deployed overlay's own convention). Lean
+stage 2 (24 starts x 2 horizons): base, exit_all, overlay_all, overlay_down, exit+overlay_down, their 1.65x
+exposure-matched versions, and cost-2x versions of each. The 8yr-only combos are dropped.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

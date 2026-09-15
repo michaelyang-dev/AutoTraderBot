@@ -124,7 +124,7 @@ Trading *into* known flow is adverse selection; trading with it is not.
 
 ## Tier 3 — signal construction. Same anomaly, less estimation noise.
 
-### I-09 · Multi-horizon momentum rank ensemble · **OPEN** · EV: MED
+### I-09 · Multi-horizon momentum rank ensemble · **KILLED (EXP-059: 26yr dSharpe -0.125, 0/8; 8yr pending but irrelevant)** · EV: was MED
 Score = average of *ranks* on 12-1, 6-1 and 9-1 momentum instead of 12-1 alone.
 
 **Mechanism:** the same argument as I-01, on the signal axis. Any single lookback is an
@@ -133,7 +133,7 @@ across horizons is variance reduction on the *estimator*, not a new bet.
 **Not** a parameter sweep — the claim is that the ensemble beats *every* member, which is a
 falsifiable structural claim rather than a best-of-N pick.
 
-### I-10 · 52-week-high proximity as the momentum functional form · **OPEN** · EV: MED
+### I-10 · 52-week-high proximity as the momentum functional form · **KILLED (EXP-059: 26yr dSharpe -0.113, 0/8)** · EV: was MED
 Replace / blend `ret_252d − ret_20d` with `price / 52w-high`.
 
 **Mechanism:** George–Hwang. Anchoring on the 52-week high is a documented behavioural
@@ -177,7 +177,7 @@ and the answer determines whether a risk control is needed.
 
 ## Tier 4 — exposure / external data. Highest prior of failure; every neighbour is dead.
 
-### I-14 · VIX term structure (VIX3M/VIX) as a gross-exposure gate · **OPEN** · EV: LOW-MED
+### I-14 · VIX term structure (VIX3M/VIX) as a gross-exposure gate · **KILLED (EXP-059: 26yr -0.007, 0/8; 8yr pending)** · EV: was LOW-MED
 Backwardation (VIX > VIX3M) → de-gross.
 
 **Mechanism:** the only genuinely **forward-looking** risk measure available free. Everything
@@ -385,12 +385,12 @@ overlay unless you want low-risk operation", and it is one cheap sweep.
 
 ## Tier 7 — post-deployment frontier (opened 2026-09-13, EXP-059). Base = deployed FINAL @1.49x on the v2 universes.
 
-### I-34 · Mid-cycle signal exit for ALL books on every tranche day · **TESTING (EXP-059 exit_all)** · EV: MED (drawdown)
+### I-34 · Mid-cycle signal exit for ALL books on every tranche day · **STAGE 2 (EXP-059: +0.062/+0.036 Sharpe, +8.4/+6.0pp MaxDD, -0.6/-0.9pp CAGR on 8 starts, both horizons)** · EV: MED (drawdown)
 I-29 re-cast for the tranche structure: the stride is 5, so "exit a name no sleeve wants" is now a cheap weekly
 adjustment for every book, not a re-pick. EXP-026 (old universe, single book): +5.6-7.8pp matched MaxDD for -0.02 Sharpe.
 Question: does the tranche structure change that trade-off?
 
-### I-35 · Prompt overlay: rescale ALL books to today's vol_scale x gate on every tranche day · **TESTING (EXP-059 overlay_all)** · EV: MED-HIGH (drawdown)
+### I-35 · Prompt overlay: rescale ALL books to today's vol_scale x gate on every tranche day · **STAGE 2 (EXP-059: +0.083/+0.031 Sharpe, +5.6/+6.2pp MaxDD on 8 starts, both horizons); de-risk-only variant added after the exit+overlay combo collapsed on the 26yr** · EV: MED-HIGH (drawdown)
 Cycle 13 found the overlay/gate were applied up to 20 sessions late; the deployed tranches cut that to <=5 sessions for
 the rebuilding book only. This applies it to every book weekly (small proportional trades). Costs turnover.
 
