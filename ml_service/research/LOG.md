@@ -3243,6 +3243,42 @@ exposure-matched versions, and cost-2x versions of each. The 8yr-only combos are
 vix_gate_0.5 -0.010 (2/8; +2.6pp MaxDD but better in 1/8 years). The sleeve's own composite momentum score beats
 both textbook alternatives by a wide margin on both horizons — the signal is not the place to look.
 
+### Stage 2 (24 starts x 2 horizons) + GATE059 — PRELIMINARY, UNAUDITED (run 2026-09-14..16). Base 8yr +32.42/1.026/-36.7, 26yr +18.16/0.719/-46.6.
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD (+) | 8yr yrs better · top-yr share | 26yr dCAGR / dSharpe (+) / dMaxDD (+) | 26yr yrs better · top-yr share | GATE 8yr / 26yr |
+|---|---|---|---|---|---|
+| overlay_all (I-35) | +2.58pp / +0.079 (23/24) / +4.6pp (24/24) | 4/8 · 2020 = 63% | +0.70pp / +0.026 (23/24) / +5.0pp (21/24) | 13/25 · 21% | FAIL (conc) / PASS |
+| **overlay_down (I-35 de-risk-only)** | +1.60pp / +0.070 (23/24) / +4.9pp (24/24) | 3/8 · 2020 = 76% | **+0.77pp / +0.036 (24/24) / +5.5pp (21/24)** | 14/25 · 34% | FAIL (yrs, conc) / **PASS** |
+| overlay_down_L1.65 (exposure-matched) | +2.49pp / +0.057 (22/24) / +3.5pp (24/24) | 5/8 · 59% | +1.32pp / +0.032 (24/24) / +3.4pp (20/24) | **17/25** · 20% | FAIL (conc) / PASS |
+| overlay_down_gate0.25 | +1.54pp / +0.067 (24/24) / +4.9pp | 3/8 · 75% | +0.44pp / +0.025 (22/24) / +3.3pp | 15/25 · 24% | FAIL / PASS |
+| overlay_down_gate0.50 | ~base | — | -3.5pp MaxDD vs overlay_down | — | not gated (worse) |
+| exit_all (I-34) | -1.76pp / +0.035 (18/24) / +8.1pp (24/24) | 3/8 | -1.14pp / +0.030 (24/24) / +6.0pp (24/24) | 10/25 | FAIL / FAIL (yrs, sub-period 2001-08 -0.036) |
+| exit+overlay_down | -0.72pp / +0.068 (19/24) / +8.6pp (24/24) | 3/8 | -0.76pp / +0.044 (24/24) / +8.6pp (24/24) | 11/25 | FAIL / FAIL (yrs) |
+| exit+overlay_down_L1.65 | +0.38pp / +0.065 (19/24) / +7.5pp | 5/8 | -0.12pp / +0.045 (24/24) / +6.8pp | 12/25 | PASS / FAIL (yrs 48%) |
+
+Cost 2x (arm_cost2 vs base_cost2, 24 starts; base_cost2 = 8yr +30.34/0.977/-37.6, 26yr +16.27/0.664/-47.8):
+overlay_down +1.50pp/+0.066 (23/24)/+5.4pp and +0.69pp/+0.032 (24/24)/+5.1pp — the edge is INTACT at the
+account's real cost level; overlay_all +2.30/+0.072/+5.1 and +0.50/+0.020/+4.7; exit_all +0.020 (14/24) and
++0.007 (13/24) — the exit rule's Sharpe edge is gone at 2x cost (it is pure turnover); exit+overlay_down
++0.053 (19/24) / +0.021 (17/24) with -1.1 / -1.2pp CAGR.
+
+Batch 3 (stage 1, 8 starts, both horizons): mom_equal +0.010/+0.009 Sharpe (8/8 both; 19/25 years on the
+26yr — a small, unusually even edge from equal-weighting the 5 momentum picks); overlay_down_lb20 +0.037/+0.025
+(8/8 both), +5.4/+5.3pp MaxDD (a faster vol estimate helps the overlay); overlay_down_lb60 weaker than lb40;
+min_weight_2pct ~0; exit_all_stop50 negative. Mechanism diagnostic (`AUDIT_overlay_mech.py`): the overlay's
+gains sit in the crisis years by construction (2008 +8..10pp, 2020 +14..16pp) and it costs -1..-6pp in calm
+bull years (2023 -3.1, 2024 -5.6 on the 8yr); exit_all's calm-year cost is far larger (2003 -16pp, 2024 -12pp).
+
+Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
+candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
+MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
+years) and year-concentration (2020 = 76% of the positive delta) checks: it is DRAWDOWN INSURANCE whose premium
+(-1..-6pp in calm bull years) is repaid in 2008/2020, not a return engine. That is exactly the kind of
+one-year-driven result the owner asked us to flag; it is NOT promoted on the return claim. The 26yr number
+(+0.77pp CAGR, +0.036 Sharpe, +5.5pp MaxDD, 14/25 years) is the honest expectation. Exit rules (I-34) are
+dead at real costs. Batch 4 (stage 2, running): overlay_down_lb20, mom_equal, their combos, and an overlay
+trigger threshold (0.90/0.85) to cut the overlay's calm-year churn — the only remaining lever on its premium.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

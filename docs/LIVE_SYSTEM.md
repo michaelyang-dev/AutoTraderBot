@@ -405,6 +405,17 @@ the Gateway's nightly restart produced Error 1100/326; the watchdog force-restar
 reconnected at 00:20:03 and reloaded `tranche state: counter 0/5, next book 1, initialized=True`. Next: book 1
 on 2026-09-16.
 
+**Corrective buy-back 2026-09-16 15:45 ET (owner: "do manual rebalance").** The double exit had taken 4 PAYX and
+1 MU out of book 0 (the ledger reconcile removes a deficit from the largest holder; book 0 held 5 PAYX / 1 MU).
+Book 1 itself needed no correction: attempt 2 built it from the 09:38 signals at the 1.34x book target (mult
+1.64, projected gross $20,141 = 1.34x of NAV/4 $15,006). Fix executed with the engine STOPPED (so the ledger edit
+could not be overwritten by a stop-check save): separate API client (clientId 7) bought 4 PAYX @ 116.55 and 1 MU
+@ 923.92 (marketable limits, outsideRth), then `data/ibkr_tranche_state.json` book 0 credited PAYX 1→5, MU 0→1,
+engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile deficit/surplus logged afterwards
+(ledger == IBKR: 39 names, PAYX 13 = 5+0+4+4, MU 3 = 1+0+1+1). Side effect: cash $351 → −$1,040 (the $1.4k the
+phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
+next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
+
 ## Tranched rebalance — DEPLOYED 2026-09-08 17:43 ET (FINAL @1.49x), first tranche day 2026-09-09 open
 
 **Deployed** on the owner's go: box fast-forwarded 8ac11df → d59d550 (126 files; the four scp'd

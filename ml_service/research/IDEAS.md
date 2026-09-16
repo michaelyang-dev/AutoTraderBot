@@ -385,21 +385,21 @@ overlay unless you want low-risk operation", and it is one cheap sweep.
 
 ## Tier 7 — post-deployment frontier (opened 2026-09-13, EXP-059). Base = deployed FINAL @1.49x on the v2 universes.
 
-### I-34 · Mid-cycle signal exit for ALL books on every tranche day · **STAGE 2 (EXP-059: +0.062/+0.036 Sharpe, +8.4/+6.0pp MaxDD, -0.6/-0.9pp CAGR on 8 starts, both horizons)** · EV: MED (drawdown)
+### I-34 · Mid-cycle signal exit for ALL books on every tranche day · **DEAD at real costs (EXP-059 stage 2: +0.035/+0.030 Sharpe at 1x but +0.020 (14/24) / +0.007 (13/24) at 2x cost; -1.8/-1.1pp CAGR; better in 3/8 and 10/25 years; gate FAIL both horizons). Pure-turnover drawdown instrument.** · EV: DEAD
 I-29 re-cast for the tranche structure: the stride is 5, so "exit a name no sleeve wants" is now a cheap weekly
 adjustment for every book, not a re-pick. EXP-026 (old universe, single book): +5.6-7.8pp matched MaxDD for -0.02 Sharpe.
 Question: does the tranche structure change that trade-off?
 
-### I-35 · Prompt overlay: rescale ALL books to today's vol_scale x gate on every tranche day · **STAGE 2 (EXP-059: +0.083/+0.031 Sharpe, +5.6/+6.2pp MaxDD on 8 starts, both horizons); de-risk-only variant added after the exit+overlay combo collapsed on the 26yr** · EV: MED-HIGH (drawdown)
+### I-35 · Prompt overlay: rescale ALL books to today's vol_scale x gate on every tranche day · **STAGE 2 DONE — de-risk-only form is the sole survivor but NOT promoted on return: 26yr +0.77pp/+0.036 (24/24)/+5.5pp MaxDD, gate PASS, intact at 2x cost; 8yr +1.6pp/+0.070/+4.9pp but better in only 3/8 years with 2020 = 76% of the gain (gate FAIL = crisis insurance). Batch 4 refining (lb20, threshold 0.90/0.85, +mom_equal)** · EV: MED-HIGH (drawdown)
 Cycle 13 found the overlay/gate were applied up to 20 sessions late; the deployed tranches cut that to <=5 sessions for
 the rebuilding book only. This applies it to every book weekly (small proportional trades). Costs turnover.
 
-### I-36 · No-trade band for resizes (1-2% of book instead of 0.3%) · **TESTING (EXP-059 min_trade)** · EV: LOW-MED (cost)
+### I-36 · No-trade band for resizes (1-2% of book instead of 0.3%) · **DEAD (EXP-059: ~0 at 1x cost)** · EV: LOW-MED (cost)
 Pure cost lever: fewer one-share trims. Must be evaluated at cost 2x, where it matters.
 
-### I-37 · Slow value/lowvol refresh (every 2nd rebuild) · **TESTING (EXP-059 slow_vl)** · EV: LOW-MED (cost)
+### I-37 · Slow value/lowvol refresh (every 2nd rebuild) · **DEAD (EXP-059: +0.05 on the 8yr, ~0 on the 26yr — horizon-specific)** · EV: LOW-MED (cost)
 Value and quality signals are slow; refreshing them every 40 sessions per book halves their turnover.
 
 (I-02 water-filling, I-05 vol-normalised stop, I-06 exclude recent index additions, I-09 multi-horizon momentum
 ensemble, I-10 52-week-high proximity, I-14 VIX term-structure gate (8yr only, data from 2016), and I-03 ex-ante
-holdings vol (two variants + combined with the prompt overlay): now TESTING in EXP-059.)
+holdings vol (two variants + combined with the prompt overlay): ALL DEAD in EXP-059 stage 1 on the 26yr (I-09 -0.125, I-10 -0.113 Sharpe; I-14 ~0; I-03/I-05/I-06 <= 0). New in batch 3/4: I-38 equal-weight momentum picks (+0.010/+0.009, 8/8 both, 19/25 years — stage 2 running), I-39 overlay lookback 20d (+0.037/+0.025, 8/8 both — stage 2 running), I-40 overlay trigger threshold 0.90/0.85 (running).)
