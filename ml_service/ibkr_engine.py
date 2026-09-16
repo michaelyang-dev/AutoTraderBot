@@ -831,6 +831,7 @@ class IBKREngine:
                 continue
             contract = pos.get("contract") or Stock(sym, "SMART", "USD")
             price = await self.get_market_price(contract)
+            self._last_progress = time.time()          # 39 names x ~4s per check; feed the watchdog
             if not price:
                 continue
             for t in holders:
@@ -1208,6 +1209,7 @@ class IBKREngine:
         for sig in signals:
             sym = sig["symbol"]
             price = await self.get_market_price(Stock(sym, "SMART", "USD"))
+            self._last_progress = time.time()          # ~4s per name; keep the watchdog fed
             if not price or price <= 0:
                 log.warning(f"Cannot get price for {sym} — skipping")
                 continue
@@ -1222,6 +1224,15 @@ class IBKREngine:
         n_buy = len(orders) - n_sell
         send_telegram(f"🔄 Tranche rebalance — book {t}/{TRANCHES}: {n_sell} sells, {n_buy} buys, "
                       f"book NAV ${book_nav:,.0f}, target {target_eff:.2f}x")
+        # INCIDENT 2026-09-16 (book 1): a rebuild takes 4-6 minutes of blocking awaits (a 4s price
+        # tick per name + 3s per order) with no heartbeat, so the HANG watchdog force-restarted the
+        # process after 15 sells + 16 buys. The ledger was only written at the END of the rebuild,
+        # so the restarted engine reconciled the already-executed sells against the STALE ledger,
+        # charged them to the largest holders (other books) and then "exited" book 1's phantom
+        # slices a second time: 4 PAYX + 1 MU (~$1.4k) sold that belonged to books 0/2/3.
+        # Fix: (1) heartbeat the watchdog after every price fetch and every order; (2) persist the
+        # ledger + peaks after EVERY fill so a crash at any point leaves an accurate book and the
+        # retry only completes what is missing.
         for sym, d, reason in orders:
             if d < 0:
                 await self.sell_position(sym, -d, reason)
@@ -1235,6 +1246,10 @@ class IBKREngine:
                 key = f"{t}:{sym}"
                 if live_prices[sym] > self.trailing_peaks.get(key, 0):
                     self.trailing_peaks[key] = live_prices[sym]
+            st["books"][str(t)] = book
+            self._save_tranche_state()
+            self._save_trailing_peaks()
+            self._last_progress = time.time()          # keep the HANG watchdog fed mid-rebuild
         # Whatever the broker actually filled is picked up by _reconcile_books next time.
         st["books"][str(t)] = book
         st["stride_counter"] = 0

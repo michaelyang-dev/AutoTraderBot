@@ -304,5 +304,55 @@ for _, _, why in eng.sold:
     sells_by_kind[why.split(" ")[0]] = sells_by_kind.get(why.split(" ")[0], 0) + 1
 check("no legacy-style full-book liquidation occurred (sells are tranche_exit/trim only)", set(sells_by_kind) <= {"tranche_exit", "tranche_trim"}, str(sells_by_kind))
 
+# ── 9. INCIDENT 2026-09-16: a crash mid-rebuild must leave an accurate ledger (persisted after every fill) ──
+class CrashEngine(ScenarioEngine):
+    """buy_position raises on the 3rd buy, emulating the watchdog kill mid-rebuild."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k); self._nbuy = 0; self.saves = 0; self.beats = 0
+
+    def _save_tranche_state(self):
+        self.saves += 1; E.IBKREngine._save_tranche_state(self)
+
+    async def buy_position(self, symbol, qty, reason="signal"):
+        self._nbuy += 1
+        if self._nbuy == 3:
+            raise RuntimeError("watchdog kill")
+        return await super().buy_position(symbol, qty, reason)
+
+
+tmp2 = Path(tempfile.mkdtemp()) / "tranche_state.json"; E.TRANCHE_STATE_FILE = tmp2
+FakeDT._now = _dt.datetime(2026, 9, 16, 9, 35, tzinfo=_ZI("US/Eastern"))
+legacy2 = {f"N{i:02d}": int(1.49 * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
+ce = CrashEngine(legacy2, NAV, sig25, px25); ce._cur_sym_price = None
+ce._tranche = ce._tranche_default(); ce._tranche["last_counted_day"] = None; ce._tranche["initialized"] = True
+ce._tranche["books"] = E.IBKREngine._split_books(legacy2, 4)
+ce._last_progress = 0.0
+try:
+    asyncio.run(ce.rebalance_tranche())
+    crashed = False
+except RuntimeError:
+    crashed = True
+check("crash mid-rebuild reproduced", crashed)
+saved = _json.load(open(tmp2)); book0_saved = {s: int(q) for s, q in saved["books"]["0"].items()}
+actual = {s_: p_["qty"] for s_, p_ in ce.positions.items() if p_["qty"] > 0}
+tot = {}
+for b in saved["books"].values():
+    for s_, q_ in b.items(): tot[s_] = tot.get(s_, 0) + int(q_)
+check("ledger on disk reflects every fill executed before the crash (books == broker)", tot == actual, f"diffs {[(s_, tot.get(s_), actual.get(s_)) for s_ in set(tot)|set(actual) if tot.get(s_) != actual.get(s_)][:5]}")
+check("ledger was persisted after each fill, not only at the end", ce.saves >= len(ce.sold) + len(ce.bought))
+check("watchdog heartbeat updated during the rebuild", ce._last_progress > 0)
+check("the interrupted rebuild did NOT advance the counter (retry will complete it)", saved["stride_counter"] >= E.TRANCHE_STRIDE and saved["next_tranche"] == 0)
+# the retry: a fresh engine loads the persisted ledger, reconciles against the broker, and only completes what is missing
+re_ = ScenarioEngine({s_: p_["qty"] for s_, p_ in ce.positions.items()}, NAV, sig25, px25); re_._cur_sym_price = None
+re_._tranche = re_._load_tranche_state(); re_.trailing_peaks = dict(ce.trailing_peaks)
+asyncio.run(re_.rebalance_tranche())
+resold = [s_ for s_, q_, _ in re_.sold if s_ in {x[0] for x in ce.sold}]
+check("retry does not re-sell what the first attempt already sold (no phantom exits)", resold == [], str(resold))
+check("retry completes book 0 and the account reconciles", re_._tranche["last_tranche"] == 0 and re_._tranche["stride_counter"] == 0)
+tot2 = {}
+for b in re_._tranche["books"].values():
+    for s_, q_ in b.items(): tot2[s_] = tot2.get(s_, 0) + q_
+check("after the retry, books == broker", tot2 == {s_: p_["qty"] for s_, p_ in re_.positions.items() if p_["qty"] > 0})
+
 print(f"\n{len(FAILS)} failures" + (": " + ", ".join(FAILS) if FAILS else " — all tranche tests passed"))
 sys.exit(1 if FAILS else 0)

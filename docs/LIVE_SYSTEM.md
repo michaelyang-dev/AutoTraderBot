@@ -370,6 +370,23 @@ removed); **realistic costs for a $61k / 4-book account are ~2x the modelled 10 
 0.887 / −39.7% (8 starts); 26yr FINAL_1.49 +15.6% / 0.642 / −49.2% vs LIVE +13.6% / 0.577 / −56.0% (4 starts).
 Quote the cost-2x line as the live expectation until NAV grows enough for the $1 minimum to stop binding.
 
+## 🔴 Book-1 day 2026-09-16 — watchdog killed the rebuild mid-way; retry double-exited 4 PAYX + 1 MU (~$1.4k). FIXED, deploy 16:12 ET
+
+**What happened.** 09:32:21 book 1 rebuild started; the rebuild is 4–6 min of blocking awaits (4 s price tick
+per name + 3 s per order) with no heartbeat, so at 09:36:02 the HANG watchdog (360 s) force-restarted the
+process after 15 exits + 16 buys had filled. The ledger was only written at the END of a rebuild, so the
+restarted engine (09:36:03) reloaded the pre-rebuild ledger; `_reconcile_books` charged the already-executed
+sells to the LARGEST holders (books 0/2/3) and attempt 2 (09:38:50–09:41:06) then "exited" book 1's phantom
+slices again: **SELL 4 PAYX @117.82 and SELL 1 MU @924.24 that belonged to other books**. Also 1 NTNX trim,
++1 MXL, +1 ELF (7 ELF had filled during the restart and were correctly credited to book 1), +5 BX, +2 MRNA.
+Net damage ≈ $1.4k of unintended sales (2.3% of NAV); no double buys; ledger == IBKR (39 names) afterwards.
+Books 0/2/3 now hold slightly less PAYX/MU than designed until their own rebuild days.
+
+**Fixes (`ibkr_engine.py`, tests 47/47):** ledger + peaks persisted after EVERY fill (a crash leaves an
+accurate book; the retry completes only what is missing — tested: crash on the 3rd buy → ledger == broker,
+retry sells nothing twice); watchdog heartbeat after every price fetch and every order in the rebuild and in
+the tranched stop check. Deployed to the box; engine restart scheduled 16:12 ET (after the close).
+
 ## ✅ First tranche day 2026-09-09 — executed as designed (verified 09-10 01:45 ET)
 
 09:31:50 `Tranche day count: 5/5` → transition split of the 25 holdings into 4 books (books 1–3 verified equal
