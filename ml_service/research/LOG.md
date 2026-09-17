@@ -3464,7 +3464,7 @@ The clean room sizes whole shares from a starting NAV (base $50k) and compounds.
 | package (overlay + equal + 80/15/5) | +34.49% / 1.106 / -31.5% | +35.61% / 1.124 / -31.4% | +35.83% / 1.127 / -31.4% | +19.70% / 0.778 / -41.3% | +19.62% / 0.775 / -41.5% |
 | package - base | +2.91pp / +0.099 (24/24) / +7.1pp | +3.19pp / +0.097 / +5.2pp | +3.28pp / +0.094 / +4.6pp | +1.54pp / +0.059 / +5.3pp | +1.53pp / +0.058 / +4.9pp |
 
-Truncation cost (8yr, $15k vs $1M): base -0.97pp CAGR / -0.026 Sharpe; package -1.34pp / -0.021. At $60k vs $1M:
+Truncation cost (8yr, $15k vs $1M): base -0.97pp CAGR / -0.026 Sharpe; package -1.34pp / -0.021. 26yr $15k: base +18.17%/0.720, package +19.79%/0.783 (package - base +0.063, 24/24). At $60k vs $1M:
 base -0.13pp, package -0.22pp. The 26yr is scale-free (compounds out of the small-book regime within years).
 Read: at the live size the steady-state whole-share cost is bounded at roughly -0.2 .. -1.3pp/yr (the $60k run
 leaves the small regime quickly; the $15k run is a quarter of live size), it hits base and package alike, and the
