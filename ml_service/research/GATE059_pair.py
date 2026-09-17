@@ -16,7 +16,7 @@ def sh(r): return r.mean()/r.std()*np.sqrt(252)
 SUBS = {"8yr": [("2018-20",2018,2020),("2021-22",2021,2022),("2023-26",2023,2026)], "26yr": [("2001-08",2001,2008),("2009-16",2009,2016),("2017-22",2017,2022),("2023-26",2023,2026)]}
 CRISIS = {"8yr": [2020], "26yr": [2008, 2020]}
 for hz in ("8yr", "26yr"):
-    fb, fa = f"research/_v2_{hz}/exp059/{STAGE}_{BASE}.parquet", f"research/_v2_{hz}/exp059/{STAGE}_{ARM}.parquet"
+    SUB = os.getenv("EXP_DIR", "exp059"); fb, fa = f"research/_v2_{hz}/{SUB}/{STAGE}_{BASE}.parquet", f"research/_v2_{hz}/{SUB}/{STAGE}_{ARM}.parquet"
     if not (os.path.exists(fb) and os.path.exists(fa)): print(f"{hz}: not cached"); continue
     B, A = pd.read_parquet(fb), pd.read_parquet(fa); cols = [c for c in A.columns if c in B.columns]
     b = np.array([st(B[c]) for c in cols]); a = np.array([st(A[c]) for c in cols]); d = a - b

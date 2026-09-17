@@ -3520,6 +3520,29 @@ one-year-driven result the owner asked us to flag; it is NOT promoted on the ret
 dead at real costs. Batch 4 (stage 2, running): overlay_down_lb20, mom_equal, their combos, and an overlay
 trigger threshold (0.90/0.85) to cut the overlay's calm-year churn — the only remaining lever on its premium.
 
+
+## Cycle 58 — EXP-060 · A SECOND ENGINE (opened 2026-09-17): owner asks for an improvement that shows up in MOST years, from a different return source
+
+Owner (09-17): the EXP-059 package is good and saved, but its return gain is 2020-heavy; wants a change that is better in
+most years, and a fundamentally different or additional strategy rather than more momentum tuning. Keep going until told
+to stop. Base for every comparison = the PACKAGE (overlay_down + mom_equal + 80/15/5 @1.49x; cached as `P` in
+`_v2_*/exp060/`), PRIMARY metric = calendar years better on BOTH horizons, then Sharpe with bootstrap CI, at 2x cost.
+
+Data not yet used by any sleeve: IBES (WRDS) — quarterly EPS surprise scores with announcement dates (1992-2026),
+monthly analyst estimate summaries (mean FY1 EPS, #up/#down), recommendation summaries; 13F holdings; Audit Analytics.
+`EXP060_ibes_features.py` builds a point-in-time table (asof = IBES statistical period, surprise joined as-of <= 120d):
+924,891 ticker-months, 3,877 tickers, coverage sue 70% / rev3m 97% / rec1m 76%. Ticker join (IBES OFTIC = CRSP ticker);
+mismatches through renames are accepted (lost coverage, no look-ahead).
+
+Harness `EXP060_engine.py` (EXP-059 harness + an analyst sleeve `sleeve_x`: top-10 equal-weight by one signal among
+members with >= 3 estimates, positive score only; bull-sleeve weights scaled by (1 - x_w)). Batch 1 (stage 2, 24 starts):
+each signal ALONE at 100% (raw sleeve quality) and the package + 15% sleeve for sue / rev3m / updown / rec1m / combo.
+Live feasibility if anything works: IBES is a quarterly WRDS upload (stale); FMP has earnings-surprise and analyst-estimate
+endpoints (reference_api_docs) — the live path would be FMP, to be parity-checked against IBES before any deployment.
+Honesty note: earnings surprise / revisions are PUBLISHED anomalies (PEAD, Chan-Jegadeesh-Lakonishok); the owner's original
+directive preferred first-principles ideas, but the 09-17 ask is explicitly for another fundamental strategy, so they are
+tested as such and reported with that label.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
