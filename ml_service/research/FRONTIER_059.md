@@ -51,6 +51,10 @@ alike, -0.2..-1.3pp/yr at live size).
    and the sub-period checks are the out-of-sample evidence available; a true holdout does not exist for a 26-year sample.
 
 ## If deployed — the three live changes (not done; owner's go required)
+**Status 2026-09-17: all three are BUILT behind flags that default OFF** (`IBKR_OVERLAY_DOWN=1`, `MOM_EQUAL_WEIGHT=1`,
+`PROD_BULL_WEIGHTS=0.80,0.15,0.05`; see docs/LIVE_SYSTEM.md "EXP-059 package"), with tests. Deploying = set the
+flags in the box `.env`, restart signal-server + ibkr-engine after the close, record in LIVE_SYSTEM.md. The list
+below is what each flag does.
 1. `strategies/multi_strategy_engine.py` strategy1: return equal weights for the top-5 (replace score/total with 1/N).
 2. `PROD_WEIGHTS_BULL` (multi_strategy_engine.py + live_config.py + signal_server 15% cap unchanged): 0.80 / 0.15 / 0.05.
 3. `ibkr_engine.py` rebalance_tranche(): after the rebuilding book is done, for each other book compute target = NAV/4 x 1.49 x

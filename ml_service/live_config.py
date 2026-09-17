@@ -66,3 +66,7 @@ LIVE_VOL_SCALE_FLOOR = 0.30
 LIVE_TRANCHES = 4             # 2026-09-08: 4 virtual sub-books of NAV/4 (ibkr_engine.TRANCHES)
 LIVE_TRANCHE_STRIDE = 5       # one sub-book rebuilt every 5 trading days
 LIVE_CREDIT_DERISK = 0.0      # credit_gate.DERISK: the rebuilding book goes flat while HY-OAS >= p95
+# EXP-059 package (research/FRONTIER_059.md, 2026-09-17) — built behind flags, ALL OFF, owner's call:
+LIVE_OVERLAY_DOWN = False     # ibkr_engine.TRANCHE_OVERLAY_DOWN (env IBKR_OVERLAY_DOWN=1): de-risk-only trims of the other books on tranche days
+LIVE_MOM_EQUAL_WEIGHT = False # multi_strategy_engine.MOM_EQUAL_WEIGHT (env MOM_EQUAL_WEIGHT=1): equal-weight momentum picks
+LIVE_BULL_WEIGHTS_OVERRIDE = None  # multi_strategy_engine PROD_BULL_WEIGHTS env ("0.80,0.15,0.05" = the package's split); None = 70/21/9

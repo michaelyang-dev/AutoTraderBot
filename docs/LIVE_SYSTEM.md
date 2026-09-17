@@ -416,6 +416,23 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## EXP-059 package — BUILT BEHIND FLAGS, ALL OFF (2026-09-17). Not deployed; owner's call.
+
+Research result (`ml_service/research/FRONTIER_059.md`): three small changes, each gate-tested on 24 starts x 2
+horizons, together +1.5pp CAGR / +0.06 Sharpe / +5pp MaxDD on the 26yr (17/25 years, CI > 0, intact at 2x cost).
+The live code paths exist and are covered by tests, but every flag defaults OFF so the deployed behaviour is
+byte-for-byte unchanged until the owner flips them (`.env` on the box + restart after the close):
+
+| flag | where | ON value | what it does |
+|---|---|---|---|
+| `IBKR_OVERLAY_DOWN` | `ibkr_engine.TRANCHE_OVERLAY_DOWN`, hook at the end of `rebalance_tranche()` | `1` | after the rebuilding book is done, every other book more than 5% above today's vol-scale x credit-gate target is trimmed pro rata (`_overlay_trims`, whole shares, 0.3% min-trade band, sells bounded by the broker position, per-fill ledger persistence). Never levers up. |
+| `MOM_EQUAL_WEIGHT` | `multi_strategy_engine.MOM_EQUAL_WEIGHT` -> `_weight_picks` (signal server) | `1` | strategy1 returns 1/N for its top-5 instead of score weights capped at 2/N |
+| `PROD_BULL_WEIGHTS` | `multi_strategy_engine.PROD_WEIGHTS_BULL` (signal server) | `0.80,0.15,0.05` | bull sleeve split (must sum to 1; asserted at import) |
+
+Tests: `tests/test_overlay_trims.py` (11 checks incl. 300-case parity with the clean-room formula),
+`tests/test_mom_equal_weight.py` (7), `tests/test_tranche_engine.py` unchanged (47). The signal-server flags take
+effect at the next signal build; the engine flag at the next tranche day. Roll back = unset + restart.
+
 ## Tranched rebalance — DEPLOYED 2026-09-08 17:43 ET (FINAL @1.49x), first tranche day 2026-09-09 open
 
 **Deployed** on the owner's go: box fast-forwarded 8ac11df → d59d550 (126 files; the four scp'd

@@ -168,6 +168,13 @@ TRANCHES = int(os.getenv("IBKR_TRANCHES", "4"))
 TRANCHE_STRIDE = int(os.getenv("IBKR_TRANCHE_STRIDE", "5"))
 TRANCHE_STATE_FILE = Path(__file__).resolve().parent / "data" / "ibkr_tranche_state.json"
 TRANCHE_MIN_TRADE_PCT = 0.003   # backtest: an existing holding is not resized for |delta| < 0.3% of the book NAV
+# EXP-059 (2026-09-17) "de-risk-only prompt overlay" — OFF by default, owner's call (research/FRONTIER_059.md).
+# On every tranche day, after the rebuilding book is done, every OTHER book is compared with today's
+# vol-scale x credit-gate target (book NAV x EFFECTIVE_LEVERAGE x vol_scale x credit_derisk); a book more
+# than (1 - THR) above it is trimmed pro rata (whole shares, min-trade band); books are NEVER levered up
+# between their own rebuilds. Backtest (24 starts): 26yr +0.77pp CAGR / +0.036 Sharpe / +5.5pp MaxDD.
+TRANCHE_OVERLAY_DOWN = os.getenv("IBKR_OVERLAY_DOWN", "0") == "1"
+TRANCHE_OVERLAY_THR = 0.95
 
 class IBKREngine:
     def __init__(self):
@@ -305,6 +312,50 @@ class IBKREngine:
                 if sellable > 0:
                     sells.append((sym, -sellable, "tranche_trim"))
         return sells + buys
+
+    @staticmethod
+    def _overlay_trims(books, skip_book, prices, book_nav, target_eff, positions_qty, thr=TRANCHE_OVERLAY_THR):
+        """Pure (EXP-059 de-risk-only overlay): for every book except `skip_book` (the one just rebuilt),
+        if gross / (book_nav x target_eff) > 1/thr, scale every priced holding to int(q x f) where
+        f = target / gross. Never scales UP. Skips |delta x px| < TRANCHE_MIN_TRADE_PCT of the book NAV and
+        names without a price. Sells are bounded by (actual position - other books' holdings), like
+        _tranche_orders. Returns [(book_id, sym, delta_qty<0, reason)] — identical maths to the clean-room
+        harness (research/EXP059_frontier.py, overlay_down)."""
+        out = []
+        if book_nav <= 0 or target_eff <= 0:
+            return out
+        target = book_nav * target_eff
+        for bid, book in books.items():
+            if str(bid) == str(skip_book) or not book:
+                continue
+            gross = 0.0
+            for sym, q in book.items():
+                px = prices.get(sym)
+                if px and px > 0:
+                    gross += q * px
+            if gross <= 0:
+                continue
+            f = target / gross
+            if f >= thr:
+                continue
+            others = {}
+            for b2, bk2 in books.items():
+                if str(b2) == str(bid):
+                    continue
+                for sym, q in bk2.items():
+                    others[sym] = others.get(sym, 0) + q
+            for sym, q_old in list(book.items()):
+                px = prices.get(sym)
+                if not px or px <= 0:
+                    continue
+                q_new = int(q_old * f)
+                dq = q_new - q_old
+                if dq >= 0 or abs(dq * px) < book_nav * TRANCHE_MIN_TRADE_PCT:
+                    continue
+                sellable = min(-dq, max(0, int(positions_qty.get(sym, 0)) - int(others.get(sym, 0))), q_old)
+                if sellable > 0:
+                    out.append((str(bid), sym, -sellable, "overlay_derisk"))
+        return out
 
     def _rebal_left(self):
         """Trading days until the next rebalance (tranche or legacy), for status messages."""
@@ -1250,6 +1301,39 @@ class IBKREngine:
             self._save_tranche_state()
             self._save_trailing_peaks()
             self._last_progress = time.time()          # keep the HANG watchdog fed mid-rebuild
+        # EXP-059 de-risk-only overlay for the OTHER books (flag OFF by default; see the TRANCHE_OVERLAY_DOWN block).
+        if TRANCHE_OVERLAY_DOWN:
+            try:
+                await self.update_positions()
+                positions_qty = {s_: int(p_["qty"]) for s_, p_ in self.positions.items() if p_["qty"] > 0}
+                held_elsewhere = {s_ for tt, b_ in st["books"].items() if tt != str(t) for s_ in b_}
+                for sym in sorted(held_elsewhere - set(live_prices)):
+                    px_ = await self.get_market_price(Stock(sym, "SMART", "USD"))
+                    self._last_progress = time.time()
+                    if px_ and px_ > 0:
+                        live_prices[sym] = px_
+                trims = self._overlay_trims(st["books"], str(t), live_prices, book_nav, target_eff, positions_qty)
+                if trims:
+                    by_book = {}
+                    for bid, _s, _d, _r in trims:
+                        by_book[bid] = by_book.get(bid, 0) + 1
+                    log.info(f"OVERLAY de-risk: target {target_eff:.2f}x -> {len(trims)} trims across books {sorted(by_book)}")
+                    send_telegram(f"🪂 Overlay de-risk: {len(trims)} trims in books {sorted(by_book)} to the {target_eff:.2f}x target "
+                                  f"(vol-scale {vol_scale:.2f} x gate {credit_derisk:.2f}); never levers up.")
+                    for bid, sym, d, reason in trims:
+                        await self.sell_position(sym, -d, reason)
+                        b_ = st["books"][bid]
+                        b_[sym] = b_.get(sym, 0) + d
+                        if b_[sym] <= 0:
+                            b_.pop(sym, None)
+                            self.trailing_peaks.pop(f"{bid}:{sym}", None)
+                        self._save_tranche_state()
+                        self._save_trailing_peaks()
+                        self._last_progress = time.time()
+                else:
+                    log.info(f"OVERLAY de-risk: no book above the {target_eff:.2f}x target by more than {1 - TRANCHE_OVERLAY_THR:.0%} — no trims")
+            except Exception as e:
+                log.error(f"OVERLAY de-risk step failed (books untouched beyond persisted fills): {e}")
         # Whatever the broker actually filled is picked up by _reconcile_books next time.
         st["books"][str(t)] = book
         st["stride_counter"] = 0

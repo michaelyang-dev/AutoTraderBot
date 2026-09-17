@@ -65,6 +65,37 @@ SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLRE", "
 #  value+lowvol block). Weakest of the three changes in the tranche package (+0.023 Sharpe 8yr,
 #  +0.002 26yr, EXP-047/051) but part of the audited configuration; bear/crash mixes unchanged.
 PROD_WEIGHTS_BULL  = {"s1_momentum": 0.70,   "s7_value": 0.21,   "s5_lowvol": 0.09,   "s3_sector": 0.00, "s4_inclusion": 0.00}
+# EXP-059 (2026-09-17), OFF by default — owner's call (research/FRONTIER_059.md):
+#   PROD_BULL_WEIGHTS="0.80,0.15,0.05" overrides the bull sleeve split (momentum, value, lowvol);
+#   MOM_EQUAL_WEIGHT=1 makes strategy1 return equal weights for its top-N instead of score weights.
+_bw = os.getenv("PROD_BULL_WEIGHTS", "").strip()
+if _bw:
+    _m, _v, _l = (float(x) for x in _bw.split(","))
+    assert abs(_m + _v + _l - 1.0) < 1e-6, f"PROD_BULL_WEIGHTS must sum to 1: {_bw}"
+    PROD_WEIGHTS_BULL = {"s1_momentum": _m, "s7_value": _v, "s5_lowvol": _l, "s3_sector": 0.00, "s4_inclusion": 0.00}
+MOM_EQUAL_WEIGHT = os.getenv("MOM_EQUAL_WEIGHT", "0") == "1"
+
+
+def _weight_picks(sorted_syms, composite, equal=None):
+    """Pure: strategy1's weighting of its ranked picks. Default = score-weighted, capped at 2x equal
+    weight, renormalised (the deployed rule). equal=True (or MOM_EQUAL_WEIGHT=1) = 1/N each — EXP-059 I-38:
+    +0.012/+0.009 Sharpe on 24/24 starts both horizons, 19/25 years, cost-2x intact; the rank-noise
+    shrinkage that the score weighting lacks."""
+    if not sorted_syms:
+        return {}
+    if equal is None:
+        equal = MOM_EQUAL_WEIGHT
+    if equal:
+        return {s: 1.0 / len(sorted_syms) for s in sorted_syms}
+    scores = [max(composite[s], 0.001) for s in sorted_syms]
+    total = sum(scores)
+    if total > 0:
+        weights = {s: min(sc / total, 2.0 / len(sorted_syms)) for s, sc in zip(sorted_syms, scores)}
+        wt = sum(weights.values())
+        if wt > 0:
+            weights = {s: w / wt for s, w in weights.items()}
+        return weights
+    return {s: 1.0 / len(sorted_syms) for s in sorted_syms}
 PROD_WEIGHTS_BEAR  = {"s1_momentum": 0.1111, "s7_value": 0.3333, "s5_lowvol": 0.5556, "s3_sector": 0.00, "s4_inclusion": 0.00}
 PROD_WEIGHTS_CRASH = {"s1_momentum": 0.1667, "s7_value": 0.5000, "s5_lowvol": 0.3333, "s3_sector": 0.00, "s4_inclusion": 0.00}
 
@@ -827,17 +858,9 @@ def strategy1_momentum_reversal(date, uni, day_idx, top_n=8, rebal_days=10,
     else:
         sorted_syms = sorted(composite, key=composite.get, reverse=True)[:n]
 
-    # Signal-weighted: higher score = more capital (but capped at 2x equal weight)
-    scores = [max(composite[s], 0.001) for s in sorted_syms]
-    total = sum(scores)
-    if total > 0:
-        weights = {s: min(sc / total, 2.0 / len(sorted_syms)) for s, sc in zip(sorted_syms, scores)}
-        # Renormalize
-        wt = sum(weights.values())
-        if wt > 0:
-            weights = {s: w / wt for s, w in weights.items()}
-        return weights
-    return {s: 1.0 / len(sorted_syms) for s in sorted_syms}
+    # Signal-weighted: higher score = more capital (capped at 2x equal weight) — or equal weight under
+    # MOM_EQUAL_WEIGHT=1 (EXP-059). Same maths as before, factored into _weight_picks for testability.
+    return _weight_picks(sorted_syms, composite)
 
 
 def strategy2_drift_reversal(date, uni, day_idx, top_n=10, rebal_days=5):
