@@ -84,6 +84,15 @@ ARMS = {
     "overlay_down+mom_equal":  dict(BASE, overlay_down=True, mom_equal=True),
     "overlay_down_lb20+mom_equal": dict(BASE, overlay_down=True, vol_lookback=20, mom_equal=True),
     "overlay_down_lb20_cost2": dict(BASE, overlay_down=True, vol_lookback=20, cost_mult=2.0),
+    # batch 5: threshold sweep + the 0.85 threshold's cost-2x / exposure-matched / combo versions
+    "overlay_down_thr0.80":    dict(BASE, overlay_down=True, overlay_thr=0.80),
+    "overlay_down_thr0.75":    dict(BASE, overlay_down=True, overlay_thr=0.75),
+    "overlay_down_thr0.85_cost2": dict(BASE, overlay_down=True, overlay_thr=0.85, cost_mult=2.0),
+    "overlay_down_thr0.85_L1.65": dict(BASE, overlay_down=True, overlay_thr=0.85, leverage=1.65),
+    "overlay_down_thr0.85+mom_equal": dict(BASE, overlay_down=True, overlay_thr=0.85, mom_equal=True),
+    "mom_equal_cost2":         dict(BASE, mom_equal=True, cost_mult=2.0),
+    "overlay_down+mom_equal_cost2": dict(BASE, overlay_down=True, mom_equal=True, cost_mult=2.0),
+    "overlay_down_thr0.90+mom_equal": dict(BASE, overlay_down=True, overlay_thr=0.90, mom_equal=True),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
@@ -138,7 +147,12 @@ def main():
                 vx = pd.read_parquet("data/enhanced_data/vix_cache.parquet"); vx.index = pd.to_datetime(vx.index); cr._vix = vx[["^VIX", "^VIX3M"]].dropna().sort_index()
             except Exception as e:
                 cr._vix = None; print("  (vix cache unavailable:", e, ")")
-        pd.DataFrame({s: cr.run(s, ARMS[nm])["curve"] for s in STARTS}).to_parquet(f); print(f"  {nm:<16} {time.time()-t0:6.0f}s", flush=True)
+        curves = {}
+        for s_ in STARTS:
+            t1 = time.time(); curves[s_] = cr.run(s_, ARMS[nm])["curve"]; dt = time.time() - t1
+            print(f"    {nm} start {s_} {dt:5.0f}s", file=sys.stderr, flush=True)
+            if dt > 600: print(f"    !!! {nm} start {s_} took {dt:.0f}s — pathological run", file=sys.stderr, flush=True)
+        pd.DataFrame(curves).to_parquet(f); print(f"  {nm:<16} {time.time()-t0:6.0f}s", flush=True)
     # analyse
     B = pd.read_parquet(f"{CACHE}/{STAGE}_base.parquet"); cols = [c for c in B.columns if c in STARTS]; b = np.array([st(B[c]) for c in cols])
     print(f"\n{HZ} {STAGE} ({len(cols)} starts) — FINAL@1.49 base {b[:,0].mean():+.2%} / {b[:,1].mean():.3f} / {b[:,2].mean():.1%}")

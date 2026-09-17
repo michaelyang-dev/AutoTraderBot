@@ -389,3 +389,6 @@ Every one of these ran without error and produced a plausible equity curve.
   renormalised to 1.0, which can push a name back above the cap. Documented in
   `multi_strategy_engine` docstring; not fixed; effect not yet measured.
 - **VIX stale-but-inert** in the live path.
+
+### E-059b · One-off research stall (2026-09-16) — NOT reproducible
+The 26yr stage-2 batch-4 run spent 2h20m at 100% CPU on `overlay_down_thr0.85` (the 8yr took 206s; the other 26yr arms ~11 min). Killed; the identical arm re-run alone finished in 747s (24 starts x 28s, all normal). No loop in the engine (`grep while` = none). Cause unknown (host-level: the machine had 39 GB resident + 2.9 GB swap in use). Mitigation: `EXP059_frontier.py` now prints per-start elapsed time and flags any start > 600s, so a repeat is visible within minutes instead of hours. Not a result-affecting bug — no cached curve was produced by the stalled run.

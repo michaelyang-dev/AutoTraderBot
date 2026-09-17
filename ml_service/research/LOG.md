@@ -3269,6 +3269,30 @@ min_weight_2pct ~0; exit_all_stop50 negative. Mechanism diagnostic (`AUDIT_overl
 gains sit in the crisis years by construction (2008 +8..10pp, 2020 +14..16pp) and it costs -1..-6pp in calm
 bull years (2023 -3.1, 2024 -5.6 on the 8yr); exit_all's calm-year cost is far larger (2003 -16pp, 2024 -12pp).
 
+### Batch 4 (stage 2, 24 starts) — overlay refinements + equal-weight momentum. PRELIMINARY, UNAUDITED (2026-09-16).
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD | 8yr yrs · top-yr | 26yr dCAGR / dSharpe (+) / dMaxDD | 26yr yrs · top-yr | GATE 8yr / 26yr |
+|---|---|---|---|---|---|
+| mom_equal (I-38: equal-weight the 5 momentum picks) | +0.52pp / +0.012 (23/24) / +0.6pp | 6/8 · 49% | +0.32pp / +0.009 (24/24) / +0.2pp | **19/25** · 23% | FAIL (conc 49% on a +0.6pp mean) / **PASS, CI_lo > 0** |
+| overlay_down_thr0.90 (I-40) | +2.08pp / +0.076 (23/24) / +4.8pp | 4/8 · 77% | +0.85pp / +0.036 (24/24) / +5.4pp | 16/25 · 35% | FAIL (conc) / PASS |
+| overlay_down_thr0.85 | +2.61pp / +0.085 (24/24) / +4.7pp | 3/8 · 72% | +0.88pp / +0.035 (24/24) / +4.9pp | 15/25 · 37% | FAIL (yrs, conc) / PASS |
+| **overlay_down + mom_equal** | +2.08pp / +0.081 (24/24) / +5.1pp | 4/8 · 72% | **+1.08pp / +0.045 (24/24) / +5.6pp** | 14/25 · 30% | FAIL (conc) / **PASS, CI_lo +0.005, P 97%** |
+| overlay_down_lb20 (I-39) | -0.18pp / +0.040 (22/24) / +4.6pp | 3/8 | -0.01pp / +0.021 (24/24) / +4.3pp | 10/25 | dead: weaker than lb40 on both |
+| overlay_down_lb20 + mom_equal | +0.17pp / +0.050 / +4.9pp | 3/8 | +0.24pp / +0.028 / +4.6pp | 10/25 | dead (lb20) |
+| overlay_down_lb20_cost2 | (vs base at 1x) -2.4pp / -0.015 | — | -2.0pp / -0.042 | — | dead |
+
+Read: (a) equal-weighting the momentum sleeve's five picks is the most CONSISTENT thing found in EXP-059 — tiny
+(+0.3-0.5pp CAGR, +0.01 Sharpe) but positive on 24/24 starts on both horizons, better in 19/25 and 6/8 years, and
+the 26yr bootstrap CI excludes zero; it fails the 8yr only on the year-concentration check applied to a +0.6pp mean
+(2024 = +3.0pp of +6.2pp positive delta), which is the check being brittle on a small effect, not a red flag.
+Mechanism: score-weighting concentrates the sleeve into the top-ranked name, whose rank is the noisiest; equal
+weight is a shrinkage. Still needs the 2x-cost check (queued) and a look at whether the live sleeve's weights
+match the backtest's before it means anything live. (b) The overlay's trigger threshold barely matters on the 26yr
+(0.90 vs 0.95: +0.85 vs +0.77pp, 16 vs 14 years) — the churn premium is not where the calm-year cost comes from;
+the cost is the de-risking itself being early/wrong in V-shaped dips (2023, 2024). (c) overlay + equal-weight
+stacks additively (+0.045 = +0.036 + +0.009). (d') Threshold 0.85 re-run cleanly in 747s (24 x 28s) — the 2h20m stall of the first 26yr batch was NOT the arm (BUGS E-059b: unexplained one-off stall at 100% CPU, not reproducible; per-start timing now printed so a repeat is caught in minutes). (d) A 20-day vol lookback is worse than 40 on both horizons — the
+stage-1 +0.037 (8 starts) did not survive 24 starts; another reminder of the many-start rule.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
