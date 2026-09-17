@@ -3394,6 +3394,27 @@ leverage line; vol-matched CAGR changes by ±0.3pp, i.e. nothing). No promotion.
 split 70/21/9 re-checked under OM (60/30/10, 80/15/5, 50/35/15) and inverse-vol weighting inside the momentum
 sleeve as the next shrinkage step after equal weight.
 
+### Batch 9 (stage 2, 24 starts) — sleeve split under OM; inverse-vol inside the momentum sleeve. PRELIMINARY, UNAUDITED (2026-09-17 04:00).
+
+Pairwise gate (`GATE059_pair.py`, same checks as GATE059 but against any base; adds the ex-crisis dSharpe):
+
+| arm vs base | 8yr dCAGR / dSharpe (+) · yrs · conc · ex-crisis | 26yr dCAGR / dSharpe (+) · yrs · conc · ex-crisis | gate |
+|---|---|---|---|
+| **OM_s80_15_5 vs OM** (sleeves 80/15/5) | +1.04pp / +0.014 (23/24) · 7/8 · 33% · +0.007 (20/24) | +0.47pp / +0.014 (24/24) · 17/25 · 20% · +0.016 (24/24) | **PASS / PASS** (P 82% / 91%) |
+| OM_s60_30_10 vs OM | -0.16pp / +0.013 (24/24) · 4/8 | -0.30pp / -0.003 (3/24) · 11/25 | FAIL / FAIL |
+| OM_s50_35_15 vs OM | -0.88pp / +0.009 (20/24) · 2/8 | -0.77pp / -0.012 (0/24) · 9/25 | dead |
+| mom_ivol vs base (inverse-vol weights in the momentum sleeve) | -1.14pp / -0.008 (5/24) · 3/8 | see gate line above | dead — worse than equal weight |
+| O_ivol vs overlay_down | -1.29pp / -0.013 (5/24) | see gate line above | dead |
+
+Read: inverse-vol inside the sleeve is the wrong shrinkage (it under-weights exactly the high-vol winners momentum
+lives on); equal weight stays. The sleeve split is NOT at its frontier under equal-weight momentum: shifting
+70/21/9 -> 80/15/5 adds +0.014 Sharpe on both horizons with the right consistency (17/25 years, 20% top-year
+share, ex-crisis positive 24/24) and the same realized vol. CAUTION: the direction (more momentum) is the one the
+8yr always rewards, and 70/21/9 itself was fitted on this data in cycle 5x; batch 10 (running) checks whether the
+gain keeps growing toward pure momentum (90/7/3, 100/0/0 — if it does, the value/lowvol sleeves are just a
+drag and the finding is "less diversification", which is a different and riskier claim), isolates the split
+from the overlay and from equal weight, and adds the 2x-cost arm.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8

@@ -126,6 +126,13 @@ ARMS = {
     "OM_s50_35_15":            dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.50, val_w=0.35, lv_w=0.15),
     "mom_ivol":                dict(BASE, mom_ivol=True),
     "O_ivol":                  dict(BASE, overlay_down=True, mom_ivol=True),
+    # batch 10: how far does the momentum share go? (80/15/5 beat 70/21/9 under OM on both horizons) — and without the overlay
+    "OM_s90_7_3":              dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.90, val_w=0.07, lv_w=0.03),
+    "OM_s100":                 dict(BASE, overlay_down=True, mom_equal=True, mom_w=1.00, val_w=0.00, lv_w=0.00),
+    "M_s80_15_5":              dict(BASE, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05),
+    "s80_15_5":                dict(BASE, mom_w=0.80, val_w=0.15, lv_w=0.05),
+    "OM_s80_15_5_cost2":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, cost_mult=2.0),
+    "OM_cost2":                dict(BASE, overlay_down=True, mom_equal=True, cost_mult=2.0),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
