@@ -93,6 +93,15 @@ ARMS = {
     "mom_equal_cost2":         dict(BASE, mom_equal=True, cost_mult=2.0),
     "overlay_down+mom_equal_cost2": dict(BASE, overlay_down=True, mom_equal=True, cost_mult=2.0),
     "overlay_down_thr0.90+mom_equal": dict(BASE, overlay_down=True, overlay_thr=0.90, mom_equal=True),
+    # batch 6: DAILY de-risk overlay (prompt, every session, not just tranche days); value/lowvol equal weight; momentum count under equal weight
+    "overlay_daily":           dict(BASE, overlay_daily=True),
+    "overlay_daily+mom_equal": dict(BASE, overlay_daily=True, mom_equal=True),
+    "overlay_daily_cost2":     dict(BASE, overlay_daily=True, cost_mult=2.0),
+    "vl_equal":                dict(BASE, vl_equal=True),
+    "all_equal":               dict(BASE, mom_equal=True, vl_equal=True),
+    "mom_equal_n4":            dict(BASE, mom_equal=True, top_n=4),
+    "mom_equal_n6":            dict(BASE, mom_equal=True, top_n=6),
+    "mom_equal_n7":            dict(BASE, mom_equal=True, top_n=7),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
@@ -115,6 +124,12 @@ def _engine():
         ("                comb = {s: v for s, v in comb.items() if v >= 0.005}\n", "                comb = {s: v for s, v in comb.items() if v >= float(cfg.get('min_weight', 0.005))}\n"),
         ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                if cfg.get('mom_equal') and m1: m1 = {s_: 1.0 / len(m1) for s_ in m1}\n                m5 = strategy5_lowvol_quality(d, self.uni, di)\n"),
         ("        stop = 0.40; vol_stop_k", "        stop = float(cfg.get('stop', 0.40)); vol_stop_k"),
+        # batch 6: value/lowvol sleeves equal-weighted
+        ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n",
+         "                m5 = strategy5_lowvol_quality(d, self.uni, di)\n                if cfg.get('vl_equal'):\n                    if mv: mv = {s_: 1.0 / len(mv) for s_ in mv}\n                    if m5: m5 = {s_: 1.0 / len(m5) for s_ in m5}\n"),
+        # batch 6: DAILY de-risk-only overlay on non-tranche days (same maths as the weekly one: today's vol x gate target per book)
+        ("            nav = cash + mtm()\n\n            if i in sched and nav > 0:\n",
+         "            nav = cash + mtm()\n            if cfg.get('overlay_daily') and i not in sched and nav > 0 and len(navhist) >= 41:\n                dr_ = derisk_v if (gate_pct and gate.get(d, 0.5) >= gate_pct) else 1.0\n                rr_ = np.diff(np.array(navhist[-41:])) / np.array(navhist[-41:-1]); rv_ = float(np.std(rr_)) * np.sqrt(252)\n                vs_ = min(1.0, max(0.30, VOL_TARGET / rv_)) if (use_ov and rv_ > 0.01) else 1.0\n                tgt_ = (nav / K) * lev * dr_ * vs_\n                for t2 in range(K):\n                    if not books[t2]: continue\n                    gross2 = sum(q2 * prc.get(s2, lastpx.get(s2, 0.0)) for s2, q2 in books[t2].items())\n                    if gross2 <= 0: continue\n                    f2 = tgt_ / gross2\n                    if f2 < float(cfg.get('overlay_thr', 0.95)):\n                        for s2 in list(books[t2]):\n                            p2 = prc.get(s2)\n                            if not p2: continue\n                            q_old = books[t2][s2]; q_new = int(q_old * f2); dq2 = q_new - q_old\n                            if dq2 == 0 or abs(dq2 * p2) < (nav / K) * 0.003: continue\n                            cash -= dq2 * p2; cash -= abs(dq2 * p2) * cost_r\n                            if q_new > 0: books[t2][s2] = q_new\n                            else: books[t2].pop(s2, None); peaks[t2].pop(s2, None)\n                nav = cash + mtm()\n\n            if i in sched and nav > 0:\n"),
         # water-filling cap (I-02)
         ("                comb = {s: min(v, 0.10) for s, v in comb.items() if v > 0}\n                g = sum(comb.values())\n                if g > 1.0:\n                    comb = {s: v / g for s, v in comb.items()}\n",
          "                comb = {s: v for s, v in comb.items() if v > 0}\n                if cfg.get('waterfill'):\n                    g0 = sum(comb.values()); target = min(g0, 1.0); comb = {s: v / g0 * target for s, v in comb.items()} if g0 > 0 else {}\n                    for _ in range(20):\n                        over = {s for s, v in comb.items() if v > 0.10 + 1e-12}\n                        if not over: break\n                        excess = sum(comb[s] - 0.10 for s in over); free = {s: v for s, v in comb.items() if s not in over}; fs = sum(free.values())\n                        for s in over: comb[s] = 0.10\n                        if fs <= 0: break\n                        for s in free: comb[s] += excess * free[s] / fs\n                else:\n                    comb = {s: min(v, 0.10) for s, v in comb.items()}\n                    g = sum(comb.values())\n                    if g > 1.0:\n                        comb = {s: v / g for s, v in comb.items()}\n"),

@@ -3293,6 +3293,48 @@ the cost is the de-risking itself being early/wrong in V-shaped dips (2023, 2024
 stacks additively (+0.045 = +0.036 + +0.009). (d') Threshold 0.85 re-run cleanly in 747s (24 x 28s) — the 2h20m stall of the first 26yr batch was NOT the arm (BUGS E-059b: unexplained one-off stall at 100% CPU, not reproducible; per-start timing now printed so a repeat is caught in minutes). (d) A 20-day vol lookback is worse than 40 on both horizons — the
 stage-1 +0.037 (8 starts) did not survive 24 starts; another reminder of the many-start rule.
 
+### Batch 5 (stage 2, 24 starts) — cost 2x, threshold sweep, exposure-matched, combos. PRELIMINARY, UNAUDITED (2026-09-16 evening).
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD | 8yr yrs · top-yr | 26yr dCAGR / dSharpe (+) / dMaxDD | 26yr yrs · top-yr | GATE 8yr / 26yr |
+|---|---|---|---|---|---|
+| overlay_down_thr0.80 / 0.75 | +2.7 / +2.6pp · +0.083 / +0.076 (24/24) · +4.8 / +4.5pp | 4/8 | +1.0 / +1.1pp · +0.036 / +0.037 (24/24) · +4.9 / +4.7pp | 15 / 13 of 25 | threshold irrelevant (0.75..0.95 identical) |
+| overlay_down_thr0.85_L1.65 (exposure-matched) | +3.45pp / +0.069 (24/24) / +3.4pp | 5/8 · 54% | +1.51pp / +0.033 (24/24) / +2.9pp | **19/25 · 19%** | FAIL (conc) / PASS |
+| **overlay_down_thr0.85 + mom_equal** | +3.25pp / +0.100 (24/24) / +5.1pp · CI_lo +0.006 | 5/8 · 67% | **+1.19pp / +0.044 (24/24) / +5.3pp · CI_lo +0.006, P 98%** | 17/25 · 31% | FAIL (conc only) / PASS |
+| overlay_down_thr0.90 + mom_equal | +2.62pp / +0.089 (24/24) / +5.1pp | 4/8 · 73% | +1.14pp / +0.045 (24/24) / +5.5pp | 16/25 · 31% | FAIL (conc) / PASS |
+
+Cost 2x (arm_cost2 vs base_cost2, 24 starts) — all three survivors INTACT: mom_equal +0.52pp/+0.013 (23/24) and
++0.29pp/+0.009 (24/24, 19/25 years); overlay_down+mom_equal +1.99pp/+0.078/+5.7pp and +0.99pp/+0.042/+5.5pp;
+overlay_down_thr0.85 +2.58pp/+0.084/+5.3pp and +0.84pp/+0.033/+4.6pp.
+
+**Ex-crisis test** (calendar 2020 removed on the 8yr; 2008 + 2020 removed on the 26yr, from BOTH arms; 24 starts).
+This is the direct answer to "is the gain just one year":
+
+| arm | 8yr dSharpe ex-2020 (+) · d ann. return | 26yr dSharpe ex-2008/2020 (+) · d ann. return |
+|---|---|---|
+| mom_equal | +0.013 (24/24) · +0.42pp | +0.009 (24/24) · +0.25pp |
+| overlay_down | +0.011 (18/24) · -0.74pp | +0.010 (20/24) · -0.25pp |
+| overlay_down + mom_equal | +0.024 (24/24) · -0.31pp | +0.020 (24/24) · +0.00pp |
+| overlay_down_thr0.85 + mom_equal | +0.041 (24/24) · +0.62pp | +0.019 (24/24) · +0.17pp |
+| exit_all | +0.039 (22/24) · -2.14pp | +0.040 (22/24) · -2.06pp |
+
+Read: (1) equal-weight momentum's edge has NOTHING to do with crises — identical inside and outside them (24/24 on
+both horizons either way), and it survives 2x cost; it is a small, honest shrinkage improvement (+0.3-0.5pp,
++0.01 Sharpe). (2) The de-risk-only overlay outside the crisis years is Sharpe-flat to slightly positive
+(+0.01) at a return cost of -0.25..-0.75pp/yr — i.e. CHEAP insurance, not free, and not a return engine; inside
+2008/2020 it pays +10..+15pp. The 8yr gate's year-concentration failure is the arithmetic of one crash in eight
+years, not a red flag; the 26yr passes every check including the year test (15-17/25) and, combined with
+mom_equal, the bootstrap CI excludes zero on BOTH horizons. (3) The exposure-matched version (1.65x) is the
+most even on the 26yr (19/25 years, top-year 19%) but gives back most of the MaxDD gain (+2.9pp) — it converts
+the insurance into return, which is a leverage choice, not evidence. (4) exit_all keeps a Sharpe edge ex-crisis
+only by cutting return -2pp/yr; dead.
+
+**Standing verdict (2026-09-16, end of batch 5):** two candidates deserve the deployment conversation, neither
+as a return claim: (A) equal-weight momentum picks — tiny, consistent, cost-proof, crisis-independent; (B) the
+de-risk-only prompt overlay (any threshold 0.85-0.95; +mom_equal) — drawdown insurance worth ~+5pp MaxDD on
+both horizons and ~+1pp CAGR on the 26yr, costing ~0.5pp/yr in calm years; the 8yr CAGR gain (+2-3pp) is 2020
+and must not be quoted as expected return. NOT deployed; owner's call. Next batch: value/lowvol sleeves equal
+weight, momentum count under equal weight (4/6/7), and a DAILY (not weekly) de-risk overlay at 2x cost.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
