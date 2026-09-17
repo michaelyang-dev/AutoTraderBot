@@ -3355,6 +3355,26 @@ AUDIT_enginegap_v2). Under a 15% cap an equal-weighted 14% momentum name is NOT 
 name IS, so mom_equal's mechanism may differ live. Arms: cap0.15 base, +mom_equal, +overlay_down, all three,
 and cost-2x versions — every candidate must be re-measured against the cap-0.15 base before any live claim.
 
+### Batch 7 (stage 2, 24 starts) — LIVE-PARITY combiner cap 0.15. PRELIMINARY, UNAUDITED (2026-09-17 00:38).
+
+The cap itself is inert: cap0.15 vs the clean-room base = -0.006 / +0.003 Sharpe (8yr / 26yr), so the clean-room's
+10% convention and the live 15% cap describe the same book. Every candidate re-measured AGAINST the cap-0.15 base:
+
+| arm (all with cap 0.15) | 8yr dCAGR / dSharpe (+) / dMaxDD · yrs · top-yr | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs · top-yr |
+|---|---|---|
+| + mom_equal | +0.58pp / +0.013 (22/24) / +0.8pp · 6/8 · 47% | +0.30pp / +0.009 (24/24) / +0.1pp · **18/25** · 32% |
+| + mom_equal, cost 2x (vs cap0.15_cost2) | +0.57pp / +0.013 (23/24) / +0.7pp · 6/8 | +0.30pp / +0.009 (24/24) / +0.1pp · 18/25 |
+| + overlay_down | +1.80pp / +0.072 (24/24) / +4.7pp · 3/8 · 76% | +0.81pp / +0.036 (24/24) / +5.6pp · 15/25 · 36% |
+| + overlay_down + mom_equal | +2.51pp / +0.088 (24/24) / +5.1pp · 5/8 · 71% | **+1.15pp / +0.047 (24/24) / +5.8pp · 17/25 · 30%** |
+
+Read: identical to the cap-0.10 measurements to the second decimal — the equal-weight edge does not depend on the
+cap binding (so the mechanism is the rank-noise shrinkage, not the cap interaction I worried about), and the
+overlay's insurance profile is unchanged. Both candidates are now measured under the book the live engine
+actually runs. Live implementation notes: mom_equal = equal weights in `strategy1_momentum_reversal`'s output
+(currently score-weighted with a 2/N cap); overlay_down = on every tranche day, for each NON-rebuilding book,
+if (NAV/4 x 1.49 x vol_scale x gate) / book_gross < 0.95, trim every position by that factor (whole shares,
+0.3%-of-book min trade) — never scale up. Neither deployed; owner's call.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
