@@ -102,6 +102,14 @@ ARMS = {
     "mom_equal_n4":            dict(BASE, mom_equal=True, top_n=4),
     "mom_equal_n6":            dict(BASE, mom_equal=True, top_n=6),
     "mom_equal_n7":            dict(BASE, mom_equal=True, top_n=7),
+    # batch 7: LIVE-PARITY combiner cap (the deployed signal server caps a name at 15%; the clean room's 10% was an
+    # accepted deviation, AUDIT_enginegap_v2). Does the equal-weight finding survive the cap the live book actually uses?
+    "cap0.15":                 dict(BASE, cap=0.15),
+    "cap0.15+mom_equal":       dict(BASE, cap=0.15, mom_equal=True),
+    "cap0.15+overlay_down":    dict(BASE, cap=0.15, overlay_down=True),
+    "cap0.15+overlay_down+mom_equal": dict(BASE, cap=0.15, overlay_down=True, mom_equal=True),
+    "cap0.15_cost2":           dict(BASE, cap=0.15, cost_mult=2.0),
+    "cap0.15+mom_equal_cost2": dict(BASE, cap=0.15, mom_equal=True, cost_mult=2.0),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
@@ -125,8 +133,10 @@ def _engine():
         ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                if cfg.get('mom_equal') and m1: m1 = {s_: 1.0 / len(m1) for s_ in m1}\n                m5 = strategy5_lowvol_quality(d, self.uni, di)\n"),
         ("        stop = 0.40; vol_stop_k", "        stop = float(cfg.get('stop', 0.40)); vol_stop_k"),
         # batch 6: value/lowvol sleeves equal-weighted
-        ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n",
-         "                m5 = strategy5_lowvol_quality(d, self.uni, di)\n                if cfg.get('vl_equal'):\n                    if mv: mv = {s_: 1.0 / len(mv) for s_ in mv}\n                    if m5: m5 = {s_: 1.0 / len(m5) for s_ in m5}\n"),
+        # batch 7: combiner cap as a switch (default 0.10 = clean-room convention; 0.15 = live signal server)
+        ("                    comb = {s: min(v, 0.10) for s, v in comb.items()}\n", "                    comb = {s: min(v, float(cfg.get('cap', 0.10))) for s, v in comb.items()}\n"),
+        ("                m3 = strategy3_sector_rotation(d, self.uni, di)\n",
+         "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('vl_equal'):\n                    if mv: mv = {s_: 1.0 / len(mv) for s_ in mv}\n                    if m5: m5 = {s_: 1.0 / len(m5) for s_ in m5}\n"),
         # batch 6: DAILY de-risk-only overlay on non-tranche days (same maths as the weekly one: today's vol x gate target per book)
         ("            nav = cash + mtm()\n\n            if i in sched and nav > 0:\n",
          "            nav = cash + mtm()\n            if cfg.get('overlay_daily') and i not in sched and nav > 0 and len(navhist) >= 41:\n                dr_ = derisk_v if (gate_pct and gate.get(d, 0.5) >= gate_pct) else 1.0\n                rr_ = np.diff(np.array(navhist[-41:])) / np.array(navhist[-41:-1]); rv_ = float(np.std(rr_)) * np.sqrt(252)\n                vs_ = min(1.0, max(0.30, VOL_TARGET / rv_)) if (use_ov and rv_ > 0.01) else 1.0\n                tgt_ = (nav / K) * lev * dr_ * vs_\n                for t2 in range(K):\n                    if not books[t2]: continue\n                    gross2 = sum(q2 * prc.get(s2, lastpx.get(s2, 0.0)) for s2, q2 in books[t2].items())\n                    if gross2 <= 0: continue\n                    f2 = tgt_ / gross2\n                    if f2 < float(cfg.get('overlay_thr', 0.95)):\n                        for s2 in list(books[t2]):\n                            p2 = prc.get(s2)\n                            if not p2: continue\n                            q_old = books[t2][s2]; q_new = int(q_old * f2); dq2 = q_new - q_old\n                            if dq2 == 0 or abs(dq2 * p2) < (nav / K) * 0.003: continue\n                            cash -= dq2 * p2; cash -= abs(dq2 * p2) * cost_r\n                            if q_new > 0: books[t2][s2] = q_new\n                            else: books[t2].pop(s2, None); peaks[t2].pop(s2, None)\n                nav = cash + mtm()\n\n            if i in sched and nav > 0:\n"),

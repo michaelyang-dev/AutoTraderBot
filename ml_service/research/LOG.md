@@ -3335,6 +3335,26 @@ both horizons and ~+1pp CAGR on the 26yr, costing ~0.5pp/yr in calm years; the 8
 and must not be quoted as expected return. NOT deployed; owner's call. Next batch: value/lowvol sleeves equal
 weight, momentum count under equal weight (4/6/7), and a DAILY (not weekly) de-risk overlay at 2x cost.
 
+### Batch 6 (stage 2, 24 starts) — daily overlay, sleeve equal weights, momentum count. PRELIMINARY, UNAUDITED (2026-09-16 night).
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD · yrs | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs | GATE 8yr / 26yr | read |
+|---|---|---|---|---|
+| overlay_daily (every session, not just tranche days) | +1.11pp / +0.069 (24/24) / +5.0pp · 3/8 | +0.61pp / +0.037 (24/24) / +4.6pp · 11/25 | FAIL / FAIL (yrs 44%) | no better than weekly (+0.070/+0.036), more calm-year cost (2024 -8.2pp), 2x-cost +0.032. Cadence beyond 5 sessions adds nothing — DEAD |
+| overlay_daily + mom_equal | +1.63pp / +0.082 / +5.2pp · 3/8 | +0.91pp / +0.046 / +5.0pp · 13/25 | — | same |
+| vl_equal (value + lowvol sleeves equal-weighted) | +0.07pp / +0.006 (22/24) / +0.6pp | +0.09pp / +0.004 (23/24) / -0.3pp · 16/25 | — | ~0 — DEAD |
+| all_equal (mom + value + lowvol equal) | +0.60pp / +0.019 (23/24) / +1.2pp · 5/8 | +0.36pp / +0.013 (24/24) / -0.1pp · 15/25 | PASS / PASS (CI_lo -0.001) | = mom_equal + ~0.004; keep the simpler mom_equal |
+| mom_equal_n4 | -3.51pp / **-0.073 (0/24)** | -0.69pp / -0.012 (2/24) | — | fewer names = clearly worse |
+| mom_equal_n6 | +1.73pp / +0.026 (22/24) · 6/8 | -0.21pp / -0.012 (2/24) · 15/25 | PASS / FAIL | 8yr-only mirage; 5 names stands |
+| mom_equal_n7 | +1.04pp / +0.012 (15/24) | -0.78pp / -0.030 (0/24) | — | dead |
+
+Read: the tranche-day (weekly) cadence is the right one for the overlay — daily de-risking trades more and helps
+less; the value/lowvol sleeves' score-weighting is harmless; the momentum sleeve's count of 5 is confirmed on the
+long horizon (n=6's 8yr gain is another one-horizon result). Batch 7 (running): the LIVE-PARITY cap. The deployed
+signal server caps a name at 15% of the book; the clean room's combiner caps at 10% (accepted deviation,
+AUDIT_enginegap_v2). Under a 15% cap an equal-weighted 14% momentum name is NOT capped while a score-weighted top
+name IS, so mom_equal's mechanism may differ live. Arms: cap0.15 base, +mom_equal, +overlay_down, all three,
+and cost-2x versions — every candidate must be re-measured against the cap-0.15 base before any live claim.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
