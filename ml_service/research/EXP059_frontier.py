@@ -140,6 +140,9 @@ ARMS = {
     "base_1M":                 dict(BASE, initial_capital=1_000_000.0),
     "OM_1M":                   dict(BASE, overlay_down=True, mom_equal=True, initial_capital=1_000_000.0),
     "OM_s80_15_5_1M":          dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, initial_capital=1_000_000.0),
+    # batch 11b: stress bound — a quarter of the live size (books of $3.75k), to bracket steady-state truncation
+    "base_15k":                dict(BASE, initial_capital=15_000.0),
+    "OM_s80_15_5_15k":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, initial_capital=15_000.0),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)

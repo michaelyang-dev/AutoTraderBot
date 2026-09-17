@@ -3453,6 +3453,26 @@ signal server's 15% cap, (c) a tranche-day de-risk trim of the non-rebuilding bo
 Caveat under test (batch 11): at $60k the value/lowvol names at 1.5%/0.5% of a $15k book are $225/$75 — whole
 shares truncate most of them to 0; the backtest starts at $50k and compounds, so it only sees this early.
 
+### Batch 11 (stage 2, 24 starts) — CAPITAL SCALE / whole-share truncation. PRELIMINARY, UNAUDITED (2026-09-17 07:10).
+
+The clean room sizes whole shares from a starting NAV (base $50k) and compounds. Same configs re-run from $15k
+(books of $3.75k = a quarter of the live account), $60k (= live: four $15k books) and $1M:
+
+| config | 8yr $15k | 8yr $60k | 8yr $1M | 26yr $60k | 26yr $1M |
+|---|---|---|---|---|---|
+| deployed base | +31.58% / 1.007 / -38.6% | +32.42% / 1.027 / -36.6% | +32.55% / 1.033 / -36.0% | +18.16% / 0.719 / -46.5% | +18.09% / 0.717 / -46.4% |
+| package (overlay + equal + 80/15/5) | +34.49% / 1.106 / -31.5% | +35.61% / 1.124 / -31.4% | +35.83% / 1.127 / -31.4% | +19.70% / 0.778 / -41.3% | +19.62% / 0.775 / -41.5% |
+| package - base | +2.91pp / +0.099 (24/24) / +7.1pp | +3.19pp / +0.097 / +5.2pp | +3.28pp / +0.094 / +4.6pp | +1.54pp / +0.059 / +5.3pp | +1.53pp / +0.058 / +4.9pp |
+
+Truncation cost (8yr, $15k vs $1M): base -0.97pp CAGR / -0.026 Sharpe; package -1.34pp / -0.021. At $60k vs $1M:
+base -0.13pp, package -0.22pp. The 26yr is scale-free (compounds out of the small-book regime within years).
+Read: at the live size the steady-state whole-share cost is bounded at roughly -0.2 .. -1.3pp/yr (the $60k run
+leaves the small regime quickly; the $15k run is a quarter of live size), it hits base and package alike, and the
+package's edge over the base survives at every scale (24/24 starts even at $15k). Not a reason to prefer either.
+Practical note for the live book: at 80/15/5 the value/lowvol names are 1.5% / 0.5% of a $15k book ($225 / $75)
+and most round to 0-1 shares — the sleeves' diversification is partly nominal at this account size regardless of
+the split (batch 12 tests fewer, larger value names for exactly this reason).
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8
