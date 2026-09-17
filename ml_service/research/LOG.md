@@ -3375,6 +3375,25 @@ actually runs. Live implementation notes: mom_equal = equal weights in `strategy
 if (NAV/4 x 1.49 x vol_scale x gate) / book_gross < 0.95, trim every position by that factor (whole shares,
 0.3%-of-book min trade) — never scale up. Neither deployed; owner's call.
 
+### Batch 8 (stage 2, 24 starts) — risk parameters on top of OM = overlay_down + mom_equal. PRELIMINARY, UNAUDITED (2026-09-17 02:40).
+
+OM levels: 8yr +34.50% / 1.108 / -31.6% (vol 31.2%), 26yr +19.24% / 0.764 / -41.0% (vol 28.3%). Deltas vs OM:
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs | read |
+|---|---|---|---|
+| stop 35% | -0.43pp / -0.006 (9/24) / 0.0 | -0.23pp / -0.005 (7/24) / -0.4pp · 13/25 | worse |
+| stop 45% | -0.59pp / -0.025 (5/24) / +0.5pp | -0.20pp / -0.009 (5/24) / +0.3pp · 10/25 | worse |
+| stop 50% | -1.53pp / -0.048 (0/24) / +0.2pp | -0.47pp / -0.017 (0/24) / +0.2pp · 12/25 | clearly worse — **40% stands** |
+| vol-clamp floor 0.20 / 0.40 | 0.000 / +0.004 | 0.000 / +0.002 | the floor never binds — irrelevant |
+| vol target 17% (1x) | +1.15pp / -0.013 / -1.6pp, vol 32.8% | +0.69pp / -0.003 / -2.4pp, vol 29.7%; vol-matched CAGR -0.3pp | a leverage dial, not an edge |
+| vol target 13% (1x) | -0.88pp / +0.029 (24/24) / +1.9pp, vol 29.3% | -0.83pp / +0.005 / +2.4pp, vol 26.6%; vol-matched CAGR +0.3pp | same dial, other direction |
+
+Read: every risk parameter of the deployed book is at its frontier on the v2 data — the trailing stop at 40%,
+the vol-scale floor (inert), and the 15% x 1.49 vol target (moving it only trades CAGR for MaxDD along the
+leverage line; vol-matched CAGR changes by ±0.3pp, i.e. nothing). No promotion. Batch 9 (running): the sleeve
+split 70/21/9 re-checked under OM (60/30/10, 80/15/5, 50/35/15) and inverse-vol weighting inside the momentum
+sleeve as the next shrinkage step after equal weight.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8

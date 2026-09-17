@@ -110,6 +110,22 @@ ARMS = {
     "cap0.15+overlay_down+mom_equal": dict(BASE, cap=0.15, overlay_down=True, mom_equal=True),
     "cap0.15_cost2":           dict(BASE, cap=0.15, cost_mult=2.0),
     "cap0.15+mom_equal_cost2": dict(BASE, cap=0.15, mom_equal=True, cost_mult=2.0),
+    # batch 8: risk parameters on top of the surviving pair (OM = overlay_down + mom_equal): trailing stop, vol-clamp floor, vol target
+    "OM":                      dict(BASE, overlay_down=True, mom_equal=True),
+    "OM_stop35":               dict(BASE, overlay_down=True, mom_equal=True, stop=0.35),
+    "OM_stop45":               dict(BASE, overlay_down=True, mom_equal=True, stop=0.45),
+    "OM_stop50":               dict(BASE, overlay_down=True, mom_equal=True, stop=0.50),
+    "OM_floor0.20":            dict(BASE, overlay_down=True, mom_equal=True, vs_floor=0.20),
+    "OM_floor0.40":            dict(BASE, overlay_down=True, mom_equal=True, vs_floor=0.40),
+    "OM_vt0.17":               dict(BASE, overlay_down=True, mom_equal=True, vol_target=0.17 * 1.49),   # 1x-semantic 17% (clean room VOL_TARGET = 0.15 x 1.49)
+    "OM_vt0.13":               dict(BASE, overlay_down=True, mom_equal=True, vol_target=0.13 * 1.49),
+    # batch 9: sleeve-weight re-check under OM (is 70/21/9 still the frontier once the momentum sleeve is equal-weighted?)
+    #          and inverse-vol weighting WITHIN the momentum sleeve (the next shrinkage after equal weight)
+    "OM_s60_30_10":            dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.60, val_w=0.30, lv_w=0.10),
+    "OM_s80_15_5":             dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05),
+    "OM_s50_35_15":            dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.50, val_w=0.35, lv_w=0.15),
+    "mom_ivol":                dict(BASE, mom_ivol=True),
+    "O_ivol":                  dict(BASE, overlay_down=True, mom_ivol=True),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
@@ -130,11 +146,9 @@ def _engine():
         ("                dr = dr * vs\n", "                dr = dr * vs\n                if cfg.get('vix_gate') and getattr(self, '_vix', None) is not None:\n                    vv = self._vix.loc[:d]\n                    if len(vv) > 1 and vv.iloc[-2, 0] > vv.iloc[-2, 1]: dr = dr * float(cfg['vix_gate'])\n"),
         # batch 3: equal-weight momentum picks; min-weight filter; stop level; overlay lookback
         ("                comb = {s: v for s, v in comb.items() if v >= 0.005}\n", "                comb = {s: v for s, v in comb.items() if v >= float(cfg.get('min_weight', 0.005))}\n"),
-        ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                if cfg.get('mom_equal') and m1: m1 = {s_: 1.0 / len(m1) for s_ in m1}\n                m5 = strategy5_lowvol_quality(d, self.uni, di)\n"),
+        ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                if cfg.get('mom_equal') and m1: m1 = {s_: 1.0 / len(m1) for s_ in m1}\n                if cfg.get('mom_ivol') and m1:\n                    fd_ = self.bt.features_by_date.get(d, {}); iv_ = {}\n                    for s_ in m1:\n                        v_ = fd_.get(s_, {}).get('vol_60d', np.nan)\n                        if v_ == v_ and v_ > 0: iv_[s_] = 1.0 / v_\n                    if len(iv_) == len(m1):\n                        t_ = sum(iv_.values()); m1 = {s_: x_ / t_ for s_, x_ in iv_.items()}\n                    else: m1 = {s_: 1.0 / len(m1) for s_ in m1}\n                m5 = strategy5_lowvol_quality(d, self.uni, di)\n"),
         ("        stop = 0.40; vol_stop_k", "        stop = float(cfg.get('stop', 0.40)); vol_stop_k"),
         # batch 6: value/lowvol sleeves equal-weighted
-        # batch 7: combiner cap as a switch (default 0.10 = clean-room convention; 0.15 = live signal server)
-        ("                    comb = {s: min(v, 0.10) for s, v in comb.items()}\n", "                    comb = {s: min(v, float(cfg.get('cap', 0.10))) for s, v in comb.items()}\n"),
         ("                m3 = strategy3_sector_rotation(d, self.uni, di)\n",
          "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('vl_equal'):\n                    if mv: mv = {s_: 1.0 / len(mv) for s_ in mv}\n                    if m5: m5 = {s_: 1.0 / len(m5) for s_ in m5}\n"),
         # batch 6: DAILY de-risk-only overlay on non-tranche days (same maths as the weekly one: today's vol x gate target per book)
@@ -154,6 +168,10 @@ def _engine():
         # exit_all + overlay_all: after this book's rebuild, touch the OTHER books
         ("                nav = cash + mtm()\n\n            prev_debit = max(0.0, -cash)\n",
          "                nav = cash + mtm()\n                wanted = set(comb)\n                if cfg.get('exit_all') or cfg.get('overlay_all') or cfg.get('overlay_down'):\n                    for t2 in range(K):\n                        if t2 == t: continue\n                        if cfg.get('exit_all'):\n                            for s2 in list(books[t2]):\n                                if s2 not in wanted:\n                                    p2 = prc.get(s2, lastpx.get(s2, 0.0)); q2 = books[t2].pop(s2); peaks[t2].pop(s2, None)\n                                    cash += q2 * p2; cash -= abs(q2 * p2) * cost_r\n                        if (cfg.get('overlay_all') or cfg.get('overlay_down')) and books[t2]:\n                            gross2 = sum(q2 * prc.get(s2, lastpx.get(s2, 0.0)) for s2, q2 in books[t2].items()); tgt2 = tnav * lev * dr\n                            f2 = (tgt2 / gross2) if gross2 > 0 else None\n                            if f2 is not None and (tgt2 <= 0 or abs(f2 - 1) > 0.05) and (not cfg.get('overlay_down') or f2 < float(cfg.get('overlay_thr', 0.95))):\n                                for s2 in list(books[t2]):\n                                    p2 = prc.get(s2)\n                                    if not p2: continue\n                                    q_old = books[t2][s2]; q_new = int(q_old * f2); dq2 = q_new - q_old\n                                    if dq2 == 0 or abs(dq2 * p2) < tnav * 0.003: continue\n                                    cash -= dq2 * p2; cash -= abs(dq2 * p2) * cost_r\n                                    if q_new > 0: books[t2][s2] = q_new\n                                    else: books[t2].pop(s2, None); peaks[t2].pop(s2, None)\n                    nav = cash + mtm()\n\n            prev_debit = max(0.0, -cash)\n"),
+        # batch 7: combiner cap as a switch (default 0.10 = clean-room convention; 0.15 = live signal server)
+        ("                    comb = {s: min(v, 0.10) for s, v in comb.items()}\n", "                    comb = {s: min(v, float(cfg.get('cap', 0.10))) for s, v in comb.items()}\n"),
+        # batch 8: vol-clamp floor and vol target as switches (weekly path only; the daily-overlay block keeps the constants)
+        ("                        vs = min(1.0, max(0.30, VOL_TARGET / rv))\n", "                        vs = min(1.0, max(float(cfg.get('vs_floor', 0.30)), float(cfg.get('vol_target', VOL_TARGET)) / rv))\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
     V.END = E.END; ns = dict(V.__dict__); assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
