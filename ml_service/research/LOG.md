@@ -3491,6 +3491,25 @@ internals is complete: cadence, exits, overlay form/threshold/lookback, gate dep
 count/weighting, value/lowvol counts, stop, vol floor/target, cap, cost, capital scale — all measured. Batch 13
 (running): the package at 1.25x and 1.65x, so the owner's decision can be made on the leverage line.
 
+### Batch 13 (stage 2, 24 starts) — the package on the leverage line. PRELIMINARY, UNAUDITED (2026-09-17 09:51).
+
+| horizon | book | CAGR | Sharpe | MaxDD | realized vol |
+|---|---|---|---|---|---|
+| 8yr | deployed structure @1.25x | +31.03% | 1.053 | -33.5% | 30.0% |
+| 8yr | deployed @1.49x (live) | +32.42% | 1.026 | -36.7% | 32.5% |
+| 8yr | package @1.25x | +33.77% | 1.139 | -29.2% | 29.4% |
+| 8yr | package @1.49x | +35.54% | 1.122 | -31.4% | 31.6% |
+| 8yr | package @1.65x | +36.55% | 1.114 | -32.7% | 32.9% |
+| 26yr | deployed structure @1.25x | +17.26% | 0.730 | -43.0% | 26.8% |
+| 26yr | deployed @1.49x (live) | +18.16% | 0.719 | -46.6% | 29.2% |
+| 26yr | package @1.25x | +18.48% | 0.776 | -38.5% | 26.4% |
+| 26yr | package @1.49x | +19.71% | 0.779 | -41.2% | 28.3% |
+| 26yr | package @1.65x | +20.33% | 0.778 | -43.2% | 29.4% |
+
+Read: Sharpe is flat along the line (leverage is a dial); the package at 1.25x ≈ the deployed CAGR with ~10pp less MaxDD
+on the 26yr; at 1.65x ≈ the deployed MaxDD with ~+3pp CAGR. Owner's risk choice; the research recommendation stays
+'package at the current 1.49x' because it changes nothing about the leverage the owner already accepted.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8

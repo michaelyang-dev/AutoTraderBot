@@ -58,5 +58,21 @@ alike, -0.2..-1.3pp/yr at live size).
    book); never buy. Persist the ledger per fill (already in place). Tests: extend tests/test_tranche_engine.py with a
    de-risk-trim case and a never-up case. Then the usual: box bundle deploy, restart after the close, LIVE_SYSTEM.md record.
 
-## Leverage line (batch 13, filling in)
-(see LOG.md cycle 57 batch 13 once the 1.25x / 1.65x runs land)
+## Leverage line (batch 13, 24 starts) — the owner's risk choice
+
+| horizon | book | CAGR | Sharpe | MaxDD | realized vol |
+|---|---|---|---|---|---|
+| 8yr | deployed structure @1.25x | +31.03% | 1.053 | -33.5% | 30.0% |
+| 8yr | deployed @1.49x (live) | +32.42% | 1.026 | -36.7% | 32.5% |
+| 8yr | package @1.25x | +33.77% | 1.139 | -29.2% | 29.4% |
+| 8yr | package @1.49x | +35.54% | 1.122 | -31.4% | 31.6% |
+| 8yr | package @1.65x | +36.55% | 1.114 | -32.7% | 32.9% |
+| 26yr | deployed structure @1.25x | +17.26% | 0.730 | -43.0% | 26.8% |
+| 26yr | deployed @1.49x (live) | +18.16% | 0.719 | -46.6% | 29.2% |
+| 26yr | package @1.25x | +18.48% | 0.776 | -38.5% | 26.4% |
+| 26yr | package @1.49x | +19.71% | 0.779 | -41.2% | 28.3% |
+| 26yr | package @1.65x | +20.33% | 0.778 | -43.2% | 29.4% |
+
+Read: the package at 1.25x has roughly the deployed book's CAGR with far less drawdown; at 1.49x (no leverage change) it
+adds ~1.5pp CAGR and ~5pp MaxDD on the 26yr; at 1.65x it buys back the deployed book's drawdown for ~3pp more CAGR (26yr).
+Sharpe is flat across the line (leverage is a dial, not an edge) — pick the MaxDD you can hold.
