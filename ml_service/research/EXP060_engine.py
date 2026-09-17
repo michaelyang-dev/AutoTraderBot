@@ -34,13 +34,54 @@ ARMS = {
     "x_updown100":     dict(BASE, x_w=1.0, x_kind="updown"),
     "x_rec100":        dict(BASE, x_w=1.0, x_kind="rec1m"),
     "x_combo100":      dict(BASE, x_w=1.0, x_kind="combo"),
+    # batch 2: price-based second engines (short-term reversal in uptrends, calendar seasonality, long-term reversal)
+    "x_str100":        dict(BASE, x_w=1.0, x_kind="str"),
+    "x_season100":     dict(BASE, x_w=1.0, x_kind="season"),
+    "x_ltr100":        dict(BASE, x_w=1.0, x_kind="ltr"),
+    "P_x_str15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="str"),
+    "P_x_season15":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="season"),
+    "P_x_ltr15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
 _IBES = pd.read_parquet("research/_exp060/ibes_pit.parquet")
 _IBES_DATES = np.array(sorted(_IBES["asof"].unique()))
 _IBES_BY = {d: g.set_index("ticker") for d, g in _IBES.groupby("asof")}
-def sleeve_x(d, members, cfg, features=None):
+_PX_CACHE = {}
+def _price_kind(d, members, kind, cfg, features, uni):
+    """Price-based second-engine candidates (all from the universe's own price panel, PIT by construction):
+      str    short-term reversal: score = -ret_20d, restricted to names above their SMA200 (buy the dip in an uptrend)
+      season calendar seasonality (Heston-Sadka): mean return of the SAME calendar month over the prior 10 years
+      ltr    long-term reversal (DeBondt-Thaler): score = -(return over months 13..60)
+    Vectorised over the price panel; monthly panel cached per universe object."""
+    fd = features or {}
+    if kind == "str":
+        return pd.Series({s_: -fd[s_]["ret_20d"] for s_ in members if s_ in fd and fd[s_].get("ret_20d") is not None
+                          and fd[s_].get("dist_sma200", -1) > 0}, dtype=float)
+    if uni is None: return pd.Series(dtype=float)
+    px = uni.prices; dts = pd.Timestamp(d)
+    cols = [s_ for s_ in members if s_ in px.columns]
+    if not cols: return pd.Series(dtype=float)
+    if kind == "ltr":
+        hist = px.loc[:dts]
+        if len(hist) < 252 * 5 + 1: return pd.Series(dtype=float)
+        p12 = hist.iloc[-252][cols]; p60 = hist.iloc[-252 * 5][cols]
+        r = (p12 / p60 - 1.0); r = r[(p60 > 0) & p12.notna() & p60.notna()]
+        return -r
+    # season
+    key = id(uni)
+    if key not in _PX_CACHE:
+        _PX_CACHE[key] = px.resample("ME").last().pct_change()
+    m = _PX_CACHE[key]
+    cutoff = dts - pd.Timedelta(days=40)
+    rows = m[(m.index.month == dts.month) & (m.index < cutoff) & (m.index >= cutoff - pd.Timedelta(days=366 * 10))]
+    if len(rows) < 5: return pd.Series(dtype=float)
+    sub = rows[cols]; cnt = sub.notna().sum()
+    sc = sub.mean(); sc = sc[cnt >= 5]
+    return sc.dropna()
+
+
+def sleeve_x(d, members, cfg, features=None, uni=None):
     """Top-N (equal weight) of the universe members by one analyst signal as of the latest IBES statistical
     period on/before d (must be <= 45 days old). kinds: sue (quarterly EPS surprise score, <= 90 days old),
     rev3m / rev1m (FY1 mean-estimate revision), updown ((#up - #down)/#estimates), rec1m (recommendation
@@ -52,8 +93,8 @@ def sleeve_x(d, members, cfg, features=None):
     if (d64 - asof) / np.timedelta64(1, "D") > 45: return {}
     g = _IBES_BY[asof]; kind = cfg.get("x_kind", "combo"); n = int(cfg.get("x_n", 10))
     syms = [s for s in members if s in g.index]
-    if not syms: return {}
-    sub = g.loc[syms]
+    if not syms and kind not in ("str", "season", "ltr"): return {}
+    sub = g.loc[syms] if syms else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     if kind == "sue":
         sc = sub["sue"].where(sub["sue_days"].fillna(999) <= 90)
@@ -63,6 +104,8 @@ def sleeve_x(d, members, cfg, features=None):
             v = sub[c] if cond is None else sub[c].where(cond)
             parts.append(v.rank(pct=True))
         sc = pd.concat(parts, axis=1).mean(axis=1, skipna=False) - 0.5
+    elif kind in ("str", "season", "ltr"):
+        sc = _price_kind(d, members, kind, cfg, features, uni)
     else:
         sc = sub[kind]
     sc = sc.dropna(); sc = sc[sc > 0]
@@ -122,7 +165,7 @@ def _engine():
         ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)))\n"),
         # EXP-060: analyst sleeve "x" at cfg x_w, other bull sleeves scaled by (1 - x_w)
         ("                last = {\"m\": m1, \"l\": m5, \"s\": m3}\n",
-         "                mx = sleeve_x(d, mem, cfg, self.bt.features_by_date.get(d, {})) if cfg.get('x_w') else {}\n                last = {\"m\": m1, \"l\": m5, \"s\": m3}\n"),
+         "                mx = sleeve_x(d, mem, cfg, self.bt.features_by_date.get(d, {}), self.uni) if cfg.get('x_w') else {}\n                last = {\"m\": m1, \"l\": m5, \"s\": m3}\n"),
         ("                     else {\"mom\": cfg.get(\"mom_w\", .5), \"val\": cfg.get(\"val_w\", .35),\n                           \"s5\": cfg.get(\"lv_w\", .15), \"s3\": 0.0})\n",
          "                     else {\"mom\": cfg.get(\"mom_w\", .5) * (1 - cfg.get('x_w', 0.0)), \"val\": cfg.get(\"val_w\", .35) * (1 - cfg.get('x_w', 0.0)),\n                           \"s5\": cfg.get(\"lv_w\", .15) * (1 - cfg.get('x_w', 0.0)), \"s3\": 0.0, \"x\": cfg.get('x_w', 0.0)})\n"),
         ("                w = {k: w[k] * bl + bw.get(k, 0) * (1 - bl) for k in w}\n",
