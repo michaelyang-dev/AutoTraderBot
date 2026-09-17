@@ -46,7 +46,20 @@ ARMS = {
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
 _IBES = pd.read_parquet("research/_exp060/ibes_pit.parquet")
 _IBES_DATES = np.array(sorted(_IBES["asof"].unique()))
-_IBES_BY = {d: g.set_index("ticker") for d, g in _IBES.groupby("asof")}
+_IBES_BY = {d: g.set_index("cusip8") for d, g in _IBES.groupby("asof")}
+# PERMNO -> [(start, end, cusip8)] from CRSP security-info eras (the universe's members are PERMNO strings)
+_ci = pd.read_parquet("data/wrds/crsp_security_info.parquet", columns=["PERMNO", "CUSIP", "SecInfoStartDt", "SecInfoEndDt"])
+_ci["c8"] = _ci.CUSIP.astype(str).str[:8]; _ci = _ci[_ci.c8.str.len() == 8]
+_ci["s"] = pd.to_datetime(_ci.SecInfoStartDt).values.astype("datetime64[D]"); _ci["e"] = pd.to_datetime(_ci.SecInfoEndDt).values.astype("datetime64[D]")
+_P2C = {}
+for r in _ci.itertuples(index=False):
+    _P2C.setdefault(str(int(r.PERMNO)), []).append((r.s, r.e, r.c8))
+def _cusip_at(permno, d64):
+    eras = _P2C.get(str(permno))
+    if not eras: return None
+    for s_, e_, c_ in eras:
+        if s_ <= d64 <= e_: return c_
+    return eras[-1][2] if d64 > eras[-1][1] else None
 _PX_CACHE = {}
 def _price_kind(d, members, kind, cfg, features, uni):
     """Price-based second-engine candidates (all from the universe's own price panel, PIT by construction):
@@ -88,14 +101,26 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     upgrades), combo (mean rank of sue, rev3m, updown). Needs >= 3 estimates. Positive score only."""
     d64 = np.datetime64(pd.Timestamp(d))
     j = np.searchsorted(_IBES_DATES, d64, side="right") - 1
+    if os.getenv("X_DEBUG") and sleeve_x._n < 6:
+        sleeve_x._n += 1
+        g0 = _IBES_BY[_IBES_DATES[j]] if j >= 0 else None
+        ms = list(members)[:6]
+        mt = sum(1 for s_ in members if g0 is not None and (_cusip_at(s_, d64.astype("datetime64[D]")) in g0.index)) if g0 is not None else 0
+        print(f"[x_debug] d={pd.Timestamp(d).date()} kind={cfg.get('x_kind')} x_w={cfg.get('x_w')} members={len(members)} sample={ms} "
+              f"asof={_IBES_DATES[j] if j>=0 else None} matched={mt}", flush=True)
     if j < 0: return {}
     asof = _IBES_DATES[j]
     if (d64 - asof) / np.timedelta64(1, "D") > 45: return {}
     g = _IBES_BY[asof]; kind = cfg.get("x_kind", "combo"); n = int(cfg.get("x_n", 10))
-    syms = [s for s in members if s in g.index]
-    if not syms and kind not in ("str", "season", "ltr"): return {}
-    sub = g.loc[syms] if syms else g.iloc[0:0]
+    dD = d64.astype("datetime64[D]")
+    c2p = {}
+    for s_ in members:
+        c_ = _cusip_at(s_, dD)
+        if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
+    if not c2p and kind not in ("str", "season", "ltr"): return {}
+    sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
+    sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
     if kind == "sue":
         sc = sub["sue"].where(sub["sue_days"].fillna(999) <= 90)
     elif kind == "combo":
@@ -112,8 +137,12 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     if cfg.get("x_trend") and features is not None:
         sc = sc[[features.get(s, {}).get("dist_sma200", -1) > -0.15 for s in sc.index]]
     top = sc.sort_values(ascending=False).head(n)
+    if os.getenv("X_DEBUG") and sleeve_x._n <= 6:
+        print(f"[x_debug]   scored={len(sc)} picks={list(top.index)[:6]}", flush=True)
     if len(top) == 0: return {}
     return {s: 1.0 / len(top) for s in top.index}
+
+sleeve_x._n = 0
 
 def _engine():
     src = inspect.getsource(CleanRoom.run)
