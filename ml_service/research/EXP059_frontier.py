@@ -133,6 +133,13 @@ ARMS = {
     "s80_15_5":                dict(BASE, mom_w=0.80, val_w=0.15, lv_w=0.05),
     "OM_s80_15_5_cost2":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, cost_mult=2.0),
     "OM_cost2":                dict(BASE, overlay_down=True, mom_equal=True, cost_mult=2.0),
+    # batch 11: CAPITAL SCALE — whole-share truncation at the live account size (4 books of ~$15k) vs a large book
+    "base_60k":                dict(BASE, initial_capital=60_000.0),
+    "OM_60k":                  dict(BASE, overlay_down=True, mom_equal=True, initial_capital=60_000.0),
+    "OM_s80_15_5_60k":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, initial_capital=60_000.0),
+    "base_1M":                 dict(BASE, initial_capital=1_000_000.0),
+    "OM_1M":                   dict(BASE, overlay_down=True, mom_equal=True, initial_capital=1_000_000.0),
+    "OM_s80_15_5_1M":          dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, initial_capital=1_000_000.0),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)

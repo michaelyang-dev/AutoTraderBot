@@ -3415,6 +3415,44 @@ gain keeps growing toward pure momentum (90/7/3, 100/0/0 — if it does, the val
 drag and the finding is "less diversification", which is a different and riskier claim), isolates the split
 from the overlay and from equal weight, and adds the 2x-cost arm.
 
+### Batch 10 (stage 2, 24 starts) — momentum-share sweep; the split isolated; cost 2x. PRELIMINARY, UNAUDITED (2026-09-17 05:30).
+
+| arm vs base | 8yr dCAGR / dSharpe (+) · yrs · sub 2023-26 | 26yr dCAGR / dSharpe (+) · yrs · sub 2023-26 | pairwise gate |
+|---|---|---|---|
+| OM_s80_15_5 vs OM | +1.04pp / +0.014 (23/24) · 7/8 · -0.006 | +0.47pp / +0.014 (24/24) · 17/25 · -0.011 | PASS / PASS |
+| OM_s90_7_3 vs OM | +1.26pp / +0.016 (20/24) · 5/8 · **-0.042** | +0.66pp / +0.028 (24/24) · 15/25 · **-0.046** | FAIL / FAIL (recent sub-period) |
+| OM_s100 (pure momentum) vs OM | +0.58pp / -0.001 (10/24) · 4/8 · **-0.101** | +0.17pp / +0.023 (24/24) · 9/25 · **-0.107** | FAIL / FAIL |
+| s80_15_5 vs base (split alone) | +0.63pp / +0.008 (18/24) · 5/8 | +0.31pp / +0.011 (24/24) · 12/25 | FAIL / FAIL (weak) |
+| M_s80_15_5 vs mom_equal (split + equal, no overlay) | +0.57pp / +0.006 (18/24) | +0.28pp / +0.010 (24/24) · 12/25 | FAIL / FAIL |
+| OM_s80_15_5_cost2 vs OM_cost2 | +1.11pp / +0.017 (24/24) · 7/8 | +0.54pp / +0.017 (24/24) · 17/25 | PASS / PASS — intact at 2x cost |
+
+Read: (1) the momentum share is NOT monotonic — the sleeve gain plateaus at 80-90 and pure momentum gives it
+back; the value/lowvol sleeves earn their place. (2) Every step beyond 80 fails on the SAME check: the 2023-26
+sub-period goes negative and gets worse the heavier the tilt (-0.006 -> -0.042 -> -0.101 on the 8yr, the 26yr
+identical). The momentum tilt is fading in the most recent regime; 80/15/5 is the last point the evidence
+supports, and even it is slightly negative there. (3) The split needs the overlay: alone (or with equal weight
+only) it is +0.008-0.011 on 12/25 years and fails; under the de-risk overlay it is +0.014 on 17/25. Mechanism:
+the overlay handles the drawdown control the value/lowvol sleeves used to provide, so the book can carry more
+momentum — a re-allocation of the same risk budget, not new alpha.
+
+### THE PACKAGE (2026-09-17): overlay_down + mom_equal + sleeves 80/15/5, vs the DEPLOYED book (24 starts)
+
+| horizon | levels base -> package | dCAGR | dSharpe (+) · bootstrap 90% CI | dMaxDD | yrs · top-yr | ex-crisis dSharpe | GATE059 |
+|---|---|---|---|---|---|---|---|
+| 26yr | +18.16%/0.719/-46.6% -> +19.71%/0.779/-41.2% | +1.55pp | +0.060 (24/24) · [+0.019, +0.110], P 99% | +5.4pp (21/24) | 17/25 · 23% | +0.035 (24/24) | **PASS** (every check) |
+| 8yr | +32.42%/1.026/-36.7% -> +35.54%/1.122/-31.4% | +3.12pp | +0.096 (24/24) · [-0.006, +0.264], P 93% | +5.3pp (24/24) | 5/8 · 67% (2020) | +0.031 (23/24) | FAIL on year-concentration only |
+| 26yr at 2x cost | +16.27%/0.664/-47.8% -> +17.80%/0.722/-42.6% | +1.53pp | +0.058 (24/24) · [+0.018, +0.108] | +5.2pp | 16/25 · 23% | +0.034 (24/24) | PASS |
+
+Honest framing for the owner: the 26yr number (+1.5pp CAGR, +0.06 Sharpe, +5pp MaxDD, 17/25 years, CI
+excluding zero, intact at 2x cost, positive ex-crisis) is the expectation to quote. The 8yr +3.1pp is 2020-heavy
+(67%) and is NOT an expected-return figure. Each component is small and honest: equal weight = rank-noise
+shrinkage (+0.01), overlay = cheap crisis insurance (+0.035, costs ~0.3-0.7pp/yr in calm years), split =
+re-allocating the risk budget the overlay frees (+0.014, fading in 2023-26). Not deployed — owner's call.
+Live changes if chosen: (a) equal weights in strategy1's output, (b) PROD_WEIGHTS_BULL 0.80/0.15/0.05 with the
+signal server's 15% cap, (c) a tranche-day de-risk trim of the non-rebuilding books in ibkr_engine (never up).
+Caveat under test (batch 11): at $60k the value/lowvol names at 1.5%/0.5% of a $15k book are $225/$75 — whole
+shares truncate most of them to 0; the backtest starts at $50k and compounds, so it only sees this early.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8

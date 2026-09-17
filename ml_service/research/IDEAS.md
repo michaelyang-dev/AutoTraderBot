@@ -397,6 +397,10 @@ the rebuilding book only. This applies it to every book weekly (small proportion
 ### I-36 · No-trade band for resizes (1-2% of book instead of 0.3%) · **DEAD (EXP-059: ~0 at 1x cost)** · EV: LOW-MED (cost)
 Pure cost lever: fewer one-share trims. Must be evaluated at cost 2x, where it matters.
 
+### I-44 · Sleeve split 80/15/5 under the overlay + equal-weight pair · **PASSES pairwise gate both horizons (+0.014, 17/25 yrs, cost-2x intact) but fading in 2023-26 (-0.01); 90/7/3 and pure momentum FAIL on the recent sub-period (-0.04 / -0.10). Needs the overlay to work (alone +0.008-0.011, fails). 80 is the limit.** · EV: LOW-MED
+### I-45 · Momentum inverse-vol weights · **DEAD (batch 9: -0.008/-0.004, under-weights the high-vol winners)**
+### I-46 · THE PACKAGE = I-35 overlay_down + I-38 mom_equal + I-44 split · **26yr +1.55pp / +0.060 (24/24, CI > 0) / +5.4pp MaxDD, 17/25 yrs, ex-crisis +0.035, cost-2x intact — GATE PASS; 8yr fails only on 2020 concentration. Capital-scale (whole-share) check running (batch 11). NOT deployed.**
+
 ### I-37 · Slow value/lowvol refresh (every 2nd rebuild) · **DEAD (EXP-059: +0.05 on the 8yr, ~0 on the 26yr — horizon-specific)** · EV: LOW-MED (cost)
 Value and quality signals are slow; refreshing them every 40 sessions per book halves their turnover.
 
