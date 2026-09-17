@@ -3473,6 +3473,24 @@ Practical note for the live book: at 80/15/5 the value/lowvol names are 1.5% / 0
 and most round to 0-1 shares — the sleeves' diversification is partly nominal at this account size regardless of
 the split (batch 12 tests fewer, larger value names for exactly this reason).
 
+### Batch 12 (stage 2, 24 starts) — value / lowvol name counts and a 2% minimum weight under the package. PRELIMINARY, UNAUDITED (2026-09-17 09:05).
+
+| arm vs package | 8yr dCAGR / dSharpe (+) / dMaxDD · yrs | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs | read |
+|---|---|---|---|
+| value top 5 | +0.85pp / +0.015 (19/24) / **-2.0pp (0/24)** · 6/8 | -0.37pp / -0.015 (0/24) / -2.1pp · 14/25 | FAIL both (8yr Sharpe gain bought with drawdown; 26yr negative) |
+| value top 7 | +0.59pp / +0.012 (18/24) / -0.3pp | -0.09pp / -0.004 (1/24) / -0.9pp · 10/25 | dead |
+| value top 15 | -1.22pp / -0.028 (0/24) | -0.60pp / -0.017 (0/24) | dead |
+| lowvol top 5 | -0.45pp / -0.018 (7/24) | -0.23pp / -0.012 (6/24) · 8/25 | dead |
+| value 5 + lowvol 5 | +0.40pp / -0.003 | -0.51pp / -0.024 (0/24) / -2.8pp | dead |
+| min weight 2% | -0.28pp / -0.005 (7/24) / +0.5pp | -0.49pp / +0.007 (21/24) / +1.0pp · 10/25 | inert-to-negative; not worth the live simplification |
+
+Read: 10 value + 10 lowvol names stand; the diversifying sleeves want breadth, not concentration (fewer names =
+more drawdown on every start). The live truncation of 1.5%/0.5% names to 0-1 shares is therefore a cost the small
+account pays, not something to engineer away by concentrating the sleeves. Frontier search of the package's
+internals is complete: cadence, exits, overlay form/threshold/lookback, gate depth, sleeve split, momentum
+count/weighting, value/lowvol counts, stop, vol floor/target, cap, cost, capital scale — all measured. Batch 13
+(running): the package at 1.25x and 1.65x, so the owner's decision can be made on the leverage line.
+
 Verdict so far (honest): NOTHING passes the gate on both horizons. The de-risk-only prompt overlay is the one
 candidate with a consistent, cost-robust profile — 24/24 starts better Sharpe on the 26yr, 21-24/24 better
 MaxDD on both, intact at 2x cost, gate 26yr PASS — but on the 8yr it fails the year-consistency (better in 3/8

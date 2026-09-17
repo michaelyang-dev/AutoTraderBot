@@ -143,6 +143,17 @@ ARMS = {
     # batch 11b: stress bound — a quarter of the live size (books of $3.75k), to bracket steady-state truncation
     "base_15k":                dict(BASE, initial_capital=15_000.0),
     "OM_s80_15_5_15k":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, initial_capital=15_000.0),
+    # batch 12: fewer/larger value & lowvol names under the package (live truncation: 1.5%/0.5% names round to 0-1 shares)
+    "P_val5":                  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, val_n=5),
+    "P_val7":                  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, val_n=7),
+    "P_val15":                 dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, val_n=15),
+    "P_lv5":                   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, lv_n=5),
+    "P_val5_lv5":              dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, val_n=5, lv_n=5),
+    "P_minw2":                 dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, min_weight=0.02),
+    # batch 13: the package on the leverage line (owner's risk choice)
+    "P_L1.25":                 dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, leverage=1.25),
+    "P_L1.65":                 dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, leverage=1.65),
+    "base_L1.25":              dict(BASE, leverage=1.25),
 }
 def _engine():
     src = inspect.getsource(CleanRoom.run)
@@ -189,6 +200,9 @@ def _engine():
         ("                    comb = {s: min(v, 0.10) for s, v in comb.items()}\n", "                    comb = {s: min(v, float(cfg.get('cap', 0.10))) for s, v in comb.items()}\n"),
         # batch 8: vol-clamp floor and vol target as switches (weekly path only; the daily-overlay block keeps the constants)
         ("                        vs = min(1.0, max(0.30, VOL_TARGET / rv))\n", "                        vs = min(1.0, max(float(cfg.get('vs_floor', 0.30)), float(cfg.get('vol_target', VOL_TARGET)) / rv))\n"),
+        # batch 12: value / lowvol name counts as switches
+        ("                mv = strategy_value(self.uni, d, mem, top_n=10)\n", "                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)))\n"),
+        ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)))\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
     V.END = E.END; ns = dict(V.__dict__); assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
