@@ -34,11 +34,11 @@ if not os.path.exists(f"{OUT}/onm_pit.parquet"):
     # PERMNO -> cusip8 as of asof
     m = m.sort_values("asof"); ci2 = ci.sort_values("s")[["PERMNO", "s", "e", "c8"]]
     mm = pd.merge_asof(m, ci2.rename(columns={"s": "asof"}), on="asof", by="PERMNO", direction="backward")
-    mm = mm[mm.asof <= mm.e]
+    mm = mm[mm["asof"] <= mm.e]
     out = mm[["asof", "c8", "PERMNO", "on252", "in252", "on21"]].rename(columns={"c8": "cusip8"})
     out["onm"] = out.on252 - out.in252            # overnight minus intraday component
     out.to_parquet(f"{OUT}/onm_pit.parquet", index=False)
-    print(f"onm written {len(out):,} rows {out.asof.min().date()}..{out.asof.max().date()} ({time.time()-t0:.0f}s)", flush=True)
+    print(f"onm written {len(out):,} rows {out['asof'].min().date()}..{out['asof'].max().date()} ({time.time()-t0:.0f}s)", flush=True)
     del d, m, mm, out
 # ---------- 13F breadth ----------
 if not os.path.exists(f"{OUT}/inst_pit.parquet"):
@@ -58,5 +58,5 @@ if not os.path.exists(f"{OUT}/inst_pit.parquet"):
     out = q[["asof", "cusip8", "nmgr", "shr", "d_nmgr", "d_shr"]].dropna(subset=["d_nmgr"])
     out["d_nmgr"] = out.d_nmgr.clip(-1, 1); out["d_shr"] = out.d_shr.clip(-1, 1)
     out.to_parquet(f"{OUT}/inst_pit.parquet", index=False)
-    print(f"inst written {len(out):,} rows, cusips {out.cusip8.nunique():,} {out.asof.min().date()}..{out.asof.max().date()} ({time.time()-t0:.0f}s)", flush=True)
+    print(f"inst written {len(out):,} rows, cusips {out.cusip8.nunique():,} {out['asof'].min().date()}..{out['asof'].max().date()} ({time.time()-t0:.0f}s)", flush=True)
 print("done", flush=True)
