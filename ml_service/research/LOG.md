@@ -3543,6 +3543,31 @@ Honesty note: earnings surprise / revisions are PUBLISHED anomalies (PEAD, Chan-
 directive preferred first-principles ideas, but the 09-17 ask is explicitly for another fundamental strategy, so they are
 tested as such and reported with that label.
 
+
+### EXP-060 batch 1 — ANALYST SLEEVE (IBES, PIT): DEAD on the 8yr; 26yr not run. (2026-09-18, 24 starts, PRELIMINARY)
+
+Sleeve = top-10 equal-weight among members with >= 3 estimates by one signal, positive score only. Package 8yr = +35.54% / 1.122 / -31.4%.
+
+| signal | ALONE (100% of book, same stops/overlay/gate/tranches) | corr with package | years > deployed base | as 15% sleeve in the package: dCAGR / dSharpe (+) · years better |
+|---|---|---|---|---|
+| earnings surprise (SUE, <= 90d) | +9.5% / 0.466 / -45% | 0.72 | 1/8 | -0.74pp / -0.010 (5/24) · 2/8 |
+| FY1 estimate revision (3m) | +14.7% / 0.609 / -55% | 0.74 | 1/8 | -0.29pp / -0.007 (7/24) · 2/8 |
+| up-minus-down estimates | +8.2% / 0.423 / -51% | 0.76 | 0/8 | -1.91pp / -0.040 (0/24) · 2/8 |
+| recommendation upgrades | +13.1% / 0.582 / -44% | 0.72 | 1/8 | -0.59pp / -0.008 (5/24) · 5/8 |
+| rank combo (sue + rev + updown) | +14.2% / 0.604 / -51% | 0.73 | 2/8 | -0.30pp / -0.003 (9/24) · 3/8 |
+
+Read: none of the analyst signals is a second engine. Alone they earn 8-15%/yr at Sharpe 0.4-0.6 in the same
+chassis where the package earns 35% at 1.12; they are 0.72-0.76 correlated with the package's daily returns (so
+not a diversifier either); and inside the package every one of them lowers Sharpe and CAGR. The recommendation
+signal's 5/8 years is the only non-negative year count and it comes with -0.6pp CAGR. Killed on the 8yr without
+running the 26yr (a sleeve this far below the package on one horizon cannot be rescued by the other; the
+horizon rule guards promotions, not kills). Consistent with the 2018-2026 literature: PEAD and revision drift
+in large/mid caps are largely arbitraged. Data and harness stay (E-060a bridge is reusable for any IBES idea).
+
+Infrastructure note (E-059b confirmed): starts on this batch took 40s..16,000s at 99% CPU with the 26yr universe
+resident (RSS 35 GB, macOS compressor 1.2B compressions, 8 GB compressed); the stalls are memory-compressor
+thrash, not the code. Batch 2 (price-based engines) runs the 8yr first and the 26yr only for anything alive.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
