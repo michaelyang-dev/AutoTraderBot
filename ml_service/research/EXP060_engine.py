@@ -48,6 +48,11 @@ ARMS = {
     "x_instshr100":    dict(BASE, x_w=1.0, x_kind="inst_shr"),
     "P_x_onm15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="onm"),
     "P_x_inst15":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="inst"),
+    # batch 3b: a different ASSET as the sleeve (gold trend / always; sector-ETF trend) — 10% and 20% of the book
+    "P_x_gldtrend10":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="gld_trend"),
+    "P_x_gldtrend20":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="gld_trend"),
+    "P_x_gldalways10": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="gld_always"),
+    "P_x_secttrend15": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="sect_trend"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -148,7 +153,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -162,6 +167,25 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         sc = pd.concat(parts, axis=1).mean(axis=1, skipna=False) - 0.5
     elif kind in ("str", "season", "ltr"):
         sc = _price_kind(d, members, kind, cfg, features, uni)
+    elif kind in ("gld_trend", "gld_always", "sect_trend"):
+        # a DIFFERENT ASSET as the sleeve: gold (GLD, from 2004-11) held when above its 200-session SMA (else the sleeve
+        # sits in cash), or always; sect_trend = the 3 sector ETFs with the highest 6m return that are above SMA200
+        px = uni.prices if uni is not None else None
+        if px is None: return {}
+        hist = px.loc[:pd.Timestamp(d)]
+        if kind.startswith("gld"):
+            if "GLD" not in hist.columns: return {}
+            g_ = hist["GLD"].dropna()
+            if len(g_) < 200: return {}
+            if kind == "gld_always" or g_.iloc[-1] > g_.tail(200).mean(): return {"GLD": 1.0}
+            return {}
+        sects = [e for e in ("XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU", "XLRE", "XLC") if e in hist.columns]
+        sc_ = {}
+        for e in sects:
+            h_ = hist[e].dropna()
+            if len(h_) >= 200 and h_.iloc[-1] > h_.tail(200).mean() and len(h_) > 126: sc_[e] = float(h_.iloc[-1] / h_.iloc[-126] - 1)
+        top_ = sorted(sc_, key=sc_.get, reverse=True)[:3]
+        return {e: 1.0 / len(top_) for e in top_} if top_ else {}
     elif kind == "onm":       # overnight-minus-intraday 12m momentum (monthly table, <= 45d old)
         sc = _pit_scores("onm", "onm", d64, members, 45)
     elif kind == "onm_raw":   # overnight 12m sum alone
@@ -172,6 +196,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         sc = _pit_scores("inst", "d_shr", d64, members, 120)
     else:
         sc = sub[kind]
+    if isinstance(sc, dict): return sc
     sc = sc.dropna(); sc = sc[sc > 0]
     if cfg.get("x_trend") and features is not None:
         sc = sc[[features.get(s, {}).get("dist_sma200", -1) > -0.15 for s in sc.index]]
