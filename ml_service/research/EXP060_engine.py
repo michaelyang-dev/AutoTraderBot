@@ -62,6 +62,10 @@ ARMS = {
     "P_x_ltr15_trend": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr", x_trend=True),
     "P_x_ltr15_cost2": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr", cost_mult=2.0),
     "P_cost2":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, cost_mult=2.0),
+    # batch 5: gold sleeve refinements + combination with the reversal sleeve (kind "ltr+gld" = two sleeves)
+    "P_x_gldalways15": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="gld_always"),
+    "P_x_gldalways10_cost2": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="gld_always", cost_mult=2.0),
+    "P_x_ltr15_gld10": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.25, x_kind="ltr+gld"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -162,7 +166,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -176,6 +180,14 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         sc = pd.concat(parts, axis=1).mean(axis=1, skipna=False) - 0.5
     elif kind in ("str", "season", "ltr"):
         sc = _price_kind(d, members, kind, cfg, features, uni)
+    elif kind == "ltr+gld":
+        # two sleeves in one: 60% of x_w to long-term reversal (top-10 EW), 40% to gold always (x_w=0.25 -> 15% / 10%)
+        r_ = _price_kind(d, members, "ltr", cfg, features, uni).dropna(); r_ = r_[r_ > 0]
+        top_ = r_.sort_values(ascending=False).head(int(cfg.get("x_n", 10)))
+        out_ = {s_: 0.6 / len(top_) for s_ in top_.index} if len(top_) else {}
+        px = uni.prices if uni is not None else None
+        if px is not None and "GLD" in px.columns and px["GLD"].loc[:pd.Timestamp(d)].dropna().shape[0] >= 200: out_["GLD"] = 0.4
+        return out_
     elif kind in ("gld_trend", "gld_always", "sect_trend"):
         # a DIFFERENT ASSET as the sleeve: gold (GLD, from 2004-11) held when above its 200-session SMA (else the sleeve
         # sits in cash), or always; sect_trend = the 3 sector ETFs with the highest 6m return that are above SMA200

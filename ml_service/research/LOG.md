@@ -3588,6 +3588,29 @@ value-like and crash-prone (alone MaxDD -37%), so the 2x-cost and n/weight/uptre
 this costs base and package alike, but it must be re-checked with this sleeve because its names are beaten-down,
 lower-priced stocks). 26yr + sweep queued behind batches 3/3b.
 
+
+### EXP-060 batches 3 / 3b — return decomposition, institutional breadth, and a DIFFERENT ASSET as the sleeve. 8yr, 24 starts, PRELIMINARY.
+
+| sleeve | ALONE (100%) | corr | yrs > base | as sleeve in the package: dCAGR / dSharpe (+) / dMaxDD · years better |
+|---|---|---|---|---|
+| overnight-minus-intraday 12m momentum (Lou-Polk-Skouras) | +1.8% / 0.225 / **-70%** | 0.55 | 2/8 | 15%: -4.27pp / -0.113 (0/24) / -4.5pp · 2/8 — dead |
+| overnight 12m sum alone | +21.9% / 0.759 / -51% | 0.72 | 3/8 | not run (close-to-close momentum in disguise) |
+| 13F breadth: q/q change in # holders (Chen-Hong-Stein) | +19.2% / 0.733 / -40% | 0.77 | 1/8 | 15%: +0.12pp / -0.000 (13/24) · 4/8 — a zero |
+| 13F change in aggregate shares | +18.9% / 0.748 / -38% | 0.71 | 1/8 | not run |
+| **gold (GLD) 10%, always** | — | — | — | **+0.40pp / +0.030 (24/24) / +0.7pp · 5/8** (2019 +1.9, 2020 +0.5, 2021 -3.9, 2022 +1.7, 2023 -0.6, 2024 +2.3, 2025 +4.4, 2026 -4.3) |
+| gold 10% / 20% above its SMA200 else cash | — | — | — | +0.12 / +0.13pp, +0.017 / +0.019 (24/24) · 5/8 |
+| sector-ETF trend (top-3 of 11 by 6m, above SMA200) 15% | — | — | — | -0.65pp / +0.003 (16/24) · 4/8 — dead |
+
+Read: (1) the two information-based candidates (overnight, 13F) are not second engines — the overnight signal is
+a levered intraday short in disguise and breadth is momentum with a 45-day lag. (2) The first thing that behaves
+like a genuine diversifier is not a stock signal at all: a 10% permanent gold sleeve raises Sharpe on every one of
+24 starts, is better in 5 of 8 years, and its year pattern is gold's own (2021 -3.9, 2026 -4.3 are gold's flat
+years). Timing gold with its SMA200 halves the benefit. CAUTIONS: 2019-2026 is a gold bull market (GLD roughly
++150%), the series starts 2004-11 so the 26yr test covers 21 years and the sleeve is empty before that, and the
+benefit is a diversification effect (corr of GLD to the book ~0), not stock-picking — honest framing is "a 10%
+strategic gold allocation inside the leverage budget", which is a portfolio-construction choice the owner may or
+may not want. 26yr queued (chain5) plus 15%, cost-2x, and the reversal + gold combination.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
