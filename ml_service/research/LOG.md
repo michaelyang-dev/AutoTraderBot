@@ -3568,6 +3568,26 @@ Infrastructure note (E-059b confirmed): starts on this batch took 40s..16,000s a
 resident (RSS 35 GB, macOS compressor 1.2B compressions, 8 GB compressed); the stalls are memory-compressor
 thrash, not the code. Batch 2 (price-based engines) runs the 8yr first and the 26yr only for anything alive.
 
+
+### EXP-060 batch 2 — PRICE-BASED second engines, 8yr (24 starts, PRELIMINARY). Package = +35.54% / 1.122 / -31.4%.
+
+| engine | ALONE (100%) | corr w/ package | yrs > deployed base | as 15% sleeve in the package: dCAGR / dSharpe (+) / dMaxDD · years better |
+|---|---|---|---|---|
+| short-term reversal (buy 20d losers above SMA200) | +8.8% / 0.434 / -53% | 0.78 | 3/8 | -1.74pp / -0.043 (0/24) / -1.1pp · 3/8 — dead |
+| calendar seasonality (same-month 10y mean) | +10.1% / 0.471 / -40% | 0.71 | 1/8 | -1.78pp / -0.041 (0/24) / +0.1pp · 3/8 — dead |
+| **long-term reversal (months 13-60 losers)** | **+25.3% / 0.807 / -37%** | **0.68** | 2/8 | **+1.28pp / +0.019 (23/24) / +0.0pp · 6/8** (2019 +0.7, 2020 +0.3, 2021 +7.2, 2022 +0.9, 2023 -1.4, 2024 +6.7, 2025 +1.7, 2026 -5.2) |
+
+Read: the two fast mean-reversion engines are dead in this chassis (they need daily rebalancing and pay the
+tranche cadence's 5-20 session lag). Long-term reversal is different in kind: it is the LOWEST-correlated
+sleeve found so far (0.68 vs 0.72-0.78 for everything else) and it is the first candidate that meets the owner's
+09-17 criterion on the 8yr — better in 6 of 8 years with no dominant year (largest share 2021 +7.2 of +17.5pp
+positive). CAUTIONS before anything more is said: (1) 8yr only; the 26yr (2001-2026, which contains the 2000-02
+and 2008-09 value/reversal regimes AND the 2010s when reversal was flat) is queued; (2) reversal sleeves are
+value-like and crash-prone (alone MaxDD -37%), so the 2x-cost and n/weight/uptrend sweep (batch 4) must hold;
+(3) 15% at top-10 equal weight means 1.5% names = whole-share truncation at $60k (batch 11 of EXP-059 showed
+this costs base and package alike, but it must be re-checked with this sleeve because its names are beaten-down,
+lower-priced stocks). 26yr + sweep queued behind batches 3/3b.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
