@@ -41,6 +41,13 @@ ARMS = {
     "P_x_str15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="str"),
     "P_x_season15":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="season"),
     "P_x_ltr15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr"),
+    # batch 3: return decomposition (overnight momentum) and institutional breadth (13F)
+    "x_onm100":        dict(BASE, x_w=1.0, x_kind="onm"),
+    "x_onmraw100":     dict(BASE, x_w=1.0, x_kind="onm_raw"),
+    "x_inst100":       dict(BASE, x_w=1.0, x_kind="inst"),
+    "x_instshr100":    dict(BASE, x_w=1.0, x_kind="inst_shr"),
+    "P_x_onm15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="onm"),
+    "P_x_inst15":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="inst"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -52,6 +59,30 @@ _ci = pd.read_parquet("data/wrds/crsp_security_info.parquet", columns=["PERMNO",
 _ci["c8"] = _ci.CUSIP.astype(str).str[:8]; _ci = _ci[_ci.c8.str.len() == 8]
 _ci["s"] = pd.to_datetime(_ci.SecInfoStartDt).values.astype("datetime64[D]"); _ci["e"] = pd.to_datetime(_ci.SecInfoEndDt).values.astype("datetime64[D]")
 _P2C = {}
+# generic (asof, cusip8)-keyed PIT tables for other second-engine kinds; loaded lazily
+_PIT = {}
+def _pit(name):
+    if name not in _PIT:
+        f = f"research/_exp060/{name}_pit.parquet"
+        if not os.path.exists(f): _PIT[name] = None
+        else:
+            t = pd.read_parquet(f); t["asof"] = pd.to_datetime(t["asof"])
+            _PIT[name] = (np.array(sorted(t["asof"].unique())), {d: g.set_index("cusip8") for d, g in t.groupby("asof")})
+    return _PIT[name]
+def _pit_scores(name, col, d64, members, max_age_days):
+    """Latest table row on/before d (<= max_age_days old), mapped PERMNO -> cusip8 -> row[col]; returns Series keyed by PERMNO."""
+    tab = _pit(name)
+    if tab is None: return pd.Series(dtype=float)
+    dates, by = tab
+    j = np.searchsorted(dates, d64, side="right") - 1
+    if j < 0 or (d64 - dates[j]) / np.timedelta64(1, "D") > max_age_days: return pd.Series(dtype=float)
+    g = by[dates[j]]; dD = d64.astype("datetime64[D]"); out = {}
+    for s_ in members:
+        c_ = _cusip_at(s_, dD)
+        if c_ is not None and c_ in g.index:
+            v = g.at[c_, col] if not isinstance(g.at[c_, col], pd.Series) else g.at[c_, col].iloc[-1]
+            if v == v: out[s_] = float(v)
+    return pd.Series(out, dtype=float)
 for r in _ci.itertuples(index=False):
     _P2C.setdefault(str(int(r.PERMNO)), []).append((r.s, r.e, r.c8))
 def _cusip_at(permno, d64):
@@ -110,14 +141,14 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
               f"asof={_IBES_DATES[j] if j>=0 else None} matched={mt}", flush=True)
     if j < 0: return {}
     asof = _IBES_DATES[j]
-    if (d64 - asof) / np.timedelta64(1, "D") > 45: return {}
+    if (d64 - asof) / np.timedelta64(1, "D") > 45 and cfg.get("x_kind", "combo") in ("sue", "rev3m", "rev1m", "updown", "rec1m", "combo"): return {}
     g = _IBES_BY[asof]; kind = cfg.get("x_kind", "combo"); n = int(cfg.get("x_n", 10))
     dD = d64.astype("datetime64[D]")
     c2p = {}
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -131,6 +162,14 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         sc = pd.concat(parts, axis=1).mean(axis=1, skipna=False) - 0.5
     elif kind in ("str", "season", "ltr"):
         sc = _price_kind(d, members, kind, cfg, features, uni)
+    elif kind == "onm":       # overnight-minus-intraday 12m momentum (monthly table, <= 45d old)
+        sc = _pit_scores("onm", "onm", d64, members, 45)
+    elif kind == "onm_raw":   # overnight 12m sum alone
+        sc = _pit_scores("onm", "on252", d64, members, 45)
+    elif kind == "inst":      # 13F breadth: q/q change in number of holders (asof = quarter end + 45d, <= 120d old)
+        sc = _pit_scores("inst", "d_nmgr", d64, members, 120)
+    elif kind == "inst_shr":  # q/q change in aggregate institutional shares
+        sc = _pit_scores("inst", "d_shr", d64, members, 120)
     else:
         sc = sub[kind]
     sc = sc.dropna(); sc = sc[sc > 0]
