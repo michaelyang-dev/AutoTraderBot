@@ -30,7 +30,7 @@ if not os.path.exists(f"{OUT}/onm_pit.parquet"):
     d["in252"] = g["intra"].transform(lambda x: x.rolling(252, min_periods=200).sum())
     d["on21"] = g["on"].transform(lambda x: x.rolling(21, min_periods=15).sum())
     m = d.groupby(["PERMNO", d.DlyCalDt.dt.to_period("M")]).tail(1)                 # month-end rows
-    m = m.dropna(subset=["on252"]); m["asof"] = m.DlyCalDt
+    m = m.dropna(subset=["on252"]); m["asof"] = m.DlyCalDt + pd.offsets.MonthEnd(0)   # one table date per month (E-060b)
     # PERMNO -> cusip8 as of asof
     m = m.sort_values("asof"); ci2 = ci.sort_values("s")[["PERMNO", "s", "e", "c8"]]
     mm = pd.merge_asof(m, ci2.rename(columns={"s": "asof"}), on="asof", by="PERMNO", direction="backward")
