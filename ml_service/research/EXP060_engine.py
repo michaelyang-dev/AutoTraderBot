@@ -312,6 +312,10 @@ def _engine():
 def st(v): return E.st(v)
 def main():
     t0 = time.time(); _engine(); cr = None
+    # E-060d: after the universe + PIT tables are resident, freeze them out of the cyclic GC and make full
+    # collections rare — otherwise every gen-2 pass re-walks millions of long-lived containers and long runs
+    # crawl to 30x slower after ~90 minutes (observed 2026-09-18 on three batches).
+    import gc; gc.collect(); gc.freeze(); gc.set_threshold(100_000, 50, 1_000)
     names = [a for a in ARMS if (not ONLY or a in ONLY)]
     for nm in names:
         f = f"{CACHE}/{STAGE}_{nm}.parquet"
@@ -320,6 +324,7 @@ def main():
             pd.read_parquet(f"{E.CACHE}/FINAL_1.49.parquet").to_parquet(f); continue
         if cr is None:
             cr = CleanRoom(FastBacktester(universe_path=E.PATH))
+            import gc; gc.collect(); gc.freeze()
             try:
                 vx = pd.read_parquet("data/enhanced_data/vix_cache.parquet"); vx.index = pd.to_datetime(vx.index); cr._vix = vx[["^VIX", "^VIX3M"]].dropna().sort_index()
             except Exception as e:
