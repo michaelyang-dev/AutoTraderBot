@@ -3632,6 +3632,21 @@ catalyst", the classic momentum-of-value fix for the falling-knife problem, and 
 combination that can be fitted on 8 years, so it is treated as UNPROVEN until the 26yr (chain 7). Order of 26yr
 runs: ltr alone + 15% (running), gold, ltr 20/25, ltr-trend.
 
+
+### EXP-060 — long-term reversal sleeve on the 26yr: DEAD. (2026-09-18 19:52, 24 starts)
+
+| | 8yr | 26yr |
+|---|---|---|
+| LTR alone (100%) | +25.3% / 0.807 / -37%, corr 0.68, 2/8 yrs > base | **+6.9% / 0.369 / -80%**, corr 0.70, 10/25 yrs > base |
+| package + 15% LTR vs package | +1.28pp / +0.019 (23/24) · 6/8 yrs · ex-crisis +0.022 | **-1.06pp / -0.041 (0/24) / -4.0pp MaxDD · 11/25 yrs** · sub-periods 2001-08 -0.045, 2009-16 -0.027, 2017-22 -0.075, 2023-26 +0.010 |
+
+26yr per-year delta: the sleeve adds in 2006, 2010, 2012-13, 2016, 2018, 2021, 2024 and costs 5-13pp in 2005, 2007,
+2011, 2014-15, 2017, 2019 — the classic value/reversal cycle, net negative over 26 years and negative in three of
+four sub-periods. The 8yr result was the 2021 and 2024 value rallies. Verdict: the plain 13-60-month reversal
+sleeve is a regime bet, not a second engine; it fails the owner's most-years criterion on the long horizon and the
+pairwise gate on both. The 20%/25% 26yr runs are cancelled (monotonically worse). Still open: the uptrend-FILTERED
+reversal (batch 7 + its 26yr), which is a different rule (losers that have already turned), and gold (chain 5).
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
