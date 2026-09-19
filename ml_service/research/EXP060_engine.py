@@ -66,6 +66,12 @@ ARMS = {
     "P_x_gldalways15": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="gld_always"),
     "P_x_gldalways10_cost2": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="gld_always", cost_mult=2.0),
     "P_x_ltr15_gld10": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.25, x_kind="ltr+gld"),
+    # batch 7: the uptrend-filtered reversal sleeve — n15, 20/25%, cost 2x
+    "P_x_ltr15_n15_trend": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr", x_n=15, x_trend=True),
+    "P_x_ltr20_trend":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ltr", x_trend=True),
+    "P_x_ltr25_trend":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.25, x_kind="ltr", x_trend=True),
+    "P_x_ltr15_trend_cost2": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr", x_trend=True, cost_mult=2.0),
+    "x_ltrtrend100":    dict(BASE, x_w=1.0, x_kind="ltr", x_trend=True),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────

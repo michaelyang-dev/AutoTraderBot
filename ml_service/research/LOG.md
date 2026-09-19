@@ -3611,6 +3611,27 @@ benefit is a diversification effect (corr of GLD to the book ~0), not stock-pick
 strategic gold allocation inside the leverage budget", which is a portfolio-construction choice the owner may or
 may not want. 26yr queued (chain5) plus 15%, cost-2x, and the reversal + gold combination.
 
+
+### EXP-060 batch 4 — LONG-TERM REVERSAL sleeve sweep, 8yr (24 starts, PRELIMINARY). All vs the package.
+
+| variant | dCAGR | dSharpe (+) | dMaxDD | years better | note |
+|---|---|---|---|---|---|
+| 10% | +0.89pp | +0.015 (24/24) | 0.0 | 5/8 | |
+| 15% | +1.28pp | +0.019 (23/24) | 0.0 | 6/8 | |
+| 20% | +1.48pp | +0.028 (24/24) | 0.0 | 6/8 | 2026 cost -7.3pp |
+| 25% | +1.80pp | +0.034 (24/24) | +0.1 | 6/8 | 2026 cost -8.8pp |
+| 15%, top-5 | +0.77pp | +0.013 (21/24) | +0.1 | 4/8 | concentration hurts |
+| 15%, top-15 | +1.69pp | +0.025 (24/24) | 0.0 | 6/8 | breadth helps |
+| **15%, only names above SMA200** | **+2.61pp** | **+0.056 (24/24)** | 0.0 | **6/8** | the "recovering loser" filter |
+| 15% at 2x cost (vs package at 2x) | +1.13pp | +0.021 (24/24) | +0.1 | 6/8 | cost-robust (quarterly-ish turnover) |
+
+Read: the sleeve is monotonic in weight with the melt-up-year cost growing with it (2026 -3.5 -> -8.8pp); breadth
+beats concentration; the edge survives 2x cost. The uptrend filter (buy the 3-5 year losers that have already
+turned, i.e. above their 200-day average) roughly triples the Sharpe gain — economically that is "value with a
+catalyst", the classic momentum-of-value fix for the falling-knife problem, and it is exactly the kind of
+combination that can be fitted on 8 years, so it is treated as UNPROVEN until the 26yr (chain 7). Order of 26yr
+runs: ltr alone + 15% (running), gold, ltr 20/25, ltr-trend.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
