@@ -3662,6 +3662,25 @@ Read: a small permanent gold allocation lowers the book's vol by ~0.8pp and rais
 bull, 2012-15 bear, 2016-19 flat, 2020-26 bull) decides whether "5/8 years" is gold's 2019-26 run or a property
 of the diversification. Running.
 
+
+### EXP-060 — GOLD SLEEVE on the 26yr: PASSES the pairwise gate. (2026-09-18 20:48, 24 starts, PRELIMINARY)
+
+| arm vs package | 26yr dCAGR / dSharpe (+) / dMaxDD | years better | top-yr share | sub-periods (01-08 / 09-16 / 17-22 / 23-26) | ex-crisis | gate |
+|---|---|---|---|---|---|---|
+| **gold 10% always** | **+0.28pp / +0.020 (24/24) / +0.8pp** | **14/25** (14/22 since the sleeve exists) | 18% | +0.034 / +0.009 / +0.002 / +0.054 | +0.022 (24/24) | **PASS** (8yr: +0.030, 5/8 yrs, fails only on 41% concentration of a +0.4pp mean) |
+| gold 10% above SMA200 else cash | +0.30pp / +0.017 (24/24) / +0.5pp | 12/25 | 23% | +0.025 / +0.022 / -0.003 / +0.037 | +0.020 | FAIL (years) — timing gold hurts |
+
+Levels 26yr: package +19.71% / 0.779 / -41.2% -> +19.99% / 0.799 / -40.4%. Per-year delta: gold adds 1-5pp in
+2005-07, 2010-11, 2014, 2019, 2022, 2024-25 and costs in 2013 (-9.1, gold's crash year), 2021 (-3.6), 2026 (-4.2),
+2018 (-1.7). Read: this is the first candidate in EXP-060 that meets the owner's criterion on BOTH horizons — better
+in most years, no dominant year, positive in every sub-period, intact at 2x cost (8yr) — and it is exactly what it
+looks like: a 10% strategic allocation to an uncorrelated asset inside the leverage budget (the sleeve's names get the
+same 40% trailing stop and the same de-risk overlay). The SIZE of the effect is small (+0.02 Sharpe, +0.3pp CAGR,
++0.8pp MaxDD on the 26yr; the 8yr's +0.03/+0.4pp/+0.7pp is gold's 2019-26 run and should not be quoted). It does not
+change the character of the book. Owner's call; live implementation would be a fixed 10% GLD line in every book (2-5
+whole shares per $15k book at today's price), rebuilt on the book's own tranche day. Queued: 15% weight and 2x-cost
+on the 26yr (chain 9). Not a reason to stop looking for a real second engine.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
