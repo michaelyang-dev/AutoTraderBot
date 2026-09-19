@@ -3647,6 +3647,21 @@ sleeve is a regime bet, not a second engine; it fails the owner's most-years cri
 pairwise gate on both. The 20%/25% 26yr runs are cancelled (monotonically worse). Still open: the uptrend-FILTERED
 reversal (batch 7 + its 26yr), which is a different rule (losers that have already turned), and gold (chain 5).
 
+
+### EXP-060 batch 5 — gold sleeve refinements, 8yr (24 starts, PRELIMINARY). Vs the package.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | vol |
+|---|---|---|---|---|---|
+| gold 10% always | +0.40pp | +0.030 (24/24) | +0.7pp | 5/8 | 30.8% vs 31.6% |
+| gold 15% always | +0.51pp | +0.035 (24/24) | +0.8pp | 5/8 | 30.8% |
+| gold 10% at 2x cost (vs package at 2x) | +0.29pp | +0.026 (24/24) | +0.7pp | 5/8 | — |
+| reversal 15% + gold 10% | +1.45pp | +0.054 (24/24) | +0.7pp | 6/8 | additive; the reversal half is dead on the 26yr |
+
+Read: a small permanent gold allocation lowers the book's vol by ~0.8pp and raises Sharpe on every start at 1x and
+2x cost; the weight barely matters between 10 and 15. The 26yr (2004-11 onward for the sleeve, i.e. gold's 2005-11
+bull, 2012-15 bear, 2016-19 flat, 2020-26 bull) decides whether "5/8 years" is gold's 2019-26 run or a property
+of the diversification. Running.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
