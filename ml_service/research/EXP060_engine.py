@@ -135,9 +135,10 @@ def _price_kind(d, members, kind, cfg, features, uni):
     cols = [s_ for s_ in members if s_ in px.columns]
     if not cols: return pd.Series(dtype=float)
     if kind == "ltr":
-        hist = px.loc[:dts]
-        if len(hist) < 252 * 5 + 1: return pd.Series(dtype=float)
-        p12 = hist.iloc[-252][cols]; p60 = hist.iloc[-252 * 5][cols]
+        # positional lookups, no panel copy (E-060c: px.loc[:d] copies ~50 MB per rebuild day and fragments the heap)
+        i = int(px.index.searchsorted(dts, side="right"))
+        if i < 252 * 5 + 1: return pd.Series(dtype=float)
+        p12 = px.iloc[i - 252][cols]; p60 = px.iloc[i - 252 * 5][cols]
         r = (p12 / p60 - 1.0); r = r[(p60 > 0) & p12.notna() & p60.notna()]
         return -r
     # season
