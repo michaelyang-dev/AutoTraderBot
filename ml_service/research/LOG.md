@@ -3681,6 +3681,25 @@ change the character of the book. Owner's call; live implementation would be a f
 whole shares per $15k book at today's price), rebuilt on the book's own tranche day. Queued: 15% weight and 2x-cost
 on the 26yr (chain 9). Not a reason to stop looking for a real second engine.
 
+
+### EXP-060 batch 7 — UPTREND-FILTERED long-term reversal (13-60m losers that are above their SMA200), 8yr. PRELIMINARY.
+
+| arm vs package | starts | dCAGR | dSharpe (+) | dMaxDD | years better | per-year delta |
+|---|---|---|---|---|---|---|
+| 15%, top-10 | 24 | +2.61pp | +0.056 (24/24) | 0.0 | 6/8 | 2019 +0.7, **2020 +9.0**, 2021 +5.4, 2022 +2.8, 2023 -3.9, 2024 +6.5, 2025 +2.4, 2026 -3.7 |
+| 15%, top-15 | 24 | +2.34pp | +0.040 (24/24) | 0.0 | 6/8 | 2020 +6.3, 2021 +11.9 |
+| 20%, top-10 | 24 | +3.20pp | +0.069 (24/24) | 0.0 | 6/8 | 2020 +11.9 |
+| 25%, top-10 | 8 | +3.70pp | +0.083 (8/8) | +0.2 | 6/8 | |
+| 15% at 2x cost (vs package at 2x) | 8 | +2.34pp | +0.051 (8/8) | +0.2 | 6/8 | cost-robust |
+| sleeve ALONE (100%) | 8 | +30.6% / 0.948 / -35.8% | corr 0.71 | | 3/8 yrs > base | the best standalone sleeve in EXP-060 |
+
+Read: on the 8yr this is the strongest thing the search has produced — every start, 6/8 years, no drawdown cost,
+cost-robust, and the sleeve alone is a respectable strategy (the plain version alone was 25%/0.81; the filter adds
+5pp and 0.14). But its biggest year is 2020 (+9pp of +19pp positive), i.e. the post-crash recovery of beaten-down
+names that had turned up — exactly the regime bet that killed the plain sleeve on the 26yr (-0.041). The filter
+may or may not fix the 2005/2007/2011/2015/2017/2019 losses. The 26yr (24 starts) is running and is the verdict;
+nothing is claimed until it lands. Infrastructure: stalls resolved (battery + nice), throughput back to normal.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
