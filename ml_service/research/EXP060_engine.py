@@ -72,6 +72,10 @@ ARMS = {
     "P_x_ltr25_trend":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.25, x_kind="ltr", x_trend=True),
     "P_x_ltr15_trend_cost2": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="ltr", x_trend=True, cost_mult=2.0),
     "x_ltrtrend100":    dict(BASE, x_w=1.0, x_kind="ltr", x_trend=True),
+    # batch 8: VIX-futures tail hedge sleeve (negative carry by construction; tests whether the drawdown saving pays)
+    "P_x_vixm3":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.03, x_kind="vixm_always"),
+    "P_x_vixm5":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.05, x_kind="vixm_always"),
+    "P_x_vixmcalm5":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.05, x_kind="vixm_calm"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -172,7 +176,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -194,6 +198,15 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         px = uni.prices if uni is not None else None
         if px is not None and "GLD" in px.columns and px["GLD"].loc[:pd.Timestamp(d)].dropna().shape[0] >= 200: out_["GLD"] = 0.4
         return out_
+    elif kind in ("vixm_always", "vixm_calm"):
+        # tail hedge: mid-term VIX futures ETF (VIXM, from 2011) always, or only when VIX term structure is in contango
+        # proxied by VIXM below its own SMA50 (calm regime -> cheap carry). Sleeve empty before VIXM exists.
+        px = uni.prices if uni is not None else None
+        if px is None or "VIXM" not in px.columns: return {}
+        v_ = px["VIXM"].loc[:pd.Timestamp(d)].dropna()
+        if len(v_) < 60: return {}
+        if kind == "vixm_always" or v_.iloc[-1] < v_.tail(50).mean(): return {"VIXM": 1.0}
+        return {}
     elif kind in ("gld_trend", "gld_always", "sect_trend"):
         # a DIFFERENT ASSET as the sleeve: gold (GLD, from 2004-11) held when above its 200-session SMA (else the sleeve
         # sits in cash), or always; sect_trend = the 3 sector ETFs with the highest 6m return that are above SMA200
