@@ -332,7 +332,8 @@ def main():
         curves = {}
         for s_ in STARTS:
             t1 = time.time(); curves[s_] = cr.run(s_, ARMS[nm])["curve"]; dt = time.time() - t1
-            print(f"    {nm} start {s_} {dt:5.0f}s", file=sys.stderr, flush=True)
+            import resource, gc as _gc
+            print(f"    {nm} start {s_} {dt:5.0f}s  rss={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/2**30:.1f}G objs={len(_gc.get_objects()):,} gc={_gc.get_count()}", file=sys.stderr, flush=True)
             if dt > 600: print(f"    !!! {nm} start {s_} took {dt:.0f}s — pathological run", file=sys.stderr, flush=True)
         pd.DataFrame(curves).to_parquet(f); print(f"  {nm:<16} {time.time()-t0:6.0f}s", flush=True)
     # analyse
