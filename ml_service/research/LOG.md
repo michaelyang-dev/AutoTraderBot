@@ -3700,6 +3700,19 @@ names that had turned up — exactly the regime bet that killed the plain sleeve
 may or may not fix the 2005/2007/2011/2015/2017/2019 losses. The 26yr (24 starts) is running and is the verdict;
 nothing is claimed until it lands. Infrastructure: stalls resolved (battery + nice), throughput back to normal.
 
+
+### EXP-060 batch 8 — VIX-futures tail hedge (VIXM, from 2011) as a sleeve, 8yr stage 1 (8 starts). Vs the package.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | 2020 | 2023 |
+|---|---|---|---|---|---|---|
+| VIXM 3% always | -0.00pp | +0.015 (7/8) | +0.6pp | 5/8 | +1.6 | -2.4 |
+| VIXM 5% always | -0.22pp | +0.018 (7/8) | +0.9pp | 5/8 | +1.9 | -4.2 |
+| VIXM 5% only when below its SMA50 (contango proxy) | -0.01pp | +0.017 (7/8) | +0.8pp | 5/8 | +2.5 | -4.0 |
+
+Read: a permanent VIX-futures line behaves like gold's weaker cousin — a small Sharpe/MaxDD gain paid for by
+negative carry in calm years (2023). It adds nothing gold does not add more cheaply, and VIXM's history starts in
+2011 (no 26yr test possible before then). Dead as a candidate; not promoted to the 26yr.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

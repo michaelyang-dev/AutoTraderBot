@@ -80,3 +80,34 @@ below is what each flag does.
 Read: the package at 1.25x has roughly the deployed book's CAGR with far less drawdown; at 1.49x (no leverage change) it
 adds ~1.5pp CAGR and ~5pp MaxDD on the 26yr; at 1.65x it buys back the deployed book's drawdown for ~3pp more CAGR (26yr).
 Sharpe is flat across the line (leverage is a dial, not an edge) — pick the MaxDD you can hold.
+
+
+# EXP-060 — the search for a SECOND ENGINE (opened 2026-09-17; interim status 2026-09-19)
+
+**Owner's ask:** an improvement that shows up in MOST years, from a different return source, not more momentum
+tuning. Metric: calendar years better than the package on both horizons, then Sharpe with CI, at 2x cost.
+
+**Tested and dead (8yr, 24 starts unless noted):** IBES analyst signals (earnings surprise, estimate revisions,
+up/down counts, recommendation changes, rank combo — alone Sharpe 0.4-0.6, 0.7+ correlated with the package,
+negative inside it); short-term reversal; calendar seasonality; overnight-minus-intraday momentum; 13F
+institutional breadth; sector-ETF trend; plain 13-60-month reversal (8yr 6/8 years, but 26yr -0.041 Sharpe on
+0/24 starts, negative in 3 of 4 sub-periods = a value-cycle bet); VIX-futures hedge (gold's weaker cousin).
+
+**Passes on both horizons: a 10% permanent gold (GLD) sleeve.** 26yr: +0.28pp CAGR, +0.020 Sharpe (24/24
+starts), +0.8pp MaxDD, better in 14/25 years, positive in all four sub-periods, largest year 18% of the gain,
++0.022 with 2008/2020 removed. 8yr: +0.40pp, +0.030 (24/24), 5/8 years, intact at 2x cost. It is exactly what it
+looks like — diversification from an uncorrelated asset inside the leverage budget — and it is SMALL. Timing gold
+with its moving average hurts. If chosen: a fixed 10% GLD line in each book (about 5 whole shares per $15k
+book), rebuilt on the book's own tranche day, under the same stops and de-risk overlay. Pending on AC power:
+the 15% weight and the 2x-cost check on the 26yr.
+
+**Open, verdict pending on AC power: the uptrend-filtered reversal sleeve** (buy 3-5-year losers that have
+already crossed back above their 200-day average). 8yr, 24 starts: +2.6pp CAGR, +0.056 Sharpe on 24/24 starts,
+6/8 years, drawdown unchanged, intact at 2x cost; the sleeve alone earns 30.6%/0.95 Sharpe. Its largest year is
+2020 (+9pp of +19pp), which is the pattern that killed the plain version on the 26yr, so nothing is claimed
+until the 26yr lands. If it passes, it is the first real second engine of the search; if it fails, the honest
+conclusion is that the only robust addition available from this data is the gold line.
+
+**Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
+background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC
+power and now waits for it automatically.
