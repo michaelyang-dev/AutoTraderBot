@@ -3727,6 +3727,19 @@ Verdict: the reversal family is closed — a regime bet, not a second engine; th
 its job again (the 8yr had 24/24 starts and a gate PASS). Remaining from this search: the gold line (passes) and
 the two candidates below.
 
+
+### EXP-060 — gold sleeve, 26yr completion (2026-09-20 17:02, 24 starts). Vs the package (or package at 2x cost).
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | sub-periods | ex-crisis | gate |
+|---|---|---|---|---|---|---|---|
+| gold 10% always | +0.28pp | +0.020 (24/24) | +0.8pp | 14/25 | all > 0 | +0.022 | PASS |
+| gold 15% always | +0.32pp | +0.023 (24/24) | +0.9pp | 15/25 | all > 0 | +0.026 | PASS |
+| gold 10% at 2x cost (vs package at 2x) | +0.26pp | +0.018 (24/24) | +0.8pp | 14/25 | all > 0 | +0.021 | PASS |
+
+Read: the gold line is the one addition from the second-engine search that satisfies the owner's criterion on
+both horizons; 15% is marginally better than 10% everywhere and the effect is monotone and small. Candidate for
+the owner's decision alongside the EXP-059 package: a fixed 10-15% GLD line per book.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

@@ -98,15 +98,17 @@ starts), +0.8pp MaxDD, better in 14/25 years, positive in all four sub-periods, 
 +0.022 with 2008/2020 removed. 8yr: +0.40pp, +0.030 (24/24), 5/8 years, intact at 2x cost. It is exactly what it
 looks like — diversification from an uncorrelated asset inside the leverage budget — and it is SMALL. Timing gold
 with its moving average hurts. If chosen: a fixed 10% GLD line in each book (about 5 whole shares per $15k
-book), rebuilt on the book's own tranche day, under the same stops and de-risk overlay. Pending on AC power:
-the 15% weight and the 2x-cost check on the 26yr.
+book), rebuilt on the book's own tranche day, under the same stops and de-risk overlay. 26yr completion: 15% is marginally better than 10% (+0.32pp, +0.023 Sharpe 24/24, 15/25 years, all sub-periods > 0)
+and the 10% line holds at 2x cost (+0.018, 24/24, 14/25 years). Gate PASS on all three.
 
-**Open, verdict pending on AC power: the uptrend-filtered reversal sleeve** (buy 3-5-year losers that have
+**Closed — the uptrend-filtered reversal sleeve is DEAD on the 26yr** (-0.024 Sharpe on 0/24 starts, 11/25 years,
+the same value-cycle signature as the plain version; the filter only trims losses by ~1pp). The 8yr result was one favourable
+half-cycle. Details of that 8yr result for the record: (buy 3-5-year losers that have
 already crossed back above their 200-day average). 8yr, 24 starts: +2.6pp CAGR, +0.056 Sharpe on 24/24 starts,
 6/8 years, drawdown unchanged, intact at 2x cost; the sleeve alone earns 30.6%/0.95 Sharpe. Its largest year is
 2020 (+9pp of +19pp), which is the pattern that killed the plain version on the 26yr, so nothing is claimed
-until the 26yr lands. If it passes, it is the first real second engine of the search; if it fails, the honest
-conclusion is that the only robust addition available from this data is the gold line.
+until the 26yr lands. The honest conclusion so far: the only robust addition available from this data is the gold line. Still being tested:
+net share issuance (a financing-decision signal) and a 10-year Treasury diversifier line.
 
 **Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
 background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC
