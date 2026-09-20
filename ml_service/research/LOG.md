@@ -3713,6 +3713,20 @@ Read: a permanent VIX-futures line behaves like gold's weaker cousin — a small
 negative carry in calm years (2023). It adds nothing gold does not add more cheaply, and VIXM's history starts in
 2011 (no 26yr test possible before then). Dead as a candidate; not promoted to the 26yr.
 
+
+### EXP-060 — uptrend-filtered reversal on the 26yr: DEAD. (2026-09-20 15:50, 24 starts)
+
+| vs package | 8yr | 26yr |
+|---|---|---|
+| 15%, top-10, above SMA200 | +2.61pp / +0.056 (24/24) / 0.0 · 6/8 yrs · gate PASS | **-0.49pp / -0.024 (0/24) / -3.2pp MaxDD · 11/25 yrs** · subs -0.023 / -0.017 / -0.042 / +0.010 · ex-crisis -0.034 (0/24) · gate FAIL |
+
+26yr per-year delta: +7.4 (2006), +7.5 (2012), +11.7 (2013), +4.1 (2020), +5.3 (2021), +5.8 (2024) against -5.1
+(2007), -7.6 (2011), -8.8 (2015), -8.5 (2017), -9.3 (2019), -4.2 (2023): the identical value-cycle signature as the
+plain sleeve, the filter only trims the losses by ~1pp. The 8yr result (2018-26) is one favourable half-cycle.
+Verdict: the reversal family is closed — a regime bet, not a second engine; the many-start / two-horizon rule did
+its job again (the 8yr had 24/24 starts and a gate PASS). Remaining from this search: the gold line (passes) and
+the two candidates below.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
