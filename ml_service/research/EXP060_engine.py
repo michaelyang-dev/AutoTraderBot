@@ -349,9 +349,13 @@ def main():
             _u = "research/_exp060/ust10_tr.csv"
             if os.path.exists(_u):
                 _t = pd.read_csv(_u, index_col=0, parse_dates=True)["UST10"]
-                cr.uni.prices["UST10"] = _t.reindex(cr.uni.prices.index).ffill()
-                if hasattr(cr, "px"): cr.px = cr.uni.prices
-                print(f"  UST10 injected: {cr.uni.prices['UST10'].notna().sum()} days", flush=True)
+                _frames = []
+                for _obj in (cr, getattr(cr, "bt", None), getattr(getattr(cr, "bt", None), "uni", None), getattr(getattr(cr, "bt", None), "universe", None), getattr(cr, "uni", None)):
+                    for _attr in ("px", "prices"):
+                        _f = getattr(_obj, _attr, None) if _obj is not None else None
+                        if isinstance(_f, pd.DataFrame) and not any(_f is g for g in _frames): _frames.append(_f)
+                for _f in _frames: _f["UST10"] = _t.reindex(_f.index).ffill()
+                print(f"  UST10 injected into {len(_frames)} price frame(s): {_frames[0]['UST10'].notna().sum() if _frames else 0} days", flush=True)
             import gc; gc.collect(); gc.freeze()
             try:
                 vx = pd.read_parquet("data/enhanced_data/vix_cache.parquet"); vx.index = pd.to_datetime(vx.index); cr._vix = vx[["^VIX", "^VIX3M"]].dropna().sort_index()
