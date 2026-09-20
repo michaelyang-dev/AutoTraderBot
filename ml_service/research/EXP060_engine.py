@@ -76,6 +76,12 @@ ARMS = {
     "P_x_vixm3":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.03, x_kind="vixm_always"),
     "P_x_vixm5":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.05, x_kind="vixm_always"),
     "P_x_vixmcalm5":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.05, x_kind="vixm_calm"),
+    # batch 9: net share issuance (financing-decision signal) and a 10y Treasury diversifier line
+    "x_iss100":         dict(BASE, x_w=1.0, x_kind="iss"),
+    "P_x_iss15":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="iss"),
+    "P_x_ust10":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="ust10_always"),
+    "P_x_ust20":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10_always"),
+    "P_x_ust10_gld10":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10+gld"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -177,7 +183,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm", "iss", "ust10_always", "ust10+gld"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -227,6 +233,22 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
             if len(h_) >= 200 and h_.iloc[-1] > h_.tail(200).mean() and len(h_) > 126: sc_[e] = float(h_.iloc[-1] / h_.iloc[-126] - 1)
         top_ = sorted(sc_, key=sc_.get, reverse=True)[:3]
         return {e: 1.0 / len(top_) for e in top_} if top_ else {}
+    elif kind == "iss":       # net share issuance (buybacks = low/negative issuance score high); month-end table, <= 45d old
+        sc = -_pit_scores("iss", "iss12", d64, members, 45)
+        sc = sc[sc > 0.0]  # only net repurchasers (issuance < 0)
+    elif kind == "ust10+gld":
+        px = uni.prices if uni is not None else None
+        if px is None: return {}
+        out_ = {}
+        for c_, w_ in (("UST10", 0.5), ("GLD", 0.5)):
+            if c_ in px.columns and px[c_].loc[:pd.Timestamp(d)].dropna().shape[0] >= 60: out_[c_] = w_
+        return out_
+    elif kind in ("ust10_always",):
+        # synthetic 10y Treasury total-return series injected into the price panel as column UST10 (see main())
+        px = uni.prices if uni is not None else None
+        if px is None or "UST10" not in px.columns: return {}
+        if px["UST10"].loc[:pd.Timestamp(d)].dropna().shape[0] < 60: return {}
+        return {"UST10": 1.0}
     elif kind == "onm":       # overnight-minus-intraday 12m momentum (monthly table, <= 45d old)
         sc = _pit_scores("onm", "onm", d64, members, 45)
     elif kind == "onm_raw":   # overnight 12m sum alone
@@ -324,6 +346,12 @@ def main():
             pd.read_parquet(f"{E.CACHE}/FINAL_1.49.parquet").to_parquet(f); continue
         if cr is None:
             cr = CleanRoom(FastBacktester(universe_path=E.PATH))
+            _u = "research/_exp060/ust10_tr.csv"
+            if os.path.exists(_u):
+                _t = pd.read_csv(_u, index_col=0, parse_dates=True)["UST10"]
+                cr.uni.prices["UST10"] = _t.reindex(cr.uni.prices.index).ffill()
+                if hasattr(cr, "px"): cr.px = cr.uni.prices
+                print(f"  UST10 injected: {cr.uni.prices['UST10'].notna().sum()} days", flush=True)
             import gc; gc.collect(); gc.freeze()
             try:
                 vx = pd.read_parquet("data/enhanced_data/vix_cache.parquet"); vx.index = pd.to_datetime(vx.index); cr._vix = vx[["^VIX", "^VIX3M"]].dropna().sort_index()
