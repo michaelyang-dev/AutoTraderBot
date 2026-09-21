@@ -87,6 +87,13 @@ ARMS = {
     "P_acct730":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_window=730),
     "P_acct365_adv":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["restatement_adverse", "restatement_fraud_or_sec"]),
     "P_acct365_icfr":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective"]),
+    # batch 11: investment + profitability sleeve from in-universe PIT fundamentals
+    "x_invq100":        dict(BASE, x_w=1.0, x_kind="invq"),
+    "x_gpa100":         dict(BASE, x_w=1.0, x_kind="gpa"),
+    "x_lowinv100":      dict(BASE, x_w=1.0, x_kind="lowinv"),
+    "P_x_invq15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="invq"),
+    "P_x_invq15_trend": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="invq_trend"),
+    "P_x_gpa15":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="gpa"),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -203,7 +210,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm", "iss", "ust10_always", "ust10+gld"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm", "iss", "ust10_always", "ust10+gld", "invq", "invq_trend", "gpa", "lowinv"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -253,6 +260,20 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
             if len(h_) >= 200 and h_.iloc[-1] > h_.tail(200).mean() and len(h_) > 126: sc_[e] = float(h_.iloc[-1] / h_.iloc[-126] - 1)
         top_ = sorted(sc_, key=sc_.get, reverse=True)[:3]
         return {e: 1.0 / len(top_) for e in top_} if top_ else {}
+    elif kind in ("invq", "invq_trend", "gpa", "lowinv"):
+        # investment + gross profitability (Fama-French 'investment' and Novy-Marx 'profitability' axes) from the universe's own
+        # PIT fundamentals (features_by_date keys asset_growth, gp_assets — unused by the deployed sleeves). Rank-composite,
+        # top-N equal weight; invq_trend adds the dist_sma200 > -0.15 filter the value sleeve uses.
+        fd = features or {}
+        rows = {s_: (fd[s_].get("asset_growth"), fd[s_].get("gp_assets"), fd[s_].get("dist_sma200")) for s_ in members if s_ in fd}
+        df_ = pd.DataFrame.from_dict(rows, orient="index", columns=["ag", "gpa", "d200"]).apply(pd.to_numeric, errors="coerce")
+        df_ = df_[(df_.ag.abs() < 3) & (df_.gpa.abs() < 3)]
+        if kind == "invq_trend": df_ = df_[df_.d200 > -0.15]
+        if len(df_) < 20: return {}
+        if kind == "gpa": sc = df_.gpa.rank(pct=True) - 0.5
+        elif kind == "lowinv": sc = (-df_.ag).rank(pct=True) - 0.5
+        else: sc = ((-df_.ag).rank(pct=True) + df_.gpa.rank(pct=True)) / 2 - 0.5
+        sc = sc.dropna()
     elif kind == "iss":       # net share issuance (buybacks = low/negative issuance score high); month-end table, <= 45d old
         sc = -_pit_scores("iss", "iss12", d64, members, 45)
         sc = sc[sc > 0.0]  # only net repurchasers (issuance < 0)
