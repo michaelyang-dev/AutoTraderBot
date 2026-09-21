@@ -94,6 +94,11 @@ ARMS = {
     "P_x_invq15":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="invq"),
     "P_x_invq15_trend": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="invq_trend"),
     "P_x_gpa15":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="gpa"),
+    # batch 12: in-universe negative screens (same pick-then-trim mechanism as the accounting screen)
+    "P_scr_iss10":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10)]),
+    "P_scr_ag10":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("asset_growth", "top", 0.10)]),
+    "P_scr_both10":     dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10), ("asset_growth", "top", 0.10)]),
+    "P_scr_iss10_acct": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10)], acct_excl=True),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -151,6 +156,18 @@ def acct_flagged(d, members, cfg):
     if not bad: return set()
     dD = np.datetime64(dt).astype("datetime64[D]")
     return {s_ for s_ in members if _cusip_at(s_, dD) in bad}
+
+def screen_flagged(d, members, cfg, features):
+    """In-universe negative screens: cfg['screen'] = [(feature, 'top'|'bottom', pct), ...] — members in the worst `pct`
+    of the cross-section of that PIT feature (e.g. ('net_issuance','top',0.10) = heaviest issuers) are excluded."""
+    fd = features or {}; bad = set()
+    for feat, side, pct in cfg.get("screen", []):
+        v = pd.Series({s_: fd[s_].get(feat) for s_ in members if s_ in fd}, dtype=float).dropna()
+        v = v[v.abs() < 5]
+        if len(v) < 50: continue
+        thr = v.quantile(1 - pct) if side == "top" else v.quantile(pct)
+        bad |= set(v[v >= thr].index) if side == "top" else set(v[v <= thr].index)
+    return bad
 
 _PX_CACHE = {}
 def _price_kind(d, members, kind, cfg, features, uni):
@@ -371,16 +388,16 @@ def _engine():
          "                for key, src in ((\"mom\", m1), (\"val\", mv), (\"s5\", m5), (\"s3\", m3), (\"x\", mx)):\n"),
         # EXP-060 batch 10: accounting-risk EXCLUSION filter (acct_excl) — sleeves pick top_n + acct_extra, flagged names are
         # dropped, the list is truncated back to top_n and renormalised (so the filter never concentrates the sleeve)
-        ('top_n=cfg.get("top_n", 5),', "top_n=cfg.get('top_n', 5) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0),"),
+        ('top_n=cfg.get("top_n", 5),', "top_n=cfg.get('top_n', 5) + (int(cfg.get('acct_extra', 3)) if (cfg.get('acct_excl') or cfg.get('screen')) else 0),"),
         ("                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)))\n",
-         "                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0))\n"),
+         "                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)) + (int(cfg.get('acct_extra', 3)) if (cfg.get('acct_excl') or cfg.get('screen')) else 0))\n"),
         ("                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)))\n",
-         "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0))\n"),
+         "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)) + (int(cfg.get('acct_extra', 3)) if (cfg.get('acct_excl') or cfg.get('screen')) else 0))\n"),
         ("                m3 = strategy3_sector_rotation(d, self.uni, di)\n",
-         "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('acct_excl'):\n                    _bad = acct_flagged(d, mem, cfg)\n                    def _trim(w_, n_):\n                        if not w_: return w_\n                        keep = [s_ for s_ in w_ if s_ not in _bad][:n_]\n                        if not keep: return {}\n                        tot_ = sum(w_[s_] for s_ in keep); return {s_: w_[s_] / tot_ for s_ in keep}\n                    m1 = _trim(m1, int(cfg.get('top_n', 5))); mv = _trim(mv, int(cfg.get('val_n', 10))); m5 = _trim(m5, int(cfg.get('lv_n', 10)))\n"),
+         "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('acct_excl') or cfg.get('screen'):\n                    _bad = (acct_flagged(d, mem, cfg) if cfg.get('acct_excl') else set()) | (screen_flagged(d, mem, cfg, self.bt.features_by_date.get(d, {})) if cfg.get('screen') else set())\n                    def _trim(w_, n_):\n                        if not w_: return w_\n                        keep = [s_ for s_ in w_ if s_ not in _bad][:n_]\n                        if not keep: return {}\n                        tot_ = sum(w_[s_] for s_ in keep); return {s_: w_[s_] / tot_ for s_ in keep}\n                    m1 = _trim(m1, int(cfg.get('top_n', 5))); mv = _trim(mv, int(cfg.get('val_n', 10))); m5 = _trim(m5, int(cfg.get('lv_n', 10)))\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
-    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; ns['acct_flagged'] = acct_flagged; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
+    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; ns['acct_flagged'] = acct_flagged; ns['screen_flagged'] = screen_flagged; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
 def st(v): return E.st(v)
 def main():
     t0 = time.time(); _engine(); cr = None
