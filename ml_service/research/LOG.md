@@ -3833,6 +3833,11 @@ momentum-orthogonal negative screen with a small positive expectation and a bull
 (adverse-only, ICFR-only) and 2x-cost at 24 starts on the 8yr are running for the record; the adverse-only 26yr is
 queued because its 8yr worst year was only -0.3pp.
 
+24-start 8yr follow-ups: at 2x cost the screen keeps its full edge (+1.46pp / +0.034, 20/24, vs the package at 2x —
+as expected, a screen adds no turnover); adverse-restatements-only +1.26pp / +0.029 on 24/24 starts, 6/8 years (fails
+only the 47% concentration test on a small mean); ICFR-only +1.04pp / +0.024 (18/24), 6/8 years, PASS. Both halves
+carry the effect on the 8yr; the adverse-only 26yr (running) decides whether the narrower screen escapes the 2013-17 run.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
