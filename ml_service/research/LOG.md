@@ -3852,6 +3852,37 @@ Read: turnover of officers and dividend cuts are too common (10-18% of names) an
 work as screens; at that flag rate the screen's effect is which momentum winners it happens to remove. The event-screen
 class is exhausted: only the narrow accounting-risk flags (3-8%) carry information, and even they are small.
 
+
+### EXP-060 — adverse-restatements-only screen on the 26yr, 24 starts: FAIL; accounting-screen family CLOSED. (2026-09-20 23:38)
+
+-0.35pp / -0.009 Sharpe (1/24) / +0.5pp MaxDD; 13/25 years; 2009-16 sub-period -0.050; ex-crisis -0.029 (0/24). The
+2013-17 losses (-7.3, -7.5, -7.4, -8.5) are identical to the combined screen's — narrowing the flag set does not
+escape them. The 8yr's 7/8 years was the 2018-26 window; on the long horizon accounting-risk exclusion is a coin flip
+with a crisis-year skew. Closed.
+
+### STATE OF THE SECOND-ENGINE SEARCH (2026-09-20, end of EXP-060 batches 1-13)
+
+Owner's criterion: better than the EXP-059 package in MOST calendar years on both horizons, from a different return
+source. Tested at 8-24 starts on the 8yr and 24 starts on the 26yr where anything survived:
+
+| family | best result vs package | verdict |
+|---|---|---|
+| analyst data (IBES surprise / revisions / up-down / recommendations / combo) | alone Sharpe 0.4-0.6, corr 0.7+, negative inside | dead |
+| fast mean reversion (short-term reversal, calendar seasonality) | -0.04 Sharpe, 3/8 yrs | dead |
+| return decomposition (overnight momentum), 13F breadth | -0.11 / 0.00 | dead |
+| long-term reversal, plain and uptrend-filtered | 8yr +0.019..+0.056 (6/8 yrs) but 26yr -0.041 / -0.024 on 0/24 starts | dead (value-cycle regime bet) |
+| ETF assets: sector trend, VIX futures, 10y Treasury | ~0 or negative | dead |
+| **gold, 10-15% permanent line** | **26yr +0.020..+0.023 (24/24), 14-15/25 yrs, all sub-periods > 0, 2x cost intact; 8yr +0.030 (24/24), 5/8 yrs** | **PASSES — small diversification effect, owner's call** |
+| net share issuance, investment/profitability sleeves, in-universe quality screens | dead; the quality screens remove the momentum leaders (-10pp/yr) | dead |
+| accounting-risk exclusion (restatements / ICFR failures) | 8yr +0.034 (19/24), 7/8 yrs, cost-free; 26yr +0.013 (24/24) but 14/25 yrs, 2013-17 negative | sign-consistent, small, not an engine |
+| officer-change and dividend-cut screens | lottery on single names | dead |
+
+Conclusion: within the data on disk there is no second engine that is better in most years on both horizons. The one
+robust addition is the gold line (+0.3pp CAGR / +0.02 Sharpe / +0.8pp MaxDD on the 26yr, better in 14-15 of 25 years),
+which is diversification, not alpha. The accounting screen is real but too small and too crisis-skewed to promote.
+Remaining unexplored data: `wrds_financial_ratios` (PERMNO-keyed, public_date = PIT) as a replacement VALUE engine
+(the deployed value sleeve is a different return source already in the book; a better one would count). Running next.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

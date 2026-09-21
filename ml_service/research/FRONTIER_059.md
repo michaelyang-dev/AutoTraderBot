@@ -111,7 +111,10 @@ until the 26yr lands. The honest conclusion so far: the only robust addition ava
 quality screens (which remove the momentum leaders). The one screen that is orthogonal to momentum — excluding names with
 recent adverse restatements or internal-control failures (Audit Analytics) — is sign-consistent on every start on both
 horizons but small (+0.013 Sharpe on the 26yr, better in 14/25 years, negative in 2013-17) and fails the gate; it is not
-an engine.
+an engine, and the narrower adverse-restatement-only version fails the 26yr outright. Officer-change and dividend-cut screens are
+lotteries on single names. **Conclusion of the second-engine search (2026-09-20): within the data on disk there is no second
+engine that is better in most years on both horizons; the one robust addition is the 10-15% gold line.** Next: a replacement
+value engine from the unused WRDS financial-ratio table.
 
 **Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
 background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC
