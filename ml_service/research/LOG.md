@@ -3905,6 +3905,18 @@ promotable: the accounting-risk screen. Everything else dead. Further gains requ
 different execution horizon, as the memory from earlier programs already said. Owner decisions outstanding: the EXP-059
 package (built behind flags) and the gold line.
 
+
+### EXP-060 batch 15 — gold line on the DEPLOYED book (no package), 8yr 24 starts. Vs the deployed base.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better · top-yr | even-month | ex-crisis | gate |
+|---|---|---|---|---|---|---|---|
+| gold 10% | +0.39pp | +0.028 (24/24) | +1.1pp | 4/8 · 48% (2025) | +0.027 | +0.037 (24/24) | FAIL (years) |
+| gold 15% | +0.50pp | +0.032 (24/24) | +1.3pp | 4/8 · 55% | +0.031 | +0.042 (24/24) | FAIL (years) |
+
+Read: same character as on the package — every start better, slightly lower drawdown, but on the 8yr the gain sits in
+gold's 2025 and it is better in only half the years. The 26yr (running, AC power) is the test that matters for the
+owner's decision; on the package it passed (14-15/25 years, all sub-periods > 0).
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
