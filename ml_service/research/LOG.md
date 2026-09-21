@@ -3740,6 +3740,19 @@ Read: the gold line is the one addition from the second-engine search that satis
 both horizons; 15% is marginally better than 10% everywhere and the effect is monotone and small. Candidate for
 the owner's decision alongside the EXP-059 package: a fixed 10-15% GLD line per book.
 
+
+### EXP-060 batch 9 — net share issuance and a 10y Treasury line, 8yr stage 1 (8 starts). Vs the package.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | read |
+|---|---|---|---|---|---|
+| net repurchasers alone (100%) | +19.0% / 0.748 / -50%, corr 0.74 | | | 3/8 vs base | a weak value-like sleeve |
+| repurchasers 15% | +0.64pp | +0.015 (8/8) | -0.9pp | 3/8 | dead on the years criterion |
+| 10y Treasury 10% / 20% (synthetic TR from FRED DGS10) | -0.05 / -0.10pp | +0.011 / +0.013 (6/8) | +0.2 / +0.3pp | 4/8 | ~zero; 2022 shows the bond/equity correlation flip |
+| Treasury 10% + gold 10% | +0.30pp | +0.038 (8/8) | +1.0pp | 5/8 | = the gold half; the Treasury half adds nothing |
+
+Read: buybacks are priced (and correlated 0.74 with the book); Treasuries are a zero at this leverage and
+horizon — the diversification benefit gold provides is not available from duration. Both dead.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
