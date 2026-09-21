@@ -101,6 +101,9 @@ ARMS = {
     "P_valx_repl":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80/0.85, val_w=0.0, lv_w=0.05/0.85, x_w=0.15, x_kind="valx_trend"),
     "P_valx_add":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="valx_trend"),
     "P_valx_repl_n20":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80/0.85, val_w=0.0, lv_w=0.05/0.85, x_w=0.15, x_kind="valx_trend", x_n=20),
+    # batch 15: gold on top of the DEPLOYED book (no package) — the owner's other possible decision
+    "B_x_gldalways10":  dict(BASE, x_w=0.10, x_kind="gld_always"),
+    "B_x_gldalways15":  dict(BASE, x_w=0.15, x_kind="gld_always"),
     # batch 11: investment + profitability sleeve from in-universe PIT fundamentals
     "x_invq100":        dict(BASE, x_w=1.0, x_kind="invq"),
     "x_gpa100":         dict(BASE, x_w=1.0, x_kind="gpa"),
