@@ -94,6 +94,13 @@ ARMS = {
     "P_divcut365":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["div_cut"]),
     "P_acct365_base":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
     "P_acct365_cfo":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec", "cfo_change"]),
+    # batch 14: a REPLACEMENT value engine from wrds_financial_ratios (composite value, PIT). 'repl' = the deployed value
+    # sleeve (15%) swapped for it; 'add' = on top. Sleeve weights are pre-divided by (1 - x_w) so post-scaling = intended.
+    "x_valx100":        dict(BASE, x_w=1.0, x_kind="valx"),
+    "x_valxtrend100":   dict(BASE, x_w=1.0, x_kind="valx_trend"),
+    "P_valx_repl":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80/0.85, val_w=0.0, lv_w=0.05/0.85, x_w=0.15, x_kind="valx_trend"),
+    "P_valx_add":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.15, x_kind="valx_trend"),
+    "P_valx_repl_n20":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80/0.85, val_w=0.0, lv_w=0.05/0.85, x_w=0.15, x_kind="valx_trend", x_n=20),
     # batch 11: investment + profitability sleeve from in-universe PIT fundamentals
     "x_invq100":        dict(BASE, x_w=1.0, x_kind="invq"),
     "x_gpa100":         dict(BASE, x_w=1.0, x_kind="gpa"),
@@ -176,6 +183,29 @@ def screen_flagged(d, members, cfg, features):
         bad |= set(v[v >= thr].index) if side == "top" else set(v[v <= thr].index)
     return bad
 
+_VALX = None
+def valx_scores(d, members, cfg, features):
+    """Composite VALUE rank from wrds_financial_ratios (PERMNO-keyed, public_date = PIT): mean percentile of
+    bm (high), -evm (low EV/EBITDA, evm>0), -pcf (low P/CF, pcf>0), -ps (low P/S), divyield (high); guards roa > 0 and,
+    with x_trend, dist_sma200 > -0.15 (the deployed value sleeve's own filter). Latest row <= 45 days old."""
+    global _VALX
+    if _VALX is None:
+        t = pd.read_parquet("research/_exp060/valx_pit.parquet"); t["asof"] = pd.to_datetime(t["asof"])
+        _VALX = (np.array(sorted(t["asof"].unique())), {dd: g.set_index("permno") for dd, g in t.groupby("asof")})
+    dates, by = _VALX; d64 = np.datetime64(pd.Timestamp(d))
+    j = np.searchsorted(dates, d64, side="right") - 1
+    if j < 0 or (d64 - dates[j]) / np.timedelta64(1, "D") > 45: return pd.Series(dtype=float)
+    g = by[dates[j]]; idx = [m for m in members if m in g.index]
+    if len(idx) < 50: return pd.Series(dtype=float)
+    sub = g.loc[idx]
+    sub = sub[(sub.roa > 0)]
+    if cfg.get("x_trend"):
+        fd = features or {}; sub = sub[[fd.get(m, {}).get("dist_sma200", -1) > -0.15 for m in sub.index]]
+    parts = [sub.bm.where(sub.bm > 0).rank(pct=True), (-sub.evm.where(sub.evm > 0)).rank(pct=True), (-sub.pcf.where(sub.pcf > 0)).rank(pct=True),
+             (-sub.ps.where(sub.ps > 0)).rank(pct=True), sub.divyield.fillna(0).rank(pct=True)]
+    sc = pd.concat(parts, axis=1).mean(axis=1, skipna=True) - 0.5
+    return sc.dropna()
+
 _PX_CACHE = {}
 def _price_kind(d, members, kind, cfg, features, uni):
     """Price-based second-engine candidates (all from the universe's own price panel, PIT by construction):
@@ -234,7 +264,7 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
     for s_ in members:
         c_ = _cusip_at(s_, dD)
         if c_ is not None and c_ in g.index and c_ not in c2p: c2p[c_] = s_
-    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm", "iss", "ust10_always", "ust10+gld", "invq", "invq_trend", "gpa", "lowinv"): return {}
+    if not c2p and kind not in ("str", "season", "ltr", "onm", "onm_raw", "inst", "inst_shr", "gld_trend", "gld_always", "sect_trend", "ltr+gld", "vixm_always", "vixm_calm", "iss", "ust10_always", "ust10+gld", "invq", "invq_trend", "gpa", "lowinv", "valx", "valx_trend"): return {}
     sub = g.loc[list(c2p)] if c2p else g.iloc[0:0]
     sub = sub[sub["NUMEST"].fillna(0) >= 3]
     sub.index = [c2p[c_] for c_ in sub.index]          # back to PERMNO keys
@@ -298,6 +328,8 @@ def sleeve_x(d, members, cfg, features=None, uni=None):
         elif kind == "lowinv": sc = (-df_.ag).rank(pct=True) - 0.5
         else: sc = ((-df_.ag).rank(pct=True) + df_.gpa.rank(pct=True)) / 2 - 0.5
         sc = sc.dropna()
+    elif kind in ("valx", "valx_trend"):
+        sc = valx_scores(d, members, dict(cfg, x_trend=(kind == "valx_trend")), features)
     elif kind == "iss":       # net share issuance (buybacks = low/negative issuance score high); month-end table, <= 45d old
         sc = -_pit_scores("iss", "iss12", d64, members, 45)
         sc = sc[sc > 0.0]  # only net repurchasers (issuance < 0)
@@ -404,7 +436,7 @@ def _engine():
          "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('acct_excl') or cfg.get('screen'):\n                    _bad = (acct_flagged(d, mem, cfg) if cfg.get('acct_excl') else set()) | (screen_flagged(d, mem, cfg, self.bt.features_by_date.get(d, {})) if cfg.get('screen') else set())\n                    def _trim(w_, n_):\n                        if not w_: return w_\n                        keep = [s_ for s_ in w_ if s_ not in _bad][:n_]\n                        if not keep: return {}\n                        tot_ = sum(w_[s_] for s_ in keep); return {s_: w_[s_] / tot_ for s_ in keep}\n                    m1 = _trim(m1, int(cfg.get('top_n', 5))); mv = _trim(mv, int(cfg.get('val_n', 10))); m5 = _trim(m5, int(cfg.get('lv_n', 10)))\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
-    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; ns['acct_flagged'] = acct_flagged; ns['screen_flagged'] = screen_flagged; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
+    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; ns['acct_flagged'] = acct_flagged; ns['screen_flagged'] = screen_flagged; ns['valx_scores'] = valx_scores; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
 def st(v): return E.st(v)
 def main():
     t0 = time.time(); _engine(); cr = None
