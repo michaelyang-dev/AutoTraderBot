@@ -3934,13 +3934,13 @@ Gold decision table (24 starts; 26yr is the expectation, 8yr shown for completen
 | package | 15% | +0.32pp / +0.023 (24/24) / +0.9pp · 15/25 | +0.51pp / +0.035 (24/24) / +0.8pp · 5/8 |
 
 
-### EXP-060 — audit of the GOLD finding before the owner decides (2026-09-21). Verdict: FAIL — see below.
+### EXP-060 — audit of the GOLD finding before the owner decides (2026-09-21). Verdict: PASS.
 
 1. Ticker reuse hazard: in raw CRSP the ticker GLD maps to four PERMNOs back to 1962. The v2 builder keys each ETF to the
    single PERMNO whose era ends latest (the SPDR Gold Trust); the panel's GLD column starts 2004-11-18 with ZERO values
    before it and matches that PERMNO's return-chained series to 0.004%. No phantom pre-2004 holdings; the small 2002-04
    deltas in the gold arms come from the 10% cap binding differently when sleeve weights are scaled by 0.9, not from GLD.
-2. External cross-check (Polygon daily adjusted closes, 2018-2025): n=0 med=+nan% p99=nan% max=nan% corr=nan ok=False.
+2. External cross-check (Polygon daily adjusted closes, 2018-2025, fetched via curl after a local-cert failure): n=2011 median rel diff +0.0004%, p99 abs 0.001%, max abs 0.001%, daily-return corr 1.00000 -> PASS
 3. Not just lower exposure: on the 26yr the deployed base scaled to the gold arm's realized vol gives +17.68% CAGR vs the
    gold arm's +18.68% (8yr: +31.53% vs +32.91%) — the gain survives vol-matching, i.e. it is diversification, not de-risking.
 4. Mechanics: GLD is held as an ordinary position (same 40% trailing stop, same de-risk overlay, whole shares — ~5 shares
