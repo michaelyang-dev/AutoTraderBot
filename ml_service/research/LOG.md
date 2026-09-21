@@ -3764,12 +3764,15 @@ drop, truncate, renormalise — so the filter never shrinks or concentrates a sl
 |---|---|---|---|---|---|
 | 365 days | +2.14pp | +0.050 (8/8) | 0.0 | **7/8** | 2019 +2.4, 2020 +2.3, 2021 +6.5, 2022 +0.4, 2023 +2.3, 2024 -4.9, 2025 +7.8, 2026 +0.2 |
 | 730 days | -4.12pp | -0.080 (0/8) | -0.5pp | 4/8 | **2021 -34.9** |
+| 365 days, adverse/fraud restatements only | +1.48pp | +0.035 (8/8) | -0.2pp | 7/8 | 2020 +2.7, 2021 +7.6, 2025 +2.4; worst year -0.3 |
+| 365 days, ineffective ICFR only | +1.59pp | +0.037 (8/8) | +0.1pp | 6/8 | 2024 -5.0, 2025 +7.8 |
 
 Diagnostic of the 2021 swing: the 730-day window (but not the 365-day one) excluded PDC Energy (PERMNO 62341), which
 returned +137% in 2021 while the 5-name momentum sleeve held it at ~24% of NAV — one name, -33pp. Read: with a 5-name
 momentum sleeve every exclusion rule is partly a lottery on single names; the 365-day window's 7/8 years is exactly
-the owner's profile but on 8 starts it can be the same lottery in the other direction. Not claimed. Queued: 24 starts on
-the 8yr and the 26yr (AC-gated) for the 365-day window (chain 13); adverse-only and ICFR-only variants running.
+the owner's profile but on 8 starts it can be the same lottery in the other direction. Not claimed. The two components are each positive on 8/8 starts and roughly additive (+0.035 + +0.037 ≈ +0.050), which
+is mild evidence the effect is not one name — but 8 starts is 8 starts. Queued: 24 starts on the 8yr and the 26yr
+(AC-gated) for the combined 365-day window (chain 13).
 
 ## Next
 
