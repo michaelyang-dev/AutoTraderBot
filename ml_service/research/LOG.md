@@ -3921,7 +3921,17 @@ owner's decision; on the package it passed (14-15/25 years, all sub-periods > 0)
 +1.4pp MaxDD; 14/25 years, top-year share 21%; sub-periods +0.040 / +0.023 / -0.006 / +0.055; even-month +0.024;
 ex-crisis +0.026 (24/24); bootstrap P 95%, CI [+0.000, +0.050]. Read: the gold line's value does not depend on the
 package; it is the same small, spread-out diversification benefit on either book. Owner's decision is independent of
-the package decision. (15% arm running.)
+the package decision. Gold 15% on the deployed book, 26yr: PASS — +0.52pp / +0.027 (24/24) / +1.6pp MaxDD; 15/25
+years; CI [+0.002, +0.056]; even-month +0.027; ex-crisis +0.030 (24/24). Batch 15 complete.
+
+Gold decision table (24 starts; 26yr is the expectation, 8yr shown for completeness):
+
+| book | gold | 26yr dCAGR / dSharpe (+) / dMaxDD · years | 8yr dCAGR / dSharpe (+) / dMaxDD · years |
+|---|---|---|---|
+| deployed | 10% | +0.43pp / +0.023 (24/24) / +1.4pp · 14/25 | +0.39pp / +0.028 (24/24) / +1.1pp · 4/8 |
+| deployed | 15% | +0.52pp / +0.027 (24/24) / +1.6pp · 15/25 | +0.50pp / +0.032 (24/24) / +1.3pp · 4/8 |
+| package | 10% | +0.28pp / +0.020 (24/24) / +0.8pp · 14/25 | +0.40pp / +0.030 (24/24) / +0.7pp · 5/8 |
+| package | 15% | +0.32pp / +0.023 (24/24) / +0.9pp · 15/25 | +0.51pp / +0.035 (24/24) / +0.8pp · 5/8 |
 
 ## Next
 
