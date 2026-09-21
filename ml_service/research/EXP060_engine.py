@@ -87,6 +87,7 @@ ARMS = {
     "P_acct730":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_window=730),
     "P_acct365_adv":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["restatement_adverse", "restatement_fraud_or_sec"]),
     "P_acct365_icfr":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective"]),
+    "P_acct365_cost2":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, cost_mult=2.0),
     # batch 11: investment + profitability sleeve from in-universe PIT fundamentals
     "x_invq100":        dict(BASE, x_w=1.0, x_kind="invq"),
     "x_gpa100":         dict(BASE, x_w=1.0, x_kind="gpa"),
