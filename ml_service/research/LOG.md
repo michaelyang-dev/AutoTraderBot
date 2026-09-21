@@ -3774,6 +3774,19 @@ the owner's profile but on 8 starts it can be the same lottery in the other dire
 is mild evidence the effect is not one name — but 8 starts is 8 starts. Queued: 24 starts on the 8yr and the 26yr
 (AC-gated) for the combined 365-day window (chain 13).
 
+
+### EXP-060 batch 11 — investment + gross-profitability sleeve (in-universe PIT fundamentals), 8yr stage 1 (8 starts). Vs the package.
+
+| arm | ALONE (100%) | corr | yrs > base | in package: dCAGR / dSharpe (+) / dMaxDD · years better |
+|---|---|---|---|---|
+| composite (low asset growth + high GP/assets) | +16.0% / 0.648 / -53% | 0.68 | 1/8 | 15%: +0.42pp / +0.016 (7/8) / -1.6pp · 3/8 |
+| composite, above SMA200 only | — | — | — | 15%: +0.81pp / +0.028 (8/8) / -1.4pp · 5/8 (2026 -6.0) |
+| gross profitability alone | +2.7% / 0.235 / -49% | 0.68 | 1/8 | 15%: -2.62pp / -0.057 (0/8) · 2/8 |
+| low investment alone | +4.7% / 0.301 / -57% | 0.65 | 1/8 | not run |
+
+Read: the classic investment/profitability axes are dead in this universe and chassis — alone they are worse than the
+market, and inside the package they add drawdown for a Sharpe crumb in fewer than most years. Dead.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
