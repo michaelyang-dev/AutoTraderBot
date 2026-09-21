@@ -3838,6 +3838,20 @@ as expected, a screen adds no turnover); adverse-restatements-only +1.26pp / +0.
 only the 47% concentration test on a small mean); ICFR-only +1.04pp / +0.024 (18/24), 6/8 years, PASS. Both halves
 carry the effect on the 8yr; the adverse-only 26yr (running) decides whether the narrower screen escapes the 2013-17 run.
 
+
+### EXP-060 batch 13 — more event screens (officer changes, dividend cuts), 8yr stage 1 (8 starts). DEAD.
+
+| screen (365d) | flags (S&P 500) | dCAGR | dSharpe (+) | dMaxDD | years better | note |
+|---|---|---|---|---|---|---|
+| CFO change | 10-18% | +0.88pp | +0.020 (6/8) | -3.2pp | 4/8 | 2019 -17.2, 2021 +28.6, 2024 -11.1 — single-name lottery |
+| CEO change | ~10% | -3.24pp | -0.072 (0/8) | -1.6pp | 4/8 | |
+| dividend cut | 4-7% | -1.70pp | -0.038 (0/8) | 0.0 | 3/8 | 2026 -14.9 |
+| accounting screen + CFO change (vs accounting screen) | | -0.47pp | -0.010 (1/8) | -2.3pp | 3/8 | worsens it |
+
+Read: turnover of officers and dividend cuts are too common (10-18% of names) and too weakly tied to future returns to
+work as screens; at that flag rate the screen's effect is which momentum winners it happens to remove. The event-screen
+class is exhausted: only the narrow accounting-risk flags (3-8%) carry information, and even they are small.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
