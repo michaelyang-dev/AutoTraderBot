@@ -3787,6 +3787,18 @@ is mild evidence the effect is not one name — but 8 starts is 8 starts. Queued
 Read: the classic investment/profitability axes are dead in this universe and chassis — alone they are worse than the
 market, and inside the package they add drawdown for a Sharpe crumb in fewer than most years. Dead.
 
+
+### EXP-060 — accounting-risk exclusion (365d) on 24 starts, 8yr: GATE PASS. (2026-09-20 22:43)
+
++1.48pp CAGR / +0.034 Sharpe (19/24 starts) / +0.2pp MaxDD vs the package; better in 7/8 calendar years (2019 +2.5, 2020 +2.3,
+2021 +4.1, 2022 +0.5, 2023 +2.9, **2024 -7.4**, 2025 +5.4, 2026 +0.1); top-year share 30%; sub-periods +0.062 / +0.043 /
++0.015; odd-month (used) starts +0.039 vs even-month (untouched) +0.030; ex-2020 +0.028 (18/24); bootstrap P 79%, CI
+[-0.041, +0.112]. Per start, 14/24 starts are better in >= 6 of 8 years and none in fewer than 4. Honest read: weaker
+than the 8-start preview (19/24 not 8/8) and the CI spans zero, but the shape is the one the owner asked for — small,
+spread across years, not one crash. It is a NEGATIVE screen (avoid accounting-risk names), so its mechanism is
+plausible ex ante and it costs nothing in turnover or exposure. 26yr (24 starts, AC power) running — the screen only
+exists from 2004 (ICFR) / 1995 (restatements), so the 2001-03 years are unaffected by construction.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
