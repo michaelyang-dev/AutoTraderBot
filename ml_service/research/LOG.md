@@ -3798,6 +3798,12 @@ than the 8-start preview (19/24 not 8/8) and the CI spans zero, but the shape is
 spread across years, not one crash. It is a NEGATIVE screen (avoid accounting-risk names), so its mechanism is
 plausible ex ante and it costs nothing in turnover or exposure. 26yr (24 starts, AC power) running — the screen only
 exists from 2004 (ICFR) / 1995 (restatements), so the 2001-03 years are unaffected by construction.
+Diagnostic of the 2024 loss (-7.4pp): the screen excluded several 2024 momentum winners whose flags were benign in
+hindsight — Sprouts (+166%, adverse restatement), Axon (+130%, ICFR failure), Modine (+91%), GoDaddy (+86%), Deckers
+(+80%), NRG (+78%); the median flagged >$2B name returned +9.5% in 2024. So the screen's cost is concentrated in
+melt-up years where a flagged name happens to be the leader, and its benefit is spread across the other years. That
+is the expected shape of a negative screen and the reason the 26yr matters: it must show the same spread across
+2004-2017, where the 8yr has no information.
 
 ## Next
 
