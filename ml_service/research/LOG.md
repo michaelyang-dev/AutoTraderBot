@@ -3820,6 +3820,19 @@ assets), so a fundamental "quality" screen anti-selects the engine and costs 10p
 accounting-risk screen is the point: accounting flags (restatements, control failures) are ~orthogonal to the
 momentum rank, which is why that screen can remove risk without removing the return. Dead; not re-tested.
 
+
+### EXP-060 — accounting-risk exclusion (365d) on the 26yr, 24 starts: GATE FAIL. (2026-09-20 23:02)
+
++0.35pp CAGR / +0.013 Sharpe (24/24 starts, all positive) / +0.8pp MaxDD; better in 14/25 years (2001-04 0/3, 2005-26
+14/22); top-year share 18%; sub-periods +0.080 / **-0.029** / -0.006 / +0.009; even-month +0.015; ex-crisis -0.005 (3/24);
+bootstrap P 67%, CI [-0.041, +0.069]. Per-year: strong 2006 +8.5, 2008 +8.5, 2011 +4.7, then a run of losses 2013 -7.2,
+2014 -3.1, 2015 -7.5, 2017 -7.5 (the same "flagged names were the winners" mechanism as 2024), then positive again
+2019-2025. Read: the screen is sign-consistent across starts (a real, small effect) but it is not "better in most years"
+on the long horizon and its edge disappears outside the crisis years. Verdict: NOT a second engine; a
+momentum-orthogonal negative screen with a small positive expectation and a bull-market cost. Not promoted. Components
+(adverse-only, ICFR-only) and 2x-cost at 24 starts on the 8yr are running for the record; the adverse-only 26yr is
+queued because its 8yr worst year was only -0.3pp.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

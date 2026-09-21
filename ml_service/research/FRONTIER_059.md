@@ -107,8 +107,11 @@ half-cycle. Details of that 8yr result for the record: (buy 3-5-year losers that
 already crossed back above their 200-day average). 8yr, 24 starts: +2.6pp CAGR, +0.056 Sharpe on 24/24 starts,
 6/8 years, drawdown unchanged, intact at 2x cost; the sleeve alone earns 30.6%/0.95 Sharpe. Its largest year is
 2020 (+9pp of +19pp), which is the pattern that killed the plain version on the 26yr, so nothing is claimed
-until the 26yr lands. The honest conclusion so far: the only robust addition available from this data is the gold line. Still being tested:
-net share issuance (a financing-decision signal) and a 10-year Treasury diversifier line.
+until the 26yr lands. The honest conclusion so far: the only robust addition available from this data is the gold line. Also tested and dead since: net share issuance, a 10-year Treasury line, an investment/profitability sleeve, and in-universe
+quality screens (which remove the momentum leaders). The one screen that is orthogonal to momentum — excluding names with
+recent adverse restatements or internal-control failures (Audit Analytics) — is sign-consistent on every start on both
+horizons but small (+0.013 Sharpe on the 26yr, better in 14/25 years, negative in 2013-17) and fails the gate; it is not
+an engine.
 
 **Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
 background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC
