@@ -115,7 +115,8 @@ an engine, and the narrower adverse-restatement-only version fails the 26yr outr
 lotteries on single names. **Conclusion of the second-engine search (2026-09-20): within the data on disk there is no second
 engine that is better in most years on both horizons; the one robust addition is the 10-15% gold line.** A composite value engine from the WRDS ratio
 table (the last unused data source) is the most diversifying sleeve found (correlation 0.56) and still hurts: it carries value's
-2019-20 collapse. **The search is complete for the data on disk.**
+2019-20 collapse. **The search is complete for the data on disk.** The gold line also passes on the DEPLOYED book without the package
+(26yr +0.43pp / +0.023 Sharpe on 24/24 starts / +1.4pp MaxDD, 14/25 years), so it can be decided on its own.
 
 **Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
 background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC

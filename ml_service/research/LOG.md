@@ -3917,6 +3917,12 @@ Read: same character as on the package — every start better, slightly lower dr
 gold's 2025 and it is better in only half the years. The 26yr (running, AC power) is the test that matters for the
 owner's decision; on the package it passed (14-15/25 years, all sub-periods > 0).
 
+26yr, 24 starts, gold 10% on the DEPLOYED book vs the deployed base: **PASS** — +0.43pp CAGR / +0.023 Sharpe (24/24) /
++1.4pp MaxDD; 14/25 years, top-year share 21%; sub-periods +0.040 / +0.023 / -0.006 / +0.055; even-month +0.024;
+ex-crisis +0.026 (24/24); bootstrap P 95%, CI [+0.000, +0.050]. Read: the gold line's value does not depend on the
+package; it is the same small, spread-out diversification benefit on either book. Owner's decision is independent of
+the package decision. (15% arm running.)
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
