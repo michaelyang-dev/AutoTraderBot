@@ -83,11 +83,17 @@ ARMS = {
     "P_x_ust20":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10_always"),
     "P_x_ust10_gld10":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10+gld"),
     # batch 10: accounting-risk exclusion (Audit Analytics: ineffective ICFR opinions, adverse restatements, fraud/SEC) — a screen, not a sleeve
-    "P_acct365":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True),
-    "P_acct730":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_window=730),
+    "P_acct365":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
+    "P_acct730":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_window=730, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
     "P_acct365_adv":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["restatement_adverse", "restatement_fraud_or_sec"]),
     "P_acct365_icfr":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective"]),
-    "P_acct365_cost2":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, cost_mult=2.0),
+    "P_acct365_cost2":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, cost_mult=2.0, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
+    # batch 13: more momentum-orthogonal event screens (Audit Analytics officer changes; CRSP dividend cuts)
+    "P_cfo365":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["cfo_change"]),
+    "P_ceo365":         dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["ceo_change"]),
+    "P_divcut365":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["div_cut"]),
+    "P_acct365_base":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
+    "P_acct365_cfo":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec", "cfo_change"]),
     # batch 11: investment + profitability sleeve from in-universe PIT fundamentals
     "x_invq100":        dict(BASE, x_w=1.0, x_kind="invq"),
     "x_gpa100":         dict(BASE, x_w=1.0, x_kind="gpa"),
@@ -99,7 +105,7 @@ ARMS = {
     "P_scr_iss10":      dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10)]),
     "P_scr_ag10":       dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("asset_growth", "top", 0.10)]),
     "P_scr_both10":     dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10), ("asset_growth", "top", 0.10)]),
-    "P_scr_iss10_acct": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10)], acct_excl=True),
+    "P_scr_iss10_acct": dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, screen=[("net_issuance", "top", 0.10)], acct_excl=True, acct_kinds=["icfr_ineffective", "restatement_adverse", "restatement_fraud_or_sec"]),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
