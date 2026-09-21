@@ -82,6 +82,11 @@ ARMS = {
     "P_x_ust10":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.10, x_kind="ust10_always"),
     "P_x_ust20":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10_always"),
     "P_x_ust10_gld10":  dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, x_w=0.20, x_kind="ust10+gld"),
+    # batch 10: accounting-risk exclusion (Audit Analytics: ineffective ICFR opinions, adverse restatements, fraud/SEC) — a screen, not a sleeve
+    "P_acct365":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True),
+    "P_acct730":        dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_window=730),
+    "P_acct365_adv":    dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["restatement_adverse", "restatement_fraud_or_sec"]),
+    "P_acct365_icfr":   dict(BASE, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, acct_excl=True, acct_kinds=["icfr_ineffective"]),
 }
 
 # ───────────────────────── EXP-060: analyst sleeve from IBES point-in-time features ─────────────────────────
@@ -125,6 +130,21 @@ def _cusip_at(permno, d64):
     for s_, e_, c_ in eras:
         if s_ <= d64 <= e_: return c_
     return eras[-1][2] if d64 > eras[-1][1] else None
+_ACCT = None
+def acct_flagged(d, members, cfg):
+    """PERMNOs (from `members`) whose CUSIP as of d has an accounting-risk event (Audit Analytics, PIT by filing date)
+    inside the trailing cfg['acct_window'] days (default 365); cfg['acct_kinds'] restricts the event kinds."""
+    global _ACCT
+    if _ACCT is None:
+        t = pd.read_parquet("research/_exp060/acct_events.parquet"); t["asof"] = pd.to_datetime(t["asof"]); _ACCT = t.sort_values("asof")
+    dt = pd.Timestamp(d); win = int(cfg.get("acct_window", 365)); kinds = cfg.get("acct_kinds")
+    w = _ACCT[(_ACCT["asof"] <= dt) & (_ACCT["asof"] > dt - pd.Timedelta(days=win))]
+    if kinds: w = w[w["kind"].isin(kinds)]
+    bad = set(w["cusip8"])
+    if not bad: return set()
+    dD = np.datetime64(dt).astype("datetime64[D]")
+    return {s_ for s_ in members if _cusip_at(s_, dD) in bad}
+
 _PX_CACHE = {}
 def _price_kind(d, members, kind, cfg, features, uni):
     """Price-based second-engine candidates (all from the universe's own price panel, PIT by construction):
@@ -328,9 +348,18 @@ def _engine():
          "                w = {k: w[k] * bl + bw.get(k, 0) * (1 - bl) for k in w}\n                if 'x' not in w: w['x'] = 0.0\n"),
         ("                for key, src in ((\"mom\", m1), (\"val\", mv), (\"s5\", m5), (\"s3\", m3)):\n",
          "                for key, src in ((\"mom\", m1), (\"val\", mv), (\"s5\", m5), (\"s3\", m3), (\"x\", mx)):\n"),
+        # EXP-060 batch 10: accounting-risk EXCLUSION filter (acct_excl) — sleeves pick top_n + acct_extra, flagged names are
+        # dropped, the list is truncated back to top_n and renormalised (so the filter never concentrates the sleeve)
+        ('top_n=cfg.get("top_n", 5),', "top_n=cfg.get('top_n', 5) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0),"),
+        ("                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)))\n",
+         "                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0))\n"),
+        ("                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)))\n",
+         "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)) + (int(cfg.get('acct_extra', 3)) if cfg.get('acct_excl') else 0))\n"),
+        ("                m3 = strategy3_sector_rotation(d, self.uni, di)\n",
+         "                m3 = strategy3_sector_rotation(d, self.uni, di)\n                if cfg.get('acct_excl'):\n                    _bad = acct_flagged(d, mem, cfg)\n                    def _trim(w_, n_):\n                        if not w_: return w_\n                        keep = [s_ for s_ in w_ if s_ not in _bad][:n_]\n                        if not keep: return {}\n                        tot_ = sum(w_[s_] for s_ in keep); return {s_: w_[s_] / tot_ for s_ in keep}\n                    m1 = _trim(m1, int(cfg.get('top_n', 5))); mv = _trim(mv, int(cfg.get('val_n', 10))); m5 = _trim(m5, int(cfg.get('lv_n', 10)))\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
-    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
+    V.END = E.END; ns = dict(V.__dict__); ns['sleeve_x'] = sleeve_x; ns['acct_flagged'] = acct_flagged; assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
 def st(v): return E.st(v)
 def main():
     t0 = time.time(); _engine(); cr = None
