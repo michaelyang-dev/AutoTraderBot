@@ -3805,6 +3805,21 @@ melt-up years where a flagged name happens to be the leader, and its benefit is 
 is the expected shape of a negative screen and the reason the 26yr matters: it must show the same spread across
 2004-2017, where the 8yr has no information.
 
+
+### EXP-060 batch 12 — in-universe negative screens (drop the top decile by net issuance / by asset growth), 8yr stage 1. DEAD.
+
+| screen | dCAGR | dSharpe (+) | dMaxDD | years better | 2024 |
+|---|---|---|---|---|---|
+| heaviest 10% issuers excluded | -9.68pp | -0.212 (0/8) | -6.7pp | 3/8 | -36.5 |
+| highest 10% asset growth excluded | -10.94pp | -0.250 (0/8) | -6.6pp | 3/8 | -53.6 |
+| both | -10.53pp | -0.228 (0/8) | -5.5pp | 3/8 | -48.9 |
+| issuers excluded + accounting screen (vs accounting screen) | -9.15pp | -0.192 (0/8) | -5.2pp | 3/8 | -32.6 |
+
+Read: the momentum leaders ARE the heavy issuers and fast asset growers (the 2024 winners raised capital and grew
+assets), so a fundamental "quality" screen anti-selects the engine and costs 10pp/yr. The contrast with the
+accounting-risk screen is the point: accounting flags (restatements, control failures) are ~orthogonal to the
+momentum rank, which is why that screen can remove risk without removing the return. Dead; not re-tested.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
