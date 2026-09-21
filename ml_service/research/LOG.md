@@ -3883,6 +3883,28 @@ which is diversification, not alpha. The accounting screen is real but too small
 Remaining unexplored data: `wrds_financial_ratios` (PERMNO-keyed, public_date = PIT) as a replacement VALUE engine
 (the deployed value sleeve is a different return source already in the book; a better one would count). Running next.
 
+
+### EXP-060 batch 14 — composite VALUE engine from wrds_financial_ratios (PIT), 8yr stage 1 (8 starts). DEAD.
+
+| arm | ALONE | corr | yrs > base | in package: dCAGR / dSharpe (+) / dMaxDD · years better · 2019, 2020 |
+|---|---|---|---|---|
+| composite value (bm, EV/EBITDA, P/CF, P/S, div yield; roa > 0) | +21.5% / 0.742 / -61% | **0.56** (lowest found) | 3/8 | — |
+| same, above SMA200 only | +15.0% / 0.601 / -63% | 0.63 | 3/8 | — |
+| replacing the deployed value sleeve (15%) | | | | +0.77pp / -0.003 (4/8) / **-4.8pp** · 5/8 · -12.3, -8.5 |
+| added as a 15% sleeve | | | | -0.28pp / -0.006 (3/8) / -3.7pp · 5/8 · -10.6, -7.1 |
+| replacing, top-20 | | | | -0.05pp / -0.020 (1/8) / -3.9pp · 5/8 |
+
+Read: a textbook value composite is the most diversifying sleeve in the search (corr 0.56) and still does not help — it
+carries value's 2019-20 collapse and a 60% standalone drawdown; the deployed value sleeve's quality/trend guards are why
+it survives at 15%. The ratio table is now used; no unused data source remains on disk.
+
+### SECOND-ENGINE SEARCH — COMPLETE for the data on disk (2026-09-20 23:55)
+Fourteen batches, every WRDS table and every ETF in the panel tested. Result: no second engine that is better than the
+package in most years on both horizons. Robust addition: a 10-15% gold line (diversification, small). Real but not
+promotable: the accounting-risk screen. Everything else dead. Further gains require new data (non-public) or a
+different execution horizon, as the memory from earlier programs already said. Owner decisions outstanding: the EXP-059
+package (built behind flags) and the gold line.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

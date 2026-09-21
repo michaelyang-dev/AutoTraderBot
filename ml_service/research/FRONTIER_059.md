@@ -113,8 +113,9 @@ recent adverse restatements or internal-control failures (Audit Analytics) — i
 horizons but small (+0.013 Sharpe on the 26yr, better in 14/25 years, negative in 2013-17) and fails the gate; it is not
 an engine, and the narrower adverse-restatement-only version fails the 26yr outright. Officer-change and dividend-cut screens are
 lotteries on single names. **Conclusion of the second-engine search (2026-09-20): within the data on disk there is no second
-engine that is better in most years on both horizons; the one robust addition is the 10-15% gold line.** Next: a replacement
-value engine from the unused WRDS financial-ratio table.
+engine that is better in most years on both horizons; the one robust addition is the 10-15% gold line.** A composite value engine from the WRDS ratio
+table (the last unused data source) is the most diversifying sleeve found (correlation 0.56) and still hurts: it carries value's
+2019-20 collapse. **The search is complete for the data on disk.**
 
 **Infrastructure note:** every research "stall" since 09-16 was the laptop running on battery with the jobs at
 background priority (efficiency cores + throttling); fixed for the 8yr, but the 26yr universe (35 GB) needs AC
