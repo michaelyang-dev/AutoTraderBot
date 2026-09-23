@@ -404,6 +404,8 @@ Pure cost lever: fewer one-share trims. Must be evaluated at cost 2x, where it m
 ### I-47 · 10% permanent gold (GLD) sleeve inside the package · **PASSES pairwise gate both-horizon logic (EXP-060: 26yr +0.020 Sharpe 24/24, 14/25 yrs, all sub-periods > 0; 8yr +0.030 24/24, 5/8 yrs). Small: +0.3pp CAGR / +0.8pp MaxDD. Diversification, not alpha. Timing it with SMA200 hurts.** · EV: LOW-MED (consistency)
 ### I-48 · Second-engine sleeves tested and DEAD in EXP-060: IBES surprise / revisions / up-down / recommendations; short-term reversal; calendar seasonality; overnight-minus-intraday momentum; 13F breadth; sector-ETF trend; plain long-term reversal (13-60m losers: 8yr 6/8 yrs but 26yr -0.041 0/24 = value-cycle regime bet). uptrend-filtered reversal DEAD on the 26yr (-0.024, 0/24, 11/25 yrs — same value cycle, filter trims losses ~1pp); VIXM tail hedge dead (gold's weaker cousin). Next: net share issuance (financing-decision signal, CRSP), 10y Treasury diversifier sleeve.
 
+### I-49 · Breadth-blend rule (v12: bull mix -> bear mix 11/33/56 as breadth falls 60%->35%) · **TESTED EXP-061 (2026-09-22): always-bull worse on 8/8 starts and 12/25 years on the 26yr; ramp shifts (25-50, 45-70, 35-85) and milder bear mixes (40/35/25, 50/30/20) all worse on 8/8; value-heavy bear noise-level. RULE, THRESHOLDS AND BEAR MIX AT THE FRONTIER — do not re-test.** · EV: closed
+
 ### I-37 · Slow value/lowvol refresh (every 2nd rebuild) · **DEAD (EXP-059: +0.05 on the 8yr, ~0 on the 26yr — horizon-specific)** · EV: LOW-MED (cost)
 Value and quality signals are slow; refreshing them every 40 sessions per book halves their turnover.
 

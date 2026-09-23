@@ -3983,6 +3983,28 @@ Read: 2018-2026 is a momentum decade with one narrow year, so on this horizon le
 years — but every arm that reduces the bear tilt pays 8-14pp in 2025 and 1.5-2.5pp of MaxDD, which is the rule doing
 its job. This is precisely the kind of question the 8yr cannot settle. 26yr stage 1 running.
 
+
+### EXP-061 stage 1, 26yr (8 starts) — vs the live package at the live cap (+19.88% / 0.787 / -41.4%). VERDICT: the rule stands.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | ex-2008/2020 years | worst year |
+|---|---|---|---|---|---|---|
+| no blend (always bull) | -0.67pp | -0.040 (0/8) | -1.1pp | 12/25 | 12/23 | 2025 -13.9 |
+| ramp 25-50% | +0.06pp | -0.005 (1/8) | +0.2pp | 13/25 | 13/23 | 2025 -9.0 |
+| ramp 45-70% | -0.74pp | -0.015 (0/8) | +0.3pp | 9/25 | 8/23 | 2005 -10.7 |
+| ramp 35-85% (wider) | -0.93pp | -0.027 (0/8) | +0.7pp | 9/25 | 8/23 | 2005 -9.7 |
+| bear mix 40/35/25 | +0.13pp | -0.010 (0/8) | -0.6pp | 13/25 | 12/23 | 2025 -7.6 |
+| bear mix 50/30/20 | -0.04pp | -0.019 (0/8) | -1.1pp | 12/25 | 12/23 | 2018 -9.6 |
+| bear mix value-heavy 11/56/33 | +0.09pp | +0.004 (5/8) | -0.5pp | 14/25 | 12/23 | 2023 -4.7 |
+
+Read: (1) Always-bull is worse on every start and better in only 12/25 years — the blend is earning its keep, not
+dragging. (2) Neither knob is off its frontier: shifting the ramp in either direction is worse on 8/8 starts, and every
+bear mix with more momentum loses Sharpe on 8/8 starts (they buy back 2005/2022-type years by paying 2018/2025-type
+years and 0.6-1.1pp of MaxDD). (3) The only arm not strictly worse — value-heavy bear (Sharpe +0.004 on 5/8, 14/25 years)
+— is noise-level and swaps the 2023 loss for the 2024 gain; it does not meet the promotion bar and is not run further.
+(4) The 8yr's "less defensive is better" (6-7 of 8 years) was the 2018-26 momentum decade talking; the 26yr's extra
+regimes (2001-02, 2006, 2010, 2018) reverse it. Rule, thresholds and bear mix all stay. No stage 2 needed: no arm
+survives stage 1 on the 26yr. Closed 2026-09-22 22:35.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
