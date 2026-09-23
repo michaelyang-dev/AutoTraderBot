@@ -448,6 +448,25 @@ books 21/20/23/18 names, vol-scale 0.96. Ledger snapshot `data/ibkr_tranche_stat
 BSY 11, ELF 7, BX 6, NFLX 10, MRNA 3); MU held. Overlay: no trims (books 0/1/3 at 1.30/1.31/0.65x, all below target).
 The morning's actual orders are compared against this list.
 
+**Breadth / "dormant bull split" verified end to end (2026-09-22 22:00-22:40 ET), owner asked twice:**
+1. Live number is right: the server's 25.9% (computed on the 09-21 session — the partial-session guard dropped the empty
+   09-22 row at 21:50; Massive's daily bars arrived minutes later) matches an independent full-universe recomputation
+   from fresh Massive bars: 25.8% as of 09-21, 26.5% as of 09-22 (1,532 names, same 50-day-SMA definition).
+2. Same formula both sides: live `breadth = share of feature-map names with dist_sma50 > 0`, `blend = clip((breadth-0.35)/0.25, 0, 1)`;
+   backtest `main_production_backtest.py:411-416` and the clean room use the identical expression and the same bear
+   weights constant.
+3. Pool difference is negligible: the backtest counts every name in the panel (median 1,854 incl. ex-members still
+   trading), live counts current members (1,502); over 2018-2026 the two breadth series differ by 0.009 on average
+   (max 0.045) and the blend differs by more than 0.1 on 1.6% of days.
+4. It is a normal state: in the backtest's own data blend = 0 on 18% of days since 2018 and blend < 1 on ~half; the
+   backtest's breadth fell from 0.53 (Aug 24) to 0.40 (Sep 1) and was 0.46 on Sep 4, its last day — the live 0.26 on
+   Sep 21 continues that slide (a narrow, mega-cap-led September).
+5. Consequence: while breadth < 35% every rebuild uses 11/33/56 momentum/value/lowvol, in the backtest as in live;
+   the 80/15/5 split engages as breadth recovers (linearly from 35% to 60%). The package's validated numbers include
+   these regimes. Nothing to fix.
+(Research-side accessor trap found on the way: the raw universe's `get_sp500()` returns a legacy S&P 500 TICKER list;
+the clean room replaces it with `bt._get_sp1500` (PERMNO-keyed). Scripts must use the latter — E-060e in BUGS.md.)
+
 **Rollback:** delete the three lines from `.env`, `pm2 restart signal-server --update-env && pm2 restart ibkr-engine --update-env`
 (after the close). Previous state of this section follows for the record.
 

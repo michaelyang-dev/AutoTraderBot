@@ -3946,6 +3946,14 @@ Gold decision table (24 starts; 26yr is the expectation, 8yr shown for completen
 4. Mechanics: GLD is held as an ordinary position (same 40% trailing stop, same de-risk overlay, whole shares — ~5 shares
    per $15k book at today's price); GLD pays no distributions so price return = total return; the 2x-cost arm holds.
 
+
+### Deployment note (2026-09-22): the EXP-059 package is LIVE; the bull split is dormant while breadth < 35%
+Shipped 21:50-21:57 ET (docs/LIVE_SYSTEM.md has the full record, the two start-up traps, the book-2 dry run and the
+breadth verification). Live breadth 25.9% -> blend 0 -> bear weights 11/33/56 for every rebuild until breadth recovers;
+verified against a fresh full-universe recomputation (25.8%), the same formula in the backtest, a negligible pool
+difference (mean 0.009) and the backtest's own history (blend 0 on 18% of days since 2018). Series saved:
+`research/_breadth_series_8yr.csv`. First live rebuild under the package: 2026-09-23 (book 2), compared to the dry run.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
