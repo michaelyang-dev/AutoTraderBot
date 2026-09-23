@@ -111,6 +111,14 @@ ARMS = {
     "cap0.15_cost2":           dict(BASE, cap=0.15, cost_mult=2.0),
     "cap0.15+mom_equal_cost2": dict(BASE, cap=0.15, mom_equal=True, cost_mult=2.0),
     "cap0.15_package":         dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05),
+    # EXP-061 (2026-09-22): the breadth-blend rule, on the live package at the live cap
+    "pkg_noblend":             dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, no_blend=True),
+    "pkg_blend25_50":          dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, blend_lo=0.25, blend_width=0.25),
+    "pkg_blend45_70":          dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, blend_lo=0.45, blend_width=0.25),
+    "pkg_blend35_85":          dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, blend_lo=0.35, blend_width=0.50),
+    "pkg_bear_mild":           dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, bear_w={"mom": 0.40, "val": 0.35, "s5": 0.25, "s3": 0.0}),
+    "pkg_bear_mom50":          dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, bear_w={"mom": 0.50, "val": 0.30, "s5": 0.20, "s3": 0.0}),
+    "pkg_bear_valheavy":       dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05, bear_w={"mom": 0.1111, "val": 0.5556, "s5": 0.3333, "s3": 0.0}),
     # batch 8: risk parameters on top of the surviving pair (OM = overlay_down + mom_equal): trailing stop, vol-clamp floor, vol target
     "OM":                      dict(BASE, overlay_down=True, mom_equal=True),
     "OM_stop35":               dict(BASE, overlay_down=True, mom_equal=True, stop=0.35),
@@ -204,6 +212,11 @@ def _engine():
         # batch 12: value / lowvol name counts as switches
         ("                mv = strategy_value(self.uni, d, mem, top_n=10)\n", "                mv = strategy_value(self.uni, d, mem, top_n=int(cfg.get('val_n', 10)))\n"),
         ("                m5 = strategy5_lowvol_quality(d, self.uni, di)\n", "                m5 = strategy5_lowvol_quality(d, self.uni, di, top_n=int(cfg.get('lv_n', 10)))\n"),
+        # EXP-061: breadth-blend rule as switches (ramp lower bound / width, bear mix override, no blend)
+        ("                bl = min(1.0, max(0.0, (ab / max(tf, 1) - 0.35) / 0.25))\n",
+         "                bl = min(1.0, max(0.0, (ab / max(tf, 1) - float(cfg.get('blend_lo', 0.35))) / float(cfg.get('blend_width', 0.25))))\n                if cfg.get('no_blend'): bl = 1.0\n"),
+        ("                bw = _short_weights(PROD_WEIGHTS_BEAR)\n",
+         "                bw = dict(cfg['bear_w']) if cfg.get('bear_w') else _short_weights(PROD_WEIGHTS_BEAR)\n"),
     ]
     for a, b in reps: assert src.count(a) == 1, a[:80]; src = src.replace(a, b)
     V.END = E.END; ns = dict(V.__dict__); assert ns["END"] == E.END; exec(compile(textwrap.dedent(src), "<exp059>", "exec"), ns); CleanRoom.run = ns["run"]
