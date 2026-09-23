@@ -3954,6 +3954,18 @@ verified against a fresh full-universe recomputation (25.8%), the same formula i
 difference (mean 0.009) and the backtest's own history (blend 0 on 18% of days since 2018). Series saved:
 `research/_breadth_series_8yr.csv`. First live rebuild under the package: 2026-09-23 (book 2), compared to the dry run.
 
+
+## Cycle 59 — EXP-061 · the breadth-blend rule itself (opened 2026-09-22 late, owner's request after seeing blend = 0 live)
+
+Question: v12 blends the bull sleeve mix toward the bear mix (11/33/56 mom/val/lowvol) linearly as the share of names
+above their 50-day SMA falls from 60% to 35%. It was part of the validated v12 and never a target of EXP-059/060. Is the
+rule earning its keep, and are its two knobs (the ramp and the bear mix) at the frontier? Base = the LIVE package at the
+live 15% cap (`cap0.15_package`, 24 starts: 8yr +35.8/1.13; 26yr +19.7/0.78). Arms: no blend (always bull), ramp 25-50%,
+ramp 45-70%, ramp 35-85% (wider), bear mix 40/35/25, bear mix 50/30/20, bear mix value-heavy (11/56/33). Stage 1 (8
+starts) both horizons, then 24 starts and the pairwise gate for survivors, years-better first. Hypothesis to beat:
+"no blend" — if always-bull is not worse in most years on the 26yr, the rule is drag; if it is, the rule is doing
+its job and only the knobs are in question. Nothing changes live until this is answered.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
