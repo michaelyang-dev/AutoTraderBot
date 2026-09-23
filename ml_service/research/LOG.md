@@ -3966,6 +3966,23 @@ starts) both horizons, then 24 starts and the pairwise gate for survivors, years
 "no blend" — if always-bull is not worse in most years on the 26yr, the rule is drag; if it is, the rule is doing
 its job and only the knobs are in question. Nothing changes live until this is answered.
 
+
+### EXP-061 stage 1, 8yr (8 starts) — vs the live package at the live cap (+33.97% / 1.086 / -31.6%). INTERIM, UNAUDITED.
+
+| arm | dCAGR | dSharpe (+) | dMaxDD | years better | 2025 (the narrow year) |
+|---|---|---|---|---|---|
+| no blend (always 80/15/5) | +2.69pp | +0.018 (7/8) | **-2.5pp** | 6/8 | **-13.9pp** |
+| bear mix 50/30/20 | +2.47pp | +0.024 (7/8) | -2.0pp | 7/8 | -9.3pp |
+| bear mix 40/35/25 | +1.95pp | +0.021 (7/8) | -1.5pp | 7/8 | -7.6pp |
+| bear mix value-heavy 11/56/33 | +0.39pp | +0.012 (7/8) | -0.2pp | 4/8 | -0.9pp |
+| ramp 25-50% | +0.74pp | +0.002 (2/8) | -0.1pp | 5/8 | -9.0pp |
+| ramp 45-70% | -0.69pp | 0.000 (3/8) | -0.6pp | 2/8 | +11.1pp |
+| ramp 35-85% (wider) | -1.73pp | -0.029 (1/8) | -0.5pp | 2/8 | +7.6pp |
+
+Read: 2018-2026 is a momentum decade with one narrow year, so on this horizon less defensiveness looks better in most
+years — but every arm that reduces the bear tilt pays 8-14pp in 2025 and 1.5-2.5pp of MaxDD, which is the rule doing
+its job. This is precisely the kind of question the 8yr cannot settle. 26yr stage 1 running.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
