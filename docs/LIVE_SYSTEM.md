@@ -464,6 +464,11 @@ The morning's actual orders are compared against this list.
 5. Consequence: while breadth < 35% every rebuild uses 11/33/56 momentum/value/lowvol, in the backtest as in live;
    the 80/15/5 split engages as breadth recovers (linearly from 35% to 60%). The package's validated numbers include
    these regimes. Nothing to fix.
+6. History of the live blend (recomputed 2026-09-22 from fresh vendor bars, 1,532 names, session before each build):
+   Jul 28 breadth 68% / blend 1.00 (70% momentum) · Aug 11 62% / 1.00 (70%) · Aug 25 54% / 0.75 (55%) · Sep 9 book 0:
+   40% / 0.21 (24%) · Sep 16 book 1: 31% / 0.00 (11%) · Sep 23 book 2: 26% / 0.00 (11%). Weekly breadth 08-14 66% ->
+   08-21 53% -> 08-28 48% -> 09-04 45% -> 09-11 34% -> 09-18 26%. The summer books were momentum-led; book 1 was the first
+   fully defensive build. SNDK/MU/WDC entered on Aug 11 (70% momentum) and were re-selected Sep 9.
 (Research-side accessor trap found on the way: the raw universe's `get_sp500()` returns a legacy S&P 500 TICKER list;
 the clean room replaces it with `bt._get_sp1500` (PERMNO-keyed). Scripts must use the latter — E-060e in BUGS.md.)
 
