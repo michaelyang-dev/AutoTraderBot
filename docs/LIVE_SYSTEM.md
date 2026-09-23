@@ -416,7 +416,42 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
-## EXP-059 package — BUILT BEHIND FLAGS, ALL OFF (2026-09-17). Not deployed; owner's call.
+## EXP-059 package — SHIPPED 2026-09-22 21:50-21:57 ET (owner's go, box + GitHub at 9f6e562)
+
+**What is live now:** `IBKR_OVERLAY_DOWN=1`, `MOM_EQUAL_WEIGHT=1`, `PROD_BULL_WEIGHTS=0.80,0.15,0.05` in the box `.env`
+(no comment lines — `export $(cat .env | xargs)` in both start scripts cannot parse them; that bit me once tonight before
+any restart). Gate before shipping: the package re-measured under the LIVE 15% combiner cap (arm `cap0.15_package`, 24
+starts): 26yr +1.56pp / +0.064 Sharpe (24/24) / +5.5pp MaxDD, 15/25 years, CI [+0.024, +0.115]; 8yr +3.4pp / +0.105 (24/24),
+fails only 2020-concentration. All 7 test suites + lint green locally and on the box.
+
+**Trap found and fixed before restart:** `signal_server.py` imports the strategy module (which reads the two signal
+flags at import) BEFORE its `load_dotenv()`, and `start_signal_server.sh` did not export `.env` — the flags would have
+been silently ignored. Fix: the start script now exports `.env` exactly like the engine's; both services log the
+resolved flags at startup (`EXP-059 flags (resolved at import): MOM_EQUAL_WEIGHT=True PROD_WEIGHTS_BULL={0.8,0.15,0.05}`;
+`EXP-059 de-risk overlay (IBKR_OVERLAY_DOWN): ON`). Verified in both logs.
+
+**Signal-side verification:** server restarted 21:50:45, health OK at 65s, cache rewritten 21:51:47 (the first fetch
+after restart returned the pre-change 18:28 cache — "serving while refreshing" — so compare only after the rewrite).
+BUY list 22 names, identical set before/after; momentum names' relative weights shifted (CORT 0.744→0.679, NTNX
+0.702→0.641, DELL 0.563→0.514). **Breadth is 25.9% → blend 0.00: the combiner is on the BEAR weights (11/33/56), so
+the 80/15/5 bull split is dormant until breadth > 35%.** Same formula as the backtest; confirmed real with an
+independent 119-name sample fetched fresh from Massive (31.9% above the 50d SMA). Pre/post signal snapshots saved as
+`data/signals_{pre,post}_exp059_2026-09-22.json`.
+
+**Engine restart 21:56:48:** `Loaded tranche state: counter 4/5, next book 2`, overlay ON, connected, NAV $62,971,
+books 21/20/23/18 names, vol-scale 0.96. Ledger snapshot `data/ibkr_tranche_state.pre-exp059-restart.json`.
+
+**Dry run of 2026-09-23 (book 2) with the new signals and the engine's own pure functions:** target 1.43x (vol-scale
+0.96), sizing mult 1.65, projected gross $22,533 on a $15,743 quarter, 20 names, max weight 14.9%, LITE/SNDK round to 0;
+15 legacy exits (SEZL, PAYC, STX, APPF, DDOG, PAYX, SNDK, DUOL, LITE, BKNG, META, CRWD, YELP, WDC, RNG) and 19 buys
+(MXL 23, CORT 15, NTNX 24, DELL 2, OGN 110, AMD 2, FTNT 6, PAYO 166, ABBV 4, ADSK 2, ADBE 2, DOCS 35, RDDT 5, CARG 26,
+BSY 11, ELF 7, BX 6, NFLX 10, MRNA 3); MU held. Overlay: no trims (books 0/1/3 at 1.30/1.31/0.65x, all below target).
+The morning's actual orders are compared against this list.
+
+**Rollback:** delete the three lines from `.env`, `pm2 restart signal-server --update-env && pm2 restart ibkr-engine --update-env`
+(after the close). Previous state of this section follows for the record.
+
+## EXP-059 package — BUILT BEHIND FLAGS (2026-09-17), record before shipping
 
 Research result (`ml_service/research/FRONTIER_059.md`): three small changes, each gate-tested on 24 starts x 2
 horizons, together +1.5pp CAGR / +0.06 Sharpe / +5pp MaxDD on the 26yr (17/25 years, CI > 0, intact at 2x cost).

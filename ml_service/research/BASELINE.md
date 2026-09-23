@@ -337,7 +337,7 @@ strategy is genuinely behind passive.
    nothing because it almost never touches a name that reaches the book (EXP-006). Evaluate
    screens on how often they change an actual pick.
 
-## Candidate (NOT canon, NOT deployed) — EXP-059 package, 2026-09-17
+## EXP-059 package — DEPLOYED 2026-09-22 (candidate numbers below; promote to canon after a live-parity check)
 overlay_down + mom_equal + sleeves 80/15/5 on the deployed structure @1.49x, v2 universes, 24 starts, PRELIMINARY:
 26yr +19.71% / 0.779 / -41.2% (canon deployed +18.16% / 0.719 / -46.6%); 8yr +35.54% / 1.122 / -31.4% (canon +32.42% / 1.026 / -36.7%).
 Promote to canon only after deployment and a live-parity check. Details: FRONTIER_059.md, LOG.md cycle 57.

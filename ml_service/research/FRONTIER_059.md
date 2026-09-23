@@ -51,7 +51,7 @@ alike, -0.2..-1.3pp/yr at live size).
    and the sub-period checks are the out-of-sample evidence available; a true holdout does not exist for a 26-year sample.
 
 ## If deployed — the three live changes (not done; owner's go required)
-**Status 2026-09-17: all three are BUILT behind flags that default OFF** (`IBKR_OVERLAY_DOWN=1`, `MOM_EQUAL_WEIGHT=1`,
+**Status 2026-09-22: SHIPPED — all three flags ON on the box (see docs/LIVE_SYSTEM.md). Note the bull split is dormant while breadth < 35% (blend 0 on 2026-09-22).** Earlier status: all three were BUILT behind flags that default OFF (`IBKR_OVERLAY_DOWN=1`, `MOM_EQUAL_WEIGHT=1`,
 `PROD_BULL_WEIGHTS=0.80,0.15,0.05`; see docs/LIVE_SYSTEM.md "EXP-059 package"), with tests. Deploying = set the
 flags in the box `.env`, restart signal-server + ibkr-engine after the close, record in LIVE_SYSTEM.md. The list
 below is what each flag does.
