@@ -110,6 +110,7 @@ ARMS = {
     "cap0.15+overlay_down+mom_equal": dict(BASE, cap=0.15, overlay_down=True, mom_equal=True),
     "cap0.15_cost2":           dict(BASE, cap=0.15, cost_mult=2.0),
     "cap0.15+mom_equal_cost2": dict(BASE, cap=0.15, mom_equal=True, cost_mult=2.0),
+    "cap0.15_package":         dict(BASE, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05),
     # batch 8: risk parameters on top of the surviving pair (OM = overlay_down + mom_equal): trailing stop, vol-clamp floor, vol target
     "OM":                      dict(BASE, overlay_down=True, mom_equal=True),
     "OM_stop35":               dict(BASE, overlay_down=True, mom_equal=True, stop=0.35),

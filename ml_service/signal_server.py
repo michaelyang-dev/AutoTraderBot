@@ -60,6 +60,9 @@ logging.basicConfig(
     stream  = sys.stdout,
 )
 log = logging.getLogger("signal_server")
+from strategies import multi_strategy_engine as _mse
+log.info(f"EXP-059 flags (resolved at import): MOM_EQUAL_WEIGHT={_mse.MOM_EQUAL_WEIGHT} "
+         f"PROD_WEIGHTS_BULL={ {k: v for k, v in _mse.PROD_WEIGHTS_BULL.items() if v} }")
 
 # ── Universe ──────────────────────────────────────────────────────────────────
 from sp500_universe import get_all_symbols

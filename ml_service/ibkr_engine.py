@@ -232,6 +232,8 @@ class IBKREngine:
                                for t in range(TRANCHES)}
                 log.info(f"Loaded tranche state: counter {st['stride_counter']}/{TRANCHE_STRIDE}, "
                          f"next book {st['next_tranche']}, initialized={st['initialized']}")
+                log.info(f"EXP-059 de-risk overlay (IBKR_OVERLAY_DOWN): {'ON' if TRANCHE_OVERLAY_DOWN else 'off'} "
+                         f"(threshold {TRANCHE_OVERLAY_THR}, min trade {TRANCHE_MIN_TRADE_PCT:.1%} of book)")
         except Exception as e:
             log.warning(f"Could not load tranche state: {e}")
         return st
