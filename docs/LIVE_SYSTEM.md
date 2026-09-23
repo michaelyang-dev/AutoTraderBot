@@ -416,6 +416,15 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Book 2, 2026-09-23 — first rebuild under the EXP-059 package: CLEAN
+09:32:50 signals (22 BUY; overnight refresh vs the 09-22 dry run: NFLX out, DUOL in; breadth 26.5%, blend 0) ·
+credit gate off (HY-OAS pctile 2.4%) · vol-scale 0.96 -> target 1.43x · SIZING mult 1.66 -> projected 1.45x · 13 exits
+(SEZL, PAYC, STX, APPF, DDOG, PAYX, SNDK, LITE, BKNG, META, CRWD, YELP, WDC, RNG — SNDK/LITE are still signals but round to 0
+shares at NAV/4) + 20 buys, 37 fills, no rejects/partials, done 09:37:30 (no watchdog). Overlay: "no book above target —
+no trims" (books 0/1/3 at 1.30/1.33/0.65x). After: book 2 = 20 names, 1.46x, max MXL 14.6%; ledger == broker (36 names);
+every book-2 name has a book-keyed stop peak; tranche state counter 0, next book 3 (2026-09-30). Account gross 1.18x,
+NAV $61,827, cash -$11,302 (margin, expected at 1.18x).
+
 ## EXP-059 package — SHIPPED 2026-09-22 21:50-21:57 ET (owner's go, box + GitHub at 9f6e562)
 
 **What is live now:** `IBKR_OVERLAY_DOWN=1`, `MOM_EQUAL_WEIGHT=1`, `PROD_BULL_WEIGHTS=0.80,0.15,0.05` in the box `.env`
