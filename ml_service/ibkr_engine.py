@@ -2582,6 +2582,20 @@ class IBKREngine:
                 log.warning(f"Telegram poll error: {e}")
                 await asyncio.sleep(5)
 
+    def _ensure_telegram_task(self):
+        """Start (or restart) the Telegram poll loop and KEEP A REFERENCE to it. asyncio only holds weak references
+        to tasks: the old bare create_task() let the GC destroy the loop mid-await ("Task was destroyed but it is
+        pending!", 2026-09-27/28) and /commands went silent until a process restart. Called at startup and every cycle."""
+        t = getattr(self, "_tg_task", None)
+        if t is None or t.done():
+            if t is not None:
+                try:
+                    exc = t.exception() if not t.cancelled() else "cancelled"
+                except Exception as e:
+                    exc = e
+                log.warning(f"Telegram poll loop was not running ({exc}) — restarting it")
+            self._tg_task = asyncio.create_task(self._telegram_poll_loop())
+
     async def run(self):
         """Main loop."""
         # Init outage tracking + start the Telegram bot BEFORE connecting, so /reconnect
@@ -2590,7 +2604,7 @@ class IBKREngine:
         self._escalated = False
         self._last_progress = time.time()
         self.running = True             # set BEFORE telegram task: its loop is `while self.running`
-        asyncio.create_task(self._telegram_poll_loop())
+        self._ensure_telegram_task()
         # Robust startup connect: retry with backoff + 2FA escalation instead of fatal
         # crash-looping (the ~1/sec PM2 restart loop that spams alerts) when Gateway down.
         await self._connect_with_retry()
@@ -2664,6 +2678,7 @@ class IBKREngine:
             try:
                 cycle += 1
                 self._last_progress = time.time()   # watchdog heartbeat — proves the loop is alive
+                self._ensure_telegram_task()          # restart the /command listener if it ever died
 
                 # Connection health: check the socket every cycle AND the real DATA FEED
                 # about once a minute. A dead login (you logged in elsewhere) keeps the
