@@ -416,6 +416,13 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Telegram /commands silent 2026-09-27/28 — FIXED (cca48e7, engine restarted 14:03 ET 09-28)
+The poll loop was started with a bare `asyncio.create_task()`; asyncio keeps only weak references to tasks, so the GC
+destroyed it mid-await ("Task was destroyed but it is pending!" at 09-27 09:43 and 09-28 00:30, both right after an IB
+reconnect). Outbound alerts kept working; /commands got no replies (6 updates were pending at Telegram). Fix:
+`_ensure_telegram_task()` holds `self._tg_task` and restarts the loop at the top of every main-loop cycle if it is done.
+Verified: listener started, pending updates 0, confirmation message delivered.
+
 ## Book 2, 2026-09-23 — first rebuild under the EXP-059 package: CLEAN
 09:32:50 signals (22 BUY; overnight refresh vs the 09-22 dry run: NFLX out, DUOL in; breadth 26.5%, blend 0) ·
 credit gate off (HY-OAS pctile 2.4%) · vol-scale 0.96 -> target 1.43x · SIZING mult 1.66 -> projected 1.45x · 13 exits
