@@ -416,6 +416,18 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Book 3, 2026-09-30 — CLEAN (first rebuild on SSGA membership + final-bar cache)
+09:19 pre-open refresh reused the final 09-29 bars (1,541 from cache, 0 vendor calls) · served signals identical to the
+verified set (23 BUY, breadth 21.6%, blend 0) · 09:32:32 tranche 5/5 → book 3 · credit gate off (HY-OAS 3.02, pctile
+11.8%) · vol-scale 0.98 → target 1.46x (the running engine still included the pre-session NAV seed; 1.41x once the
+eea223f engine restarts) · SIZING mult 1.68 → projected 1.51x (whole-share lumpiness, MU ~$1,074) · 9 exits (SEZL 4,
+PAYC 2, APPF 2, SNDK 1, LITE 1, ADSK 2, YELP 20, WDC 2, RNG 4) and 21 buys all filled 09:34:23-09:36:06 (MXL 21 @93.82,
+MU 1 @1,074.18, NTNX 24, CORT 12, OGN 111, AMD 2, FTNT 5, CRWD 4, PANW 2, ATRC 19, ADBE 2, DOCS 35, RDDT 6, CARG 28,
+BSY 12, PAYX 4, DUOL 1, BX 7, WDAY 4, AXTI 7, MRNA 3) · overlay: no trims. 09:52: ledger == IBKR, 0 open orders,
+NAV $62,065, gross $86,882 = 1.40x, 33 positions, AvailableFunds $39,256. Next: book 0 on 2026-10-07.
+False alarm the same night: a 03:12 OFFLINE test (temp builder copy with no data folder, Telegram vars exported) sent
+"COVERAGE ALARM: roe 0.0%" to the owner; the live server never alarmed. Offline runs now strip the Telegram vars.
+
 ## Live-vs-backtest parity audit 2026-09-30 02:00-03:30 ET — 1 live-only failure mode, 2 parity gaps fixed (held for after the close), 4 measured differences
 Compared the live path (signal_builder + ibkr_engine) with the validated backtest (build_universe_v2 universe,
 main_production_backtest / VERIFY2 clean room) on the validated 8yr universe and on today's data.
