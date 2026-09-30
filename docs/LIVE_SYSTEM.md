@@ -534,6 +534,13 @@ DUOL 1, BX 6, WDAY 4, MRNA 2, VICR 1. LITE / SNDK round to 0 shares (book-3 targ
 After: book 3 21 names (MXL 15.0%, MU 13.8%, NTNX 12.2% of the quarter), account 33 positions, gross ≈1.39x NAV.
 Lesson: an evening dry run is only as fresh as the signals' AS-OF session — check it (`_uni_cache_date` / the
 "computing on last completed session" log line) before quoting trades.
+**06:00-06:07 ET — membership fix LIVE:** the 06:00 cron scrape used SSGA holdings for all three indexes (503 / 400 /
+603, identical to the 02:14 rehearsal); signal server restarted 06:03 (1,526 bars reused, 15 new members fetched),
+build 06:04:31 as-of 2026-09-29, 23 BUY, breadth 21.6%, coverage ok — served signals IDENTICAL to the precomputed
+expected set on all 1,506 members. **Final book-3 plan** (engine functions, 06:07 prices, the RUNNING engine's
+vol-scale 0.979 → 1.46x): sells SEZL 4, PAYC 2, APPF 2, SNDK 1, LITE 1, ADSK 2, YELP 20, WDC 2, RNG 4; buys MXL 21,
+MU 1, NTNX 24, CORT 11, OGN 108, AMD 2, FTNT 5, CRWD 4, PANW 2, ATRC 18, ADBE 2, DOCS 34, RDDT 6, CARG 27, BSY 11,
+PAYX 4, DUOL 1, BX 6, WDAY 4, AXTI 7, MRNA 2; book 3 → 21 names at 1.47x; account 33 positions, 1.39x gross.
 
 ## "DATA REFRESH PARTIAL — Failed: enhanced_data" 2026-09-29 17:40 — false alarm; refresh job hardened (0155bab)
 **What happened:** the 17:30 cron `scripts/refresh_data.py` step `enhanced_data` hit its 600 s SIGALRM budget. That step ran
