@@ -416,6 +416,32 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## "DATA REFRESH PARTIAL — Failed: enhanced_data" 2026-09-29 17:40 — false alarm; refresh job hardened (0155bab)
+**What happened:** the 17:30 cron `scripts/refresh_data.py` step `enhanced_data` hit its 600 s SIGALRM budget. That step ran
+`fetch_all_data.main()`: the FMP caches (price targets/DCF 3-day TTL, growth/EV/profiles 7-day TTL, econ calendar 1-day)
+PLUS a full 1,502-name options sweep — the same sweep the separate `options` step repeats later. On the weekly day the
+7-day FMP caches expire (~7.5 min of FMP calls) the duplicate ~4-min sweep pushed it past 600 s (killed at options
+900/1502). **No data was lost:** every FMP file was saved 17:32-17:37 and the `options` step captured the 09-29 snapshot
+at 18:32 (1,495 names). **No live impact:** live signals are built with `build_signals_v9(raw, enhanced_data=None, ...)`
+(the FMP enhanced maps are deliberately empty live, matching the backtest's `DEPLOYED_EMPTY_MAPS`), and the engine's
+go/no-go gate (`/health` is_stale) tracks price bars only.
+**Defects found and fixed:** (1) SIGALRM timeouts raised inside steps can be swallowed by the fetchers' broad
+`except Exception` (or fire mid-save); (2) steps catch their own errors and return False, and the wrapper only retried on
+exceptions — retries never ran; (3) a step could "succeed" without writing anything; (4) the alert called research-only
+inputs "critical"; (5) options snapshots were labelled with the wall-clock date (Sunday 21:00 runs stored Friday's
+session as 09-27).
+**Now:** each step runs in a forked child with a hard kill at its budget, retries on timeout/exception/False, and must
+leave its declared output files within their max age. `STEPS` table (budget ~2x slowest run): enhanced_fmp 1500 s
+(FMP only), VIX 180 s [LIVE], fundamentals 3600 s (live fallback only), options 900 s, snapshots, price archive,
+journal, Fama-French, gap scan, cache flush. Alerts say "LIVE INPUT FAILED" or "research data only (live trading NOT
+affected)" and name the reason. Options are labelled by the session in the contracts' `day.last_updated`.
+`tests/test_refresh_runner.py` (17 checks) pins the runner semantics AND asserts every live `build_signals_v9` call
+passes `enhanced_data=None` — if that ever changes, the test fails and enhanced_fmp must be re-classified as live.
+Verified on the box 09-30 00:35-00:40 through the new runner: enhanced_fmp ok (1 s, caches fresh), VIX ok, options ok
+(241 s, 1,495 names, labelled session 2026-09-29 from a 00:40 run and deduped, no 09-30 rows); tests 17/17 + tranche
+47/47 on the box. History cleanup: 18 weekend-labelled dates (25,930 rows) each duplicated an existing Friday row and
+were dropped; backup `data/enhanced_data/options_history.pre-weekend-cleanup-2026-09-30.parquet`; 109 clean session dates.
+
 ## Telegram /commands silent 2026-09-27/28 — FIXED (cca48e7, engine restarted 14:03 ET 09-28)
 The poll loop was started with a bare `asyncio.create_task()`; asyncio keeps only weak references to tasks, so the GC
 destroyed it mid-await ("Task was destroyed but it is pending!" at 09-27 09:43 and 09-28 00:30, both right after an IB
