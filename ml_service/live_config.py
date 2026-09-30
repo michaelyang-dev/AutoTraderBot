@@ -70,3 +70,10 @@ LIVE_CREDIT_DERISK = 0.0      # credit_gate.DERISK: the rebuilding book goes fla
 LIVE_OVERLAY_DOWN = True      # 2026-09-23 SHIPPED — ibkr_engine.TRANCHE_OVERLAY_DOWN (env IBKR_OVERLAY_DOWN=1): de-risk-only trims of the other books on tranche days
 LIVE_MOM_EQUAL_WEIGHT = True  # 2026-09-23 SHIPPED — multi_strategy_engine.MOM_EQUAL_WEIGHT (env MOM_EQUAL_WEIGHT=1): equal-weight momentum picks
 LIVE_BULL_WEIGHTS_OVERRIDE = "0.80,0.15,0.05"  # 2026-09-23 SHIPPED — multi_strategy_engine PROD_BULL_WEIGHTS env ("0.80,0.15,0.05" = the package's split); None = 70/21/9
+# DATA LAYER (2026-09-30 — docs/LIVE_SYSTEM.md "Live data verification 2026-09-30"):
+LIVE_SESSION_SETTLE_HOUR_ET = 17  # a daily bar is final from 17:00 ET: massive_data_provider.SETTLE_HOUR_ET == signal_builder.SESSION_SETTLE_HOUR_ET
+LIVE_PRICE_CACHE_RULE = ("reuse a Massive file only if <18h old AND written after the last settled close; "
+                         "refetch any cached symbol whose last bar lags the session most symbols end on")  # LIVE 2026-09-30 01:39
+LIVE_PRICE_BASIS = "split-adjusted price-only (backtest: total-return; A/B 2026-09-29: identical BUY list)"
+LIVE_VOL_WINDOW = "40 close-to-close NAV returns ending at the last COMPLETED close"  # eea223f — deploy pending (after 2026-09-30 close)
+LIVE_FUNDAMENTALS_ROW = "whole newest Compustat quarter per ticker (backtest parity)"   # eea223f — deploy pending

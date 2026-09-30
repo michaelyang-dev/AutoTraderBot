@@ -416,6 +416,76 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Live data verification 2026-09-30 01:00-02:30 ET (before the book-3 rebuild) — 5 defects; 2 fixed LIVE, 1 research-only, 2 held for after the close
+**Trigger:** owner asked to verify that the data the strategy trades on is correct. Everything below was measured on
+fresh 2026-09-29 data (offline rebuilds into temp caches, read-only IBKR/FMP/FRED queries).
+
+**Independent checks that PASSED:**
+- **Prices:** IBKR daily TRADES bars vs Massive, 80 names (23 BUY, 36 held, 40 random, SPY): same last session, no date
+  missing on either side over 260 sessions, closes to the cent (worst single day in a year 0.155%), ret_20/126/252d,
+  dist_sma50/200 within 0.02pp and vol_60d within 0.06pp.
+- **Feature code:** builder feature maps vs an independent pandas derivation from the same bars: max |diff| 0.000000.
+- **Fundamentals:** vs FMP statements for the same fiscal quarter (30 names): net income and equity identical; ROE
+  identical except VSXY (defect 4); GM / D/E differ by vendor definition (Compustat COGS excludes D&A) — Compustat is the
+  backtest's source. EDGAR overlay patches ROE for 21 late filers, none a BUY.
+- **Membership:** our S&P 500 list == FMP's 503 constituents exactly; all 23 BUYs are current S&P 1500 members.
+  (`sp500_history.get_sp500_on_date` is 13 names stale, but the live path overrides it with the S&P 1500 list.)
+- **Credit gate:** stored HY-OAS == FRED through 09-25 (2.93, pctile 9.9%); FRED published 09-28 = 3.02 after the
+  08:35 run — gate far from p95.
+- **Breadth:** recomputed from raw closes 21.4% (identical). Equal-weight 50d/200d 21.4% / 43.1%; cap-weighted
+  46.6% / 71.1% — the rally is narrow and the equal-weight measure sees it (1 month: median S&P 500 stock −5.9%,
+  cap-weighted −0.7%).
+- **Price basis:** the backtest's prices are total-return (CRSP ret chain / Compustat trfd); live bars are split-adjusted
+  price-only. Rebuilt on dividend-adjusted bars (6,167 dividends, 1,028 names): identical BUY list, weights within 0.01,
+  breadth 22.0% vs 21.4%.
+
+**Defects:**
+1. **Evening signals a session stale — FIXED LIVE (3c0e76e, restart 01:39).** The price cache was valid by age alone
+   (18h), so the 17:50 / 18:33 builds reused files fetched that morning, before the day's bar existed: the 09-29 evening
+   signals (and the evening book-3 dry run) were computed on 09-28's close. The fresh build differs: +LGND/RDDT/VICR,
+   −ADSK/ILMN, most weights moved. Worse case: after the Sunday 21:20 restart the 18h clock expires Monday ~15:20, so
+   Monday's refetch cached a ~15:05 intraday snapshot as Monday's bar, reused by the evening builds AND Tuesday's 09:18
+   pre-open build (09-29 09:18:51 did exactly this) until the ~09:33 refetch — a Tuesday rebalance could have traded on
+   it. Now: a file is reused only if <18h old AND written after the last settled close (weekday 17:00 ET); the
+   partial-session clock rule runs to 17:00. Strictly more conservative (20,000 random cases). The evening restart
+   refetches the completed session; the pre-open build reuses those final bars with no vendor call before the open.
+2. **15 renamed tickers dropped at every rebalance — FIXED LIVE (166a4b6).** The refresh job's `data_gaps` step
+   rewrote AGNT, CALY, CVSA, DCH, DMC, ECHO, EFOR, FISV, MPT, MRSH, OPLN, P, PPLI, VMRK, VSXY from yfinance every evening
+   (~18:30) with `end=today`, which yfinance treats as EXCLUSIVE: the files ended a session early, looked fresh by mtime,
+   and were reused by the 18:33 build and every pre-open build → NaN last bar → no dist_sma200 → absent from the
+   momentum/lowvol sleeves (coverage 99.1% → 98.1%, far above the 85% alarm). Logged nightly since at least 09-23. Now: a
+   cached symbol whose last bar is older than the session most symbols end on is refetched (content-based, whoever wrote
+   the file); yfinance `end=tomorrow` in the runtime patch and in `data_gaps`; `data_gaps` never overwrites a file with
+   older data. None of the 15 is a BUY on correct data today.
+3. **Price archive mislabelled — writer FIXED (166a4b6), history NOT yet quarantined.** `archive_daily_prices` labelled
+   each cache file's last row with the wall-clock date: `closes_D` held mostly D-1's closes (Mondays: a ~15:05
+   snapshot). Research only; nothing reads it. Now archives only bars that had settled when the file was written, under
+   their own session date. Moving the pre-09-30 files aside needs the owner's OK (remote file moves).
+4. **Fundamentals quarter mixing — fix COMMITTED (eea223f), NOT deployed.** `groupby("tic").last()` takes each column's
+   last NON-NULL value, so a blank field in the newest quarter came from an older quarter (dlcq for 208 of 1,496 pool
+   names; seqq VSXY/MDT; cogsq CPB); the backtest keeps one record per quarter (NaN stays NaN, missing debt = 0).
+   A/B on 09-29 data: identical BUY list, PAYX/NTNX weights move in the 4th decimal. Deploy after the close.
+5. **Vol-scale depends on overnight restarts — fix COMMITTED (eea223f), NOT deployed.** `record_nav()` seeds today's
+   entry at engine start; the 00:21 ET restart after IBKR's nightly reset wrote 09-29's after-hours NAV as
+   "2026-09-30". Included, it swaps the oldest real return for a ~0 pseudo-return: vol 22.82% / scale 0.979 / book
+   target 1.46x instead of 23.65% / 0.945 / 1.41x. The completed-sessions window reproduces the logged 09-09 value
+   (26.1% / 0.86) exactly; 09-16 and 09-23 are identical either way. Removing the seed before the open was blocked (a
+   live state-file edit needs the owner's OK), so book 3 rebuilds at 1.46x (inside the validated range, ~$800 more gross
+   than the convention). Fix: `compute_vol_scale` ignores today's entry until the 16:05 close mark exists.
+Also: `tests/test_mom_equal_weight.py` blanked (not popped) the EXP-059 flags — `load_dotenv` re-set them from the
+box's `.env` during import, so its "code default" checks failed on the box only.
+
+**Verified live after the 01:39 restart:** served signals == the all-fresh ground truth on all 1,502 symbols; as-of
+2026-09-29; 23 BUY; breadth 21.4%, blend 0; dist_sma200 coverage 99.1%. The same code on a copy of the live cache
+(real mtimes) reproduced it exactly (1,522 pre-settle files refetched, 15 stale-content files refetched).
+**Book-3 dry run on the correct data** (engine's own functions, 01:08 ET prices): target 1.46x (vol-scale 0.98, credit
+off), sizing mult 1.65. Sells SEZL 4, PAYC 2, APPF 2, SNDK 1, LITE 1, ADSK 2, YELP 20, WDC 2, RNG 4. Buys MXL 22, MU 1,
+NTNX 24, CORT 12, OGN 109, AMD 2, FTNT 5, CRWD 4, PANW 2, LGND 3, ADBE 2, DOCS 35, RDDT 6, CARG 27, BSY 12, PAYX 4,
+DUOL 1, BX 6, WDAY 4, MRNA 2, VICR 1. LITE / SNDK round to 0 shares (book-3 targets ≈$567 = 0.58 / 0.33 of a share).
+After: book 3 21 names (MXL 15.0%, MU 13.8%, NTNX 12.2% of the quarter), account 33 positions, gross ≈1.39x NAV.
+Lesson: an evening dry run is only as fresh as the signals' AS-OF session — check it (`_uni_cache_date` / the
+"computing on last completed session" log line) before quoting trades.
+
 ## "DATA REFRESH PARTIAL — Failed: enhanced_data" 2026-09-29 17:40 — false alarm; refresh job hardened (0155bab)
 **What happened:** the 17:30 cron `scripts/refresh_data.py` step `enhanced_data` hit its 600 s SIGALRM budget. That step ran
 `fetch_all_data.main()`: the FMP caches (price targets/DCF 3-day TTL, growth/EV/profiles 7-day TTL, econ calendar 1-day)
