@@ -78,3 +78,9 @@ LIVE_PRICE_BASIS = "split-adjusted price-only (backtest: total-return; A/B 2026-
 LIVE_VOL_WINDOW = "40 close-to-close NAV returns ending at the last COMPLETED close"  # eea223f — deploy pending (after 2026-09-30 close)
 LIVE_FUNDAMENTALS_ROW = "whole newest Compustat quarter per ticker (backtest parity)"   # eea223f — deployed to disk 2026-09-30 ~02:10, loaded at the next signal-server restart
 LIVE_MEMBERSHIP_SOURCE = "SSGA holdings SPY/MDY/SPSM (>=90% overlap guard) -> Wikipedia -> last-good"  # scrape_sp1500.py, 06:00 weekdays; baf7a8a
+# PARITY AUDIT 2026-09-30 (docs/LIVE_SYSTEM.md "Live-vs-backtest parity audit") — commit a2967dc, deploy after the close:
+LIVE_SPLIT_HANDLING = "day's splits (Polygon reference) scale book shares and stop peaks before any reconciliation"
+LIVE_MIN_FEATURE_BARS = 21          # backtest rule (ret_20d valid); was 252 — new listings could never reach the lowvol sleeve
+LIVE_BREADTH_SET = "index members only (no ETFs)"
+# Known, measured differences (not changed): stops use intraday prices live vs closes in the backtest (owner decision);
+# live trades at the next open vs the backtest's same close (bounded by the shift+1 test, -0.35pp CAGR).

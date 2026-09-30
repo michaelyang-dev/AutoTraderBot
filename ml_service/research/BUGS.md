@@ -28,9 +28,13 @@ Universe: `complete_sp1500_universe.pkl` (8yr), harness `LiveMirrorBacktester`.
 (corr 1.000000, MAD 0.000000). The harness then fills at **D's close**. So the model is:
 observe close, trade at that same close.
 
-- This is **not** a look-ahead in the strict sense, and it is **faithful to live** — the live
-  signal server computes at ~15:50 ET and `ibkr_engine` submits MOC/near-close.
-- The shift test above prices the assumption: **0.35pp of CAGR / 0.010 of Sharpe.**
+- This is **not** a look-ahead in the strict sense. ⚠️ CORRECTION 2026-09-30: it is **not** how live trades.
+  The original note said the signal server computes at ~15:50 ET and the engine submits MOC/near-close; the live
+  engine actually rebuilds a book at the first check after the 09:30 OPEN (e.g. 09:32:50 on 2026-09-23) on signals
+  computed from the PREVIOUS session's close. Live therefore fills one overnight later than the backtest.
+- The shift test above prices a full-session delay (signals lagged one day, fills at that day's close):
+  **0.35pp of CAGR / 0.010 of Sharpe.** Live's overnight delay sits between the backtest and that test, so the
+  structural cost of trading at the open is bounded by it.
 - **Rule for this program:** any new signal must be computable from data available at 15:50 ET
   on the decision day. Anything using the settle/official close of day D to trade day D is not
   implementable and must be shift-tested before it is believed.

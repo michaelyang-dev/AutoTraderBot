@@ -416,6 +416,37 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Live-vs-backtest parity audit 2026-09-30 02:00-03:30 ET — 1 live-only failure mode, 2 parity gaps fixed (held for after the close), 4 measured differences
+Compared the live path (signal_builder + ibkr_engine) with the validated backtest (build_universe_v2 universe,
+main_production_backtest / VERIFY2 clean room) on the validated 8yr universe and on today's data.
+**Identical:** feature formulas (same windows, pandas std, SMAs); sleeve code (shared); the probability transform
+(proportional, top = 0.95, the engine renormalises); the 0.5% combined-weight floor; closed-loop integer sizing per
+book with the 15% cap; the 0.3% min-trade band; the tranche schedule; SI / earnings / price-target / EPS inputs
+(zero in both); fundamentals coverage gaps (secondary share classes, negative equity — same in both); the UMD crash
+detector (live uses today's members over its history: corr 0.998, max |diff| 0.008, crash flags agree on 82/82 days,
+2026-05-11..09-04).
+**Found and fixed (commit a2967dc, deploy after the close):**
+- **Stock splits (live-only failure).** The engine never adjusted the ledger or the stop peaks: a 2:1 split reads as
+  −50% vs the pre-split peak → the 40% stop fires in EVERY book holding the name at the next open, and the extra
+  shares were credited to one book. No held/buy name has a split on the calendar now (CRWD 4:1 on 2026-07-02 predates
+  both accounts' holdings). Now: the day's splits (Massive/Polygon reference API) scale each book's shares and
+  peaks before any reconciliation; calendar down + split-like quantity change → stop and rebuild held, owner alerted.
+- **Minimum history 252 → 21 bars** (the backtest keeps a name once ret_20d exists). The validated lowvol sleeve held
+  a <252-bar name on 34/437 sampled 2018-26 rebalance dates (7.8%, mean 14% of the sleeve; e.g. SNDK after its 2025
+  spin-off); live could never. Today: identical BUY list.
+- **Breadth over members only** — live also counted ~22 ETFs (0.4pp today).
+**Measured, accepted or owner decisions:**
+- The backtest's breadth set also holds ex- and future members (~350 extra names): live-like minus backtest breadth
+  mean +0.11pp, p10/p90 −1.5/+1.7pp; the blend differs by >0.1 on 7 of 517 sampled dates, never by >0.2.
+- **Stops:** live raises peaks on intraday prices and triggers intraday (sells at the market when seen); the backtest
+  uses daily closes for both. Live stops therefore fire slightly earlier / on intraday dips. Not yet quantified
+  (needs CRSP highs/lows) — owner decision whether to align.
+- **Execution:** live rebuilds at the open on the prior close's signals; the backtest trades at the same close. Bounded
+  by the shift+1 test (−0.35pp CAGR); research/BUGS.md A1 corrected (it claimed live traded near the close).
+- **BNY:** the vendor's per-ticker history splices a closed-end fund before 2026-05-21; live truncates it (excluded
+  until the 21-bar deploy, then a short-history name). With its true history it would be HOLD today (+34% 12m).
+- New positions below 0.3% of a book are bought live but skipped by the clean room — negligible at our sizes.
+
 ## Live data verification 2026-09-30 01:00-03:00 ET (before the book-3 rebuild) — 7 defects; 4 fixed before the open, 1 research-only, 2 held for after the close
 **Trigger:** owner asked to verify that the data the strategy trades on is correct. Everything below was measured on
 fresh 2026-09-29 data (offline rebuilds into temp caches, read-only IBKR/FMP/FRED queries).
