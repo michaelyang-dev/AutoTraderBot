@@ -499,6 +499,38 @@ class MassiveDataProvider:
                     log.error("  Failed to fetch %s: %s", sym, e)
                     raw[sym] = pd.DataFrame()
 
+        # ── STALE-CONTENT GUARD (2026-09-30) ─────────────────────────────────
+        # A file's mtime says when it was WRITTEN, not what it CONTAINS. The nightly refresh job's
+        # data_gaps step rewrote 15 renamed tickers (AGNT, FISV, MRSH, ...) at ~18:30 every evening
+        # with yfinance history that ended the PREVIOUS session (yfinance `end` is exclusive). Fresh
+        # by mtime (post-settle, <18h), those files were reused by the 18:33 build and every next-
+        # morning pre-open build, so each rebalance ranked the universe with those 15 names missing
+        # their last bar -> NaN dist_sma200 -> silently absent from the momentum/lowvol sleeves
+        # (dist_sma200 coverage 99.1% -> 98.1%, far above the 85% alarm). Rule: a CACHED symbol whose
+        # last bar is older than the session most symbols end on is refetched. Content-based, so it
+        # holds whatever process wrote the file. Tie -> the later date (more refetching, never less).
+        _from_cache = [s for s in symbols if s not in set(uncached)
+                       and raw.get(s) is not None and len(raw[s]) > 0]
+        _last = {s: pd.Timestamp(d.index.max()).normalize()
+                 for s, d in raw.items() if d is not None and len(d) > 0}
+        if _last and _from_cache:
+            _mode = pd.Series(list(_last.values())).mode().max()
+            _behind = [s for s in _from_cache if _last[s] < _mode]
+            if _behind:
+                log.warning("STALE CACHE CONTENT: %d cached file(s) end before %s, the session most symbols "
+                            "end on — refetching: %s", len(_behind), _mode.date(), _behind[:25])
+                _ok = 0
+                for sym in _behind:
+                    try:
+                        df = self.fetch_ticker_bars(sym, start_date, end_date, adjusted=adjusted)
+                        if len(df) > 0:
+                            raw[sym] = df
+                            df.to_parquet(CACHE_DIR / f"{sym}_{cache_tag}.parquet")
+                            _ok += 1
+                    except Exception as e:           # keep the cached frame: never worse than before
+                        log.error("  stale-content refetch failed for %s: %s (keeping cached)", sym, e)
+                log.info("  stale-content refetch: %d/%d replaced", _ok, len(_behind))
+
         loaded = sum(1 for s in raw if len(raw[s]) > 0)
         log.info("Massive: %d/%d symbols loaded (%d from cache, %d fresh)",
                  loaded, len(symbols), len(symbols) - len(uncached), len(uncached))
@@ -844,7 +876,11 @@ def fetch_bars_batch_massive(symbols: list,
         try:
             import yfinance as yf
             start = (datetime.today() - timedelta(days=warmup_days)).strftime("%Y-%m-%d")
-            end = datetime.today().strftime("%Y-%m-%d")
+            # yfinance `end` is EXCLUSIVE: end=today dropped the session that just closed whenever
+            # this ran between the close and midnight UTC (the 17:50 / 18:33 evening builds), so the
+            # patched names ended a session behind everyone else (2026-09-30). end=tomorrow includes
+            # the latest session; an in-progress bar is trimmed by signal_builder's partial-session guard.
+            end = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
             yf_data = yf.download(short_syms, start=start, end=end,
                                   auto_adjust=True, progress=False, threads=True)
             if isinstance(yf_data.columns, pd.MultiIndex):

@@ -541,49 +541,75 @@ def _run_step(func, label, timeout_sec, retries=1, outputs=()):
     return False, detail
 
 
+ARCHIVE_SETTLE_HOUR_ET = 17   # == massive_data_provider.SETTLE_HOUR_ET (a bar is final from 17:00 ET on its date)
+
+
+def _final_bar(df, mtime, settle_hour=ARCHIVE_SETTLE_HOUR_ET):
+    """(session_date, close) of the LAST bar in `df` whose session had settled when the file was written
+    (epoch `mtime`), else None. Looks back at most 3 rows. Pure — unit-tested."""
+    from zoneinfo import ZoneInfo
+    import pandas as pd
+    et = ZoneInfo("America/New_York")
+    idx = pd.to_datetime(df.index)
+    for pos in range(len(df) - 1, max(len(df) - 4, -1), -1):
+        d = idx[pos]
+        if datetime(d.year, d.month, d.day, settle_hour, tzinfo=et).timestamp() <= mtime:
+            c = df["close"].iloc[pos]
+            if pd.notna(c):
+                return pd.Timestamp(d).normalize(), float(c)
+    return None
+
+
 def archive_daily_prices():
-    """Archive today's closing prices from Massive cache for future backtesting.
-    This builds a point-in-time price database that doesn't rely on WRDS."""
+    """Archive each symbol's FINAL daily close from the Massive cache, labelled by the bar's OWN session.
+
+    Until 2026-09-30 this took every cache file's LAST row and labelled it with the wall-clock date. The
+    cache was refreshed in the morning, so for most names that row was the PREVIOUS session (and on Mondays
+    a ~15:05 intraday snapshot): closes_D held mostly D-1's closes. Now: a bar counts only if the file was
+    written after that session settled (17:00 ET), and only the session most files agree on is archived,
+    under its own date. If that session is already archived this is a no-op."""
     import pandas as pd
     CACHE_DIR = ML_DIR / "data" / "massive_cache"
     ARCHIVE_DIR = ML_DIR / "data" / "price_archive"
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    archive_file = ARCHIVE_DIR / f"closes_{today}.parquet"
-
-    if archive_file.exists():
-        log(f"Price archive for {today} already exists — skipping")
-        return True
-
     try:
-        closes = {}
-        parquets = list(CACHE_DIR.glob("*_adj.parquet"))
-        for f in parquets:
+        finals = {}
+        for f in CACHE_DIR.glob("*_adj.parquet"):
             try:
                 df = pd.read_parquet(f)
                 if "close" in df.columns and len(df) > 0:
-                    sym = f.stem.replace("_adj", "")
-                    closes[sym] = df["close"].iloc[-1]
+                    fb = _final_bar(df, f.stat().st_mtime)
+                    if fb is not None:
+                        finals[f.stem.replace("_adj", "")] = fb
             except Exception:
                 continue
+        if not finals:
+            log("Price archive: no settled bars in the cache — nothing to archive")
+            return True
+        session = pd.Series([d for d, _ in finals.values()]).mode().max()
+        closes = {s: c for s, (d, c) in finals.items() if d == session}
+        label = session.strftime("%Y-%m-%d")
+        archive_file = ARCHIVE_DIR / f"closes_{label}.parquet"
+        if archive_file.exists():
+            log(f"Price archive for session {label} already exists — skipping")
+            return True
+        pd.DataFrame([{"date": label, **closes}]).to_parquet(archive_file, index=False)
+        log(f"Archived {len(closes)} final closes for session {label} "
+            f"({len(finals) - len(closes)} files on other sessions not archived)")
 
-        if closes:
-            pd.DataFrame([{"date": today, **closes}]).to_parquet(archive_file, index=False)
-            log(f"Archived {len(closes)} closing prices for {today}")
-
-            # Cleanup: keep last 90 days of daily files, consolidate older into monthly
-            cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-            old_files = [f for f in ARCHIVE_DIR.glob("closes_*.parquet")
-                         if f.stem.split("_")[1] < cutoff]
-            if len(old_files) > 30:
-                log(f"Consolidating {len(old_files)} old price archives...")
-                dfs = [pd.read_parquet(f) for f in old_files]
-                combined = pd.concat(dfs, ignore_index=True)
-                combined.to_parquet(ARCHIVE_DIR / "closes_consolidated.parquet", index=False)
-                for f in old_files:
-                    f.unlink()
-                log(f"Consolidated into closes_consolidated.parquet ({len(combined)} rows)")
+        # Cleanup: keep last 90 days of daily files, consolidate older into monthly
+        cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        old_files = [f for f in ARCHIVE_DIR.glob("closes_*.parquet")
+                     if f.stem.split("_")[1] < cutoff]
+        if len(old_files) > 30:
+            log(f"Consolidating {len(old_files)} old price archives...")
+            dfs = [pd.read_parquet(f) for f in old_files]
+            combined = pd.concat(dfs, ignore_index=True)
+            combined.to_parquet(ARCHIVE_DIR / "closes_consolidated.parquet", index=False)
+            for f in old_files:
+                f.unlink()
+            log(f"Consolidated into closes_consolidated.parquet ({len(combined)} rows)")
         return True
     except Exception as e:
         log(f"Price archiving failed: {e}")
@@ -698,7 +724,7 @@ def check_data_gaps():
     import pandas as pd
     from pathlib import Path
 
-    data_root = Path(__file__).resolve().parent.parent / "data"
+    data_root = ML_DIR / "data"          # == Path(__file__).parent.parent / "data"; ML_DIR so tests can redirect it
     cache_dir = data_root / "massive_cache"
     members_file = data_root / "sp1500_members.json"
 
@@ -748,7 +774,26 @@ def check_data_gaps():
             import yfinance as yf
             from datetime import datetime, timedelta
             start = (datetime.today() - timedelta(days=550)).strftime("%Y-%m-%d")
-            end = datetime.today().strftime("%Y-%m-%d")
+            # yfinance `end` is EXCLUSIVE. With end=today this step (runs ~18:30 ET) wrote history ending
+            # the PREVIOUS session into the live cache every evening; fresh by mtime, those files were
+            # reused by the 18:33 build and the next pre-open build, so ~15 renamed tickers ranked with a
+            # missing last bar (2026-09-30). end=tomorrow includes the session that just closed.
+            end = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+            def _write_if_not_older(sym, df):
+                """Never replace a cache file with history that ends EARLIER than what it holds."""
+                f = cache_dir / f"{sym}_adj.parquet"
+                try:
+                    if f.exists():
+                        cur_last = pd.to_datetime(pd.read_parquet(f).index).max()
+                        if pd.to_datetime(df.index).max() < cur_last:
+                            log(f"  {sym}: yfinance ends {str(pd.to_datetime(df.index).max())[:10]} < cached "
+                                f"{str(cur_last)[:10]} — NOT overwriting")
+                            return False
+                except Exception:
+                    pass
+                df[["open", "high", "low", "close", "volume"]].to_parquet(f)
+                return True
 
             CHUNK = 50
             patched = 0
@@ -762,19 +807,14 @@ def check_data_gaps():
                             try:
                                 df = data.xs(sym, level=1, axis=1).dropna(how="all")
                                 df.columns = [c.lower() for c in df.columns]
-                                if len(df) >= 252:
-                                    df[["open", "high", "low", "close", "volume"]].to_parquet(
-                                        cache_dir / f"{sym}_adj.parquet"
-                                    )
+                                if len(df) >= 252 and _write_if_not_older(sym, df):
                                     patched += 1
                             except Exception:
                                 pass
                     elif len(chunk) == 1:
                         data.columns = [c.lower() for c in data.columns]
-                        if len(data.dropna(how="all")) >= 252:
-                            data[["open", "high", "low", "close", "volume"]].to_parquet(
-                                cache_dir / f"{chunk[0]}_adj.parquet"
-                            )
+                        _d1 = data.dropna(how="all")
+                        if len(_d1) >= 252 and _write_if_not_older(chunk[0], _d1):
                             patched += 1
                 except Exception as e:
                     log(f"  yfinance chunk failed: {e}")

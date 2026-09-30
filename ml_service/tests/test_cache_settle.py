@@ -121,5 +121,69 @@ finally:
 check("pre-settle file refetched, post-settle file reused, aged file refetched", sorted(calls) == ["OLD", "PRE"], calls)
 check("all three symbols returned", all(len(out.get(s, [])) == 380 for s in ("PRE", "POST", "OLD")))
 
+print("stale-content guard (a post-settle file whose CONTENT ends a session early — the data_gaps/yfinance case)")
+tmp2 = Path(tempfile.mkdtemp(prefix="cache_content_test_"))
+M.CACHE_DIR = tmp2
+now2 = ts(2026, 9, 30, 9, 18)
+idx_d = pd.bdate_range(end="2026-09-29", periods=380)          # ends on the last completed session
+idx_d1 = pd.bdate_range(end="2026-09-28", periods=380)         # ends one session early (yfinance end-exclusive)
+mk = lambda ix: pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": np.linspace(10, 20, len(ix)), "volume": 1e6}, index=ix)
+for sym, ix in [("G1", idx_d), ("G2", idx_d), ("G3", idx_d), ("G4", idx_d), ("YF", idx_d1), ("YF2", idx_d1)]:
+    p = tmp2 / f"{sym}_adj.parquet"
+    mk(ix).to_parquet(p)
+    os.utime(p, (ts(2026, 9, 29, 18, 33), ts(2026, 9, 29, 18, 33)))   # all post-settle and <18h: fresh by mtime
+calls2 = []
+M.time = types.SimpleNamespace(time=lambda: now2, sleep=_real_time.sleep, perf_counter=_real_time.perf_counter)
+try:
+    prov2 = M.MassiveDataProvider(api_key="x", validate_vs_yfinance=False)
+    prov2.fetch_grouped_daily = lambda *a, **k: {}
+
+    def _fake2(sym, start, end, adjusted=True):
+        calls2.append(sym)
+        if sym == "YF2":
+            raise RuntimeError("vendor down")
+        return mk(idx_d)
+    prov2.fetch_ticker_bars = _fake2
+    out2 = prov2.fetch_bars_batch(["G1", "G2", "G3", "G4", "YF", "YF2"], warmup_days=550)
+finally:
+    M.time = _real_time
+check("only the files that end a session early are refetched", sorted(calls2) == ["YF", "YF2"], calls2)
+check("the refetched symbol now ends on the last completed session", str(out2["YF"].index.max())[:10] == "2026-09-29", str(out2["YF"].index.max()))
+check("a failed refetch keeps the cached frame (never worse than before)", len(out2["YF2"]) == 380 and str(out2["YF2"].index.max())[:10] == "2026-09-28")
+check("the refetched file on disk now ends on the last session", str(pd.read_parquet(tmp2 / "YF_adj.parquet").index.max())[:10] == "2026-09-29")
+
+print("runtime yfinance patch includes the session that just closed (end is exclusive)")
+fake_yf = types.ModuleType("yfinance")
+seen = {}
+
+
+def _yf_download(tickers, start=None, end=None, **k):
+    seen["end"] = end
+    ix = pd.bdate_range(end="2026-09-29", periods=377)
+    return pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": np.linspace(5, 6, 377), "Volume": 1e5}, index=ix)
+
+
+fake_yf.download = _yf_download
+_real_yf = sys.modules.get("yfinance")
+sys.modules["yfinance"] = fake_yf
+_real_gp = M.get_provider
+try:
+    short = mk(pd.bdate_range(end="2026-09-29", periods=100))
+    M.get_provider = lambda: types.SimpleNamespace(
+        fetch_bars_batch=lambda syms, warmup_days=550, adjusted=True: {"NEWTIC": short},
+        run_quality_gate=lambda bars, expected_symbols=None: {"passed": True},
+        validate_vs_yfinance=False)
+    res = M.fetch_bars_batch_massive(["NEWTIC"], warmup_days=550)
+finally:
+    M.get_provider = _real_gp
+    if _real_yf is not None:
+        sys.modules["yfinance"] = _real_yf
+    else:
+        sys.modules.pop("yfinance", None)
+from datetime import timedelta as _td  # noqa: E402
+check("yfinance end = tomorrow (so the just-closed session is included)",
+      seen.get("end") == (datetime.today() + _td(days=1)).strftime("%Y-%m-%d"), seen)
+check("short Polygon history was replaced by the 377-bar patch", len(res["NEWTIC"]) == 377, len(res["NEWTIC"]))
+
 print(f"\n{len(FAILS)} failures" + (": " + ", ".join(FAILS) if FAILS else " — all cache-settle tests passed"))
 sys.exit(1 if FAILS else 0)

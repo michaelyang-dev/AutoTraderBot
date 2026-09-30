@@ -1,7 +1,11 @@
 """EXP-059 equal-weight momentum flag: strategy1's weighting helper. Run: python3 tests/test_mom_equal_weight.py"""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.pop("MOM_EQUAL_WEIGHT", None); os.environ.pop("PROD_BULL_WEIGHTS", None)
+# Blank (not pop) the flags: modules in the import chain (sp500_history, enhanced_features) call
+# load_dotenv(), and on the production box .env sets both flags ON, so a popped variable is re-set
+# from .env during import and the "code default" checks below failed there (not locally, where .env
+# has no flags). load_dotenv() never overrides a variable that already exists, even an empty one.
+os.environ["MOM_EQUAL_WEIGHT"] = ""; os.environ["PROD_BULL_WEIGHTS"] = ""
 from strategies import multi_strategy_engine as M  # noqa: E402
 fails = 0
 def check(name, cond, detail=""):

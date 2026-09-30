@@ -151,5 +151,95 @@ check("signal_server calls build_signals_v9 at least once", len(calls) >= 1, cal
 check("EVERY live build_signals_v9 call passes enhanced_data=None "
       "(if this fails: re-classify enhanced_fmp as live in refresh_data.STEPS)", calls and all(calls), calls)
 
+print("price archive: final bars only, labelled by their own session (2026-09-30)")
+import types  # noqa: E402
+from zoneinfo import ZoneInfo  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from datetime import datetime as _dt  # noqa: E402
+_ET = ZoneInfo("America/New_York")
+
+
+def _ets(y, mo, d, h, mi=0):
+    return _dt(y, mo, d, h, mi, tzinfo=_ET).timestamp()
+
+
+def _frame(end, n=380, last_close=None):
+    ix = pd.bdate_range(end=end, periods=n)
+    c = np.linspace(10, 20, n)
+    if last_close is not None:
+        c[-1] = last_close
+    return pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": c, "volume": 1e6}, index=ix)
+
+
+fb = R._final_bar(_frame("2026-09-29", last_close=77.0), _ets(2026, 9, 29, 17, 52))
+check("a file written after the 17:00 settle: its last bar is final", fb is not None and str(fb[0])[:10] == "2026-09-29" and fb[1] == 77.0, fb)
+fb = R._final_bar(_frame("2026-09-29", last_close=77.0), _ets(2026, 9, 29, 9, 52))
+check("a file written mid-session: the in-progress bar is NOT final; the previous session is", fb is not None and str(fb[0])[:10] == "2026-09-28", fb)
+
+_real_ml = R.ML_DIR
+tmpml = Path(tempfile.mkdtemp(prefix="archive_test_"))
+(tmpml / "data" / "massive_cache").mkdir(parents=True)
+for sym, end, mt, lc in [("A", "2026-09-29", _ets(2026, 9, 29, 17, 52), 101.0), ("B", "2026-09-29", _ets(2026, 9, 29, 17, 52), 202.0),
+                         ("C", "2026-09-29", _ets(2026, 9, 29, 17, 53), 303.0), ("PART", "2026-09-29", _ets(2026, 9, 29, 9, 52), 999.0)]:
+    fp = tmpml / "data" / "massive_cache" / f"{sym}_adj.parquet"
+    _frame(end, last_close=lc).to_parquet(fp)
+    os.utime(fp, (mt, mt))
+try:
+    R.ML_DIR = tmpml
+    ok1 = R.archive_daily_prices()
+    arch = tmpml / "data" / "price_archive" / "closes_2026-09-29.parquet"
+    a = pd.read_parquet(arch) if arch.exists() else None
+    check("archive labelled by the bar's own session (2026-09-29), not the wall clock", ok1 and a is not None and a["date"].iloc[0] == "2026-09-29")
+    check("only settled bars archived: A/B/C in, the mid-session snapshot (999.0) out",
+          a is not None and {"A", "B", "C"} <= set(a.columns) and "PART" not in a.columns and a["A"].iloc[0] == 101.0, list(a.columns) if a is not None else None)
+    before = arch.stat().st_mtime
+    ok2 = R.archive_daily_prices()
+    check("second run is a no-op (session already archived)", ok2 and arch.stat().st_mtime == before)
+finally:
+    R.ML_DIR = _real_ml
+
+print("data_gaps yfinance patch: includes the latest session, never overwrites with older data (2026-09-30)")
+tmpg = Path(tempfile.mkdtemp(prefix="gaps_test_"))
+(tmpg / "data" / "massive_cache").mkdir(parents=True)
+import json as _json  # noqa: E402
+(tmpg / "data" / "sp1500_members.json").write_text(_json.dumps({"sp500": ["NEWT", "OLDT"], "sp400": [], "sp600": []}))
+for sym in ("NEWT", "OLDT"):
+    _frame("2026-09-29", n=100).to_parquet(tmpg / "data" / "massive_cache" / f"{sym}_adj.parquet")
+seen = {}
+
+
+def _yf_dl(tickers, start=None, end=None, **k):
+    seen["end"] = end
+    parts = {}
+    for t, e in (("NEWT", "2026-09-29"), ("OLDT", "2026-09-28")):
+        ix = pd.bdate_range(end=e, periods=377)
+        parts[t] = pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": np.linspace(5, 6, 377), "Volume": 1e5}, index=ix)
+    return pd.concat(parts, axis=1).swaplevel(0, 1, axis=1)
+
+
+_fake = types.ModuleType("yfinance"); _fake.download = _yf_dl
+_real_yf = sys.modules.get("yfinance"); sys.modules["yfinance"] = _fake
+try:
+    R.ML_DIR = tmpg
+    R.check_data_gaps()
+finally:
+    R.ML_DIR = _real_ml
+    if _real_yf is not None:
+        sys.modules["yfinance"] = _real_yf
+    else:
+        sys.modules.pop("yfinance", None)
+from datetime import timedelta as _tdl  # noqa: E402
+check("yfinance end = tomorrow (includes the session that just closed)", seen.get("end") == (_dt.today() + _tdl(days=1)).strftime("%Y-%m-%d"), seen)
+n_new = len(pd.read_parquet(tmpg / "data" / "massive_cache" / "NEWT_adj.parquet"))
+o = pd.read_parquet(tmpg / "data" / "massive_cache" / "OLDT_adj.parquet")
+check("patch that reaches the latest session is written (100 -> 377 bars)", n_new == 377, n_new)
+check("patch that ends a session EARLY is not written over newer data", len(o) == 100 and str(pd.to_datetime(o.index).max())[:10] == "2026-09-29", (len(o), str(o.index.max())))
+
+import re as _re  # noqa: E402
+_mp = (ML / "massive_data_provider.py").read_text()
+_mm = _re.search(r"^SETTLE_HOUR_ET\s*=\s*(\d+)", _mp, _re.M)
+check("archive settle hour == price-cache settle hour", _mm is not None and int(_mm.group(1)) == R.ARCHIVE_SETTLE_HOUR_ET)
+
 print(f"\n{len(FAILS)} failures" + ("" if not FAILS else f": {FAILS}"))
 sys.exit(1 if FAILS else 0)
