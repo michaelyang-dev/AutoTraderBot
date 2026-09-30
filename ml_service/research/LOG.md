@@ -4031,7 +4031,20 @@ of names that recovered, and no drawdown protection in return. The peak definiti
 compound. The model probably overstates the live cost somewhat (live samples prices every ~3 min, so it sees slightly
 lower highs and can miss brief lows), but the sign is 12/12 on every metric. Fix implemented in ibkr_engine
 (STOP_AT_CLOSE: peaks and stops evaluated once in the last 10 minutes before the scheduled close, backtest rule;
-IBKR_STOP_AT_CLOSE=0 restores the old behaviour); tests/test_stop_at_close.py. 26yr confirmation below.
+IBKR_STOP_AT_CLOSE=0 restores the old behaviour); tests/test_stop_at_close.py.
+
+### EXP-062, 26yr (12 starts, 2001-2025, OHLC coverage 93%) — CONFIRMED on every start
+
+| stop model | CAGR | Sharpe | MaxDD | stops / run | vs close (starts better) |
+|---|---|---|---|---|---|
+| closes (backtest, validated) | +17.57% | 0.725 | -41.2% | 338 | — |
+| peaks from intraday highs, trigger at the close | | | | 383 | -0.82pp (0/12), -0.024 Sharpe, MaxDD -0.91pp |
+| peaks from closes, trigger intraday on the low | | | | 439 | -0.35pp (0/12), -0.009 Sharpe, MaxDD -1.08pp |
+| **intraday peaks + triggers (what live did)** | +16.01% | 0.683 | -42.2% | 530 | **-1.56pp (0/12), -0.041 Sharpe (0/12), MaxDD -1.01pp (0/12)** |
+
+Read: smaller than the 8yr (the 2018-25 momentum names are more volatile, so the high-vs-close gap is wider) but the
+same sign on every start and every metric — including MaxDD, so intraday stops bought no crash protection in
+2001-02, 2008 or 2020 either. Verdict: align live to the validated close-based stop (e572e7e). Closed 2026-09-30 04:05.
 
 ## Next
 
