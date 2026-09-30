@@ -4005,6 +4005,34 @@ years and 0.6-1.1pp of MaxDD). (3) The only arm not strictly worse — value-hea
 regimes (2001-02, 2006, 2010, 2018) reverse it. Rule, thresholds and bear mix all stay. No stage 2 needed: no arm
 survives stage 1 on the 26yr. Closed 2026-09-22 22:35.
 
+## Cycle 60 — EXP-062 · live-vs-backtest PARITY of the trailing stop (2026-09-30, owner asked for a deep live/backtest audit)
+
+Found in the audit: the clean room (and main_production_backtest) update each book's peak with the day's CLOSE and stop
+when the close is <= 60% of it, exiting at that close. The live engine polls every ~3 min all session: its peak rises
+with intraday prices and it sells at the market the moment a price is <= 60% of the peak. Script:
+`research/EXP062_intraday_stops.py` — the frontier harness's exact patches (parsed from EXP059_frontier.py) + a stop
+switch; CRSP open/high/low scaled onto the universe's total-return closes (factor = adj close / raw close); live-like
+model: open <= threshold -> exit at the open; else low <= threshold -> exit at the threshold; else peak = max(peak,
+high, close). Deployed package (cap 0.15, overlay_down, equal-weight momentum, 80/15/5 @1.49x), 12 monthly starts,
+through 2025-12-31 (CRSP OHLC ends there). OHLC coverage 79% of cells on the 8yr (the rest fall back to close logic,
+so the gap is if anything understated).
+
+### EXP-062, 8yr (12 starts)
+
+| stop model | CAGR | Sharpe | MaxDD | stops / run | vs close (starts better) |
+|---|---|---|---|---|---|
+| closes (backtest, validated) | +28.04% | 0.959 | -31.4% | 130 | — |
+| peaks from intraday highs, trigger at the close | | | | 146 | **-2.89pp** CAGR (0/12), -0.070 Sharpe |
+| peaks from closes, trigger intraday on the low | | | | 168 | -0.38pp (0/12), -0.008 Sharpe |
+| **intraday peaks + triggers (what live did)** | +23.16% | 0.854 | -31.9% | 209 | **-4.88pp (0/12), -0.104 Sharpe (0/12), MaxDD -0.57pp (10/12 worse)** |
+
+Read: live's stop was effectively a ~37% stop on the closing peak plus intraday whipsaws — ~60% more stop-outs, mostly
+of names that recovered, and no drawdown protection in return. The peak definition is the main driver; the two effects
+compound. The model probably overstates the live cost somewhat (live samples prices every ~3 min, so it sees slightly
+lower highs and can miss brief lows), but the sign is 12/12 on every metric. Fix implemented in ibkr_engine
+(STOP_AT_CLOSE: peaks and stops evaluated once in the last 10 minutes before the scheduled close, backtest rule;
+IBKR_STOP_AT_CLOSE=0 restores the old behaviour); tests/test_stop_at_close.py. 26yr confirmation below.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs

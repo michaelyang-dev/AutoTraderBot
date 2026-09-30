@@ -186,6 +186,16 @@ TRANCHE_OVERLAY_THR = 0.95
 # stops and the reconciliation, and the owner is alerted, instead of being sold.
 SPLIT_CHECK = os.getenv("IBKR_SPLIT_CHECK", "1") == "1"
 SPLIT_LIKE_HI, SPLIT_LIKE_LO = 1.4, 0.72       # broker qty / ledger qty outside this band looks like a split
+# TRAILING STOPS AT THE CLOSE (2026-09-30, EXP-062). The validated backtest updates each book's peak with the day's
+# CLOSE and stops when the close is <= 60% of it. The engine used to poll all session: peaks rose with intraday
+# highs (a ~37% effective stop from the closing peak) and it sold on intraday dips. Same engine, same deployed
+# package, 8yr 12 starts: live-style stops -4.88pp CAGR / -0.104 Sharpe on 12/12 starts, no drawdown benefit
+# (peaks from highs alone -2.89pp; intraday triggers alone -0.38pp; ~60% more stop-outs). Now the peak and the stop
+# are evaluated ONCE per day in the last STOP_WINDOW_MIN minutes before the scheduled close (13:00 on half days),
+# with the backtest's rule (peak = max(peak, price); sell if price <= peak x 0.60). IBKR_STOP_AT_CLOSE=0 restores
+# the old intraday behaviour.
+STOP_AT_CLOSE = os.getenv("IBKR_STOP_AT_CLOSE", "1") == "1"
+STOP_WINDOW_MIN = 10
 
 class IBKREngine:
     def __init__(self):
@@ -580,6 +590,27 @@ class IBKREngine:
             return len(mcal.get_calendar("NYSE").valid_days(iso, iso)) > 0
         except Exception:
             return True  # calendar unavailable -> weekday already passed above
+
+    def _close_time_et(self, d):
+        """Scheduled NYSE close (hour, minute) in ET for date d — 13:00 on half days; (16, 0) if the calendar is
+        unavailable. Cached per date."""
+        cache = getattr(self, "_close_cache", None)
+        if cache is None:
+            cache = self._close_cache = {}
+        if d in cache:
+            return cache[d]
+        t = (16, 0)
+        try:
+            import pandas as pd
+            import pandas_market_calendars as mcal
+            sch = mcal.get_calendar("NYSE").schedule(start_date=str(d), end_date=str(d))
+            if len(sch):
+                c = pd.Timestamp(sch["market_close"].iloc[0]).tz_convert("US/Eastern")
+                t = (int(c.hour), int(c.minute))
+        except Exception:
+            pass
+        cache[d] = t
+        return t
 
     def record_nav(self, nav, at_close=False):
         """Append today's NAV once per trading day; keep last 70 days. Skips
@@ -1011,6 +1042,18 @@ class IBKREngine:
             live_keys = {f"{t}:{s}" for t, b in st["books"].items() for s in b}
             for orphan in [k for k in list(self.trailing_peaks) if k not in live_keys]:
                 del self.trailing_peaks[orphan]
+        if STOP_AT_CLOSE:
+            from zoneinfo import ZoneInfo
+            _now = datetime.now(ZoneInfo("US/Eastern"))
+            _today = _now.date().isoformat()
+            _ch, _cm = self._close_time_et(_now.date())
+            _mins = _now.hour * 60 + _now.minute
+            if not ((_ch * 60 + _cm) - STOP_WINDOW_MIN <= _mins < _ch * 60 + _cm) or st.get("stop_eval_day") == _today:
+                self._save_tranche_state()                  # reconciliation / split results only
+                self._save_trailing_peaks()
+                return
+            log.info(f"STOP CHECK at the close window ({_now:%H:%M} ET, close {_ch:02d}:{_cm:02d}): peaks and 40% stops "
+                     "evaluated once, backtest rule")
         for sym, pos in list(self.positions.items()):
             if sym in suspect:
                 continue
@@ -1027,7 +1070,7 @@ class IBKREngine:
                 self.trailing_peaks[key] = max(price, self.trailing_peaks.get(key, 0))
                 peak = self.trailing_peaks[key]
                 dd = (price - peak) / peak
-                if dd < -TRAILING_STOP:
+                if price <= peak * (1.0 - TRAILING_STOP):     # the backtest's comparison (p <= peak x 0.60)
                     others = sum(b.get(sym, 0) for tt, b in st["books"].items() if tt != t)
                     qty = min(st["books"][t][sym], max(0, positions_qty.get(sym, 0) - others))
                     log.warning(f"TRAILING STOP book {t}: {sym} dropped {dd:.1%} from peak ${peak:.2f} -> sell {qty}")
@@ -1036,6 +1079,8 @@ class IBKREngine:
                         positions_qty[sym] = max(0, positions_qty.get(sym, 0) - qty)
                     st["books"][t].pop(sym, None)
                     self.trailing_peaks.pop(key, None)
+        if STOP_AT_CLOSE:
+            st["stop_eval_day"] = _today
         self._save_tranche_state()
         self._save_trailing_peaks()
 

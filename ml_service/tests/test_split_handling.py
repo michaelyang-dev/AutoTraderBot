@@ -25,6 +25,7 @@ import ibkr_engine as E  # noqa: E402
 
 ALERTS = []
 E.send_telegram = lambda m: ALERTS.append(m)
+E.STOP_AT_CLOSE = False   # these tests exercise stop LOGIC; the close-window timing is tests/test_stop_at_close.py
 FAILS = []
 
 
