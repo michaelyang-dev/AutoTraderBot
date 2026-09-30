@@ -828,6 +828,9 @@ def check_data_gaps():
             f"⚠️ DATA GAPS: {len(short_bars)} stocks with <252 bars, "
             f"{len(missing)} missing from cache"
         )
+    # The scan/patch ran; short or missing histories are reported above, not a step failure. Without this the
+    # forked runner read the implicit None as "returned False" and marked the step FAILED every night (2026-09-30).
+    return True
 
 
 def _send_telegram_alert(message):

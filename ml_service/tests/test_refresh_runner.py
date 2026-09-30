@@ -222,7 +222,7 @@ _fake = types.ModuleType("yfinance"); _fake.download = _yf_dl
 _real_yf = sys.modules.get("yfinance"); sys.modules["yfinance"] = _fake
 try:
     R.ML_DIR = tmpg
-    R.check_data_gaps()
+    _gaps_ret = R.check_data_gaps()
 finally:
     R.ML_DIR = _real_ml
     if _real_yf is not None:
@@ -230,6 +230,7 @@ finally:
     else:
         sys.modules.pop("yfinance", None)
 from datetime import timedelta as _tdl  # noqa: E402
+check("check_data_gaps returns True when it ran (the runner read the old implicit None as a nightly FAILURE)", _gaps_ret is True, _gaps_ret)
 check("yfinance end = tomorrow (includes the session that just closed)", seen.get("end") == (_dt.today() + _tdl(days=1)).strftime("%Y-%m-%d"), seen)
 n_new = len(pd.read_parquet(tmpg / "data" / "massive_cache" / "NEWT_adj.parquet"))
 o = pd.read_parquet(tmpg / "data" / "massive_cache" / "OLDT_adj.parquet")
