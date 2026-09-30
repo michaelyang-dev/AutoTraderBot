@@ -416,6 +416,14 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## After-close deploy 2026-09-30 16:12-16:14 ET — engine on eb2741c
+Box pulled 5af1e4e..eb2741c; all 19 test files pass on the box. Engine restarted 16:14:05 (after the 16:05 close
+mark, NAV $61,856): tranche state counter 0/5, next book 0; connected; Telegram bot up; vol-scale 0.98 on the 40
+sessions ending at today's close (completed-sessions window, eea223f). **Now live in the engine:** trailing stops
+evaluated once in the last 10 minutes before the close with the backtest rule (EXP-062, first evaluation 2026-10-01
+15:50; rollback IBKR_STOP_AT_CLOSE=0) and stock-split handling (first calendar read at 2026-10-01's first check).
+The signal server picks up a2967dc (21-bar minimum history, member-only breadth) at the 17:50 cron restart.
+
 ## Book 3, 2026-09-30 — CLEAN (first rebuild on SSGA membership + final-bar cache)
 09:19 pre-open refresh reused the final 09-29 bars (1,541 from cache, 0 vendor calls) · served signals identical to the
 verified set (23 BUY, breadth 21.6%, blend 0) · 09:32:32 tranche 5/5 → book 3 · credit gate off (HY-OAS 3.02, pctile
