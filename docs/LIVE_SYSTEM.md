@@ -416,7 +416,7 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
-## Live data verification 2026-09-30 01:00-02:30 ET (before the book-3 rebuild) — 5 defects; 2 fixed LIVE, 1 research-only, 2 held for after the close
+## Live data verification 2026-09-30 01:00-03:00 ET (before the book-3 rebuild) — 7 defects; 4 fixed before the open, 1 research-only, 2 held for after the close
 **Trigger:** owner asked to verify that the data the strategy trades on is correct. Everything below was measured on
 fresh 2026-09-29 data (offline rebuilds into temp caches, read-only IBKR/FMP/FRED queries).
 
@@ -461,17 +461,31 @@ fresh 2026-09-29 data (offline rebuilds into temp caches, read-only IBKR/FMP/FRE
    each cache file's last row with the wall-clock date: `closes_D` held mostly D-1's closes (Mondays: a ~15:05
    snapshot). Research only; nothing reads it. Now archives only bars that had settled when the file was written, under
    their own session date. Moving the pre-09-30 files aside needs the owner's OK (remote file moves).
-4. **Fundamentals quarter mixing — fix COMMITTED (eea223f), NOT deployed.** `groupby("tic").last()` takes each column's
+4. **Fundamentals quarter mixing — FIXED (eea223f; on the box since ~02:10, loaded by the post-06:00 signal-server
+   restart together with defect 6).** `groupby("tic").last()` takes each column's
    last NON-NULL value, so a blank field in the newest quarter came from an older quarter (dlcq for 208 of 1,496 pool
    names; seqq VSXY/MDT; cogsq CPB); the backtest keeps one record per quarter (NaN stays NaN, missing debt = 0).
    A/B on 09-29 data: identical BUY list, PAYX/NTNX weights move in the 4th decimal. Deploy after the close.
-5. **Vol-scale depends on overnight restarts — fix COMMITTED (eea223f), NOT deployed.** `record_nav()` seeds today's
+5. **Vol-scale depends on overnight restarts — fix ON DISK (eea223f), active at the next ENGINE restart (deliberately
+   not restarted before the rebalance).** `record_nav()` seeds today's
    entry at engine start; the 00:21 ET restart after IBKR's nightly reset wrote 09-29's after-hours NAV as
    "2026-09-30". Included, it swaps the oldest real return for a ~0 pseudo-return: vol 22.82% / scale 0.979 / book
    target 1.46x instead of 23.65% / 0.945 / 1.41x. The completed-sessions window reproduces the logged 09-09 value
    (26.1% / 0.86) exactly; 09-16 and 09-23 are identical either way. Removing the seed before the open was blocked (a
    live state-file edit needs the owner's OK), so book 3 rebuilds at 1.46x (inside the validated range, ~$800 more gross
    than the convention). Fix: `compute_vol_scale` ignores today's entry until the 16:05 close mark exists.
+6. **Stale S&P 600 membership changed picks — FIXED (baf7a8a; live from the 06:00 scrape + a signal-server restart).**
+   `scrape_sp1500.py` read all three lists from Wikipedia; its S&P 500 / 400 pages matched SPY / MDY holdings exactly,
+   but its S&P 600 page had not applied the September rebalance: vs SPSM's 09-28 holdings it lacked 15 new members
+   (ARQT, ATRC, AXTI, BLDR, CPRI, DK, HOS, HRI, PRK, RUSHB, SAM, TAP, TENB, TMP, TTD) and kept 11 removed ones (AMSF,
+   CCOI, FBRT, HLX, LEG, MATW, NABL, NXRT, SHEN, VRRM, plus CWEN.A where the index holds CWEN). Rebuilt with the ETF
+   list, **ATRC replaces LGND (lowvol) and AXTI replaces VICR (momentum)** in the 09-29 BUY list; no held name leaves
+   the index. Now: SSGA daily holdings (SPY / MDY / SPSM) first — standard-library xlsx parser (no openpyxl on the box),
+   used only if the count is in range and >= 90% of names overlap Wikipedia or the last-good list — then Wikipedia,
+   then last-good; the file records its source per index. (The Wikipedia S&P 600 page is the documented weak link.)
+7. **Membership fetched without certificate verification — FIXED (5af1e4e).** The scraper's SSL probe sent Python's
+   default User-Agent; Wikipedia answers 403 and ANY exception switched every fetch to an unverified SSL context.
+   Verification now drops only on a genuine certificate error (verified SSL confirmed working from the box).
 Also: `tests/test_mom_equal_weight.py` blanked (not popped) the EXP-059 flags — `load_dotenv` re-set them from the
 box's `.env` during import, so its "code default" checks failed on the box only.
 
