@@ -512,7 +512,14 @@ def _fill_fundamentals(features, data_dir):
             date_col = "rdq" if "rdq" in fund.columns else "datadate"
             fund[date_col] = pd.to_datetime(fund[date_col], errors="coerce")
             fund = fund.dropna(subset=[date_col])
-            latest = fund.sort_values(date_col).groupby("tic").last()
+            # WHOLE latest row per ticker (2026-09-30 parity fix). GroupBy.last() returns the last
+            # NON-NULL value of EACH COLUMN separately: where Compustat left a field blank in the
+            # newest quarter (dlcq for 208 of 1,496 pool names on 2026-09-29; seqq for VSXY/MDT;
+            # cogsq for CPB) live silently took that field from an OLDER quarter, while the
+            # backtest (build_universe_v2: one record per quarter, NaN stays NaN, missing debt
+            # counts as 0) does not. A/B on 2026-09-29 data: identical BUY list, PAYX/NTNX weights
+            # move in the 4th decimal — parity, not a pick change.
+            latest = fund.sort_values(date_col).groupby("tic").tail(1).set_index("tic")
 
             # Compute fundamentals from Compustat fields
             # gross_margin = (saleq - cogsq) / saleq

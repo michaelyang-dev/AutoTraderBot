@@ -623,8 +623,20 @@ class IBKREngine:
         vol_scale = clamp(VOL_TARGET / realized_vol, floor, 1.0)."""
         if not VOL_SCALING:
             return 1.0, None
+        # COMPLETED SESSIONS ONLY (2026-09-30). record_nav() seeds TODAY's entry at engine start with
+        # the then-current NAV. On 2026-09-30 the engine restarted at 00:21 ET after IBKR's nightly
+        # reset and wrote the previous evening's after-hours NAV as "2026-09-30"; left in, that entry
+        # swapped the oldest real return for a ~0 pseudo-return and moved the book-3 target from
+        # 1.41x to 1.46x — i.e. the leverage depended on whether the engine happened to restart
+        # overnight. The validated convention (it reproduces the logged 2026-09-09 26.1% / 0.86
+        # exactly) is 40 close-to-close returns ending at the LAST COMPLETED close, so today's entry
+        # counts only once the 16:05 EOD path has written the authoritative close.
+        from zoneinfo import ZoneInfo
+        _now = datetime.now(ZoneInfo("US/Eastern"))
+        _today = _now.date().isoformat()
+        _closed = (_now.hour, _now.minute) >= (16, 10)
         hist = [h for h in self._load_nav_history()
-                if self._is_trading_day(h[0])][-(VOL_LOOKBACK + 1):]
+                if self._is_trading_day(h[0]) and (h[0] < _today or _closed)][-(VOL_LOOKBACK + 1):]
         if len(hist) < 20:
             return 1.0, None  # insufficient history — ramp-up, no scaling yet
         # FLOW-ADJUSTED returns: a deposit/withdrawal (/deposit ledger) is not a
