@@ -134,5 +134,28 @@ d = run(wiki_ok=False, ssga=None, prev=prev)
 check("both down -> last-good list, marked stale", d["sp600"] == prev["sp600"] and "sp600" in d["stale"])
 check("output keeps the three list keys every reader uses", all(isinstance(d[k], list) for k in ("sp500", "sp400", "sp600")))
 
+print("SSL context: verification is dropped ONLY for a certificate failure")
+import ssl  # noqa: E402
+import urllib.error  # noqa: E402
+_real_urlopen = S.urllib.request.urlopen
+try:
+    def _403(*a, **k):
+        raise urllib.error.HTTPError("https://en.wikipedia.org/robots.txt", 403, "Forbidden", None, None)
+    S.urllib.request.urlopen = _403
+    check("HTTP 403 from the probe keeps verification ON", S._ssl_context().verify_mode == ssl.CERT_REQUIRED)
+
+    def _timeout(*a, **k):
+        raise urllib.error.URLError(TimeoutError("timed out"))
+    S.urllib.request.urlopen = _timeout
+    check("a network timeout keeps verification ON", S._ssl_context().verify_mode == ssl.CERT_REQUIRED)
+
+    def _cert(*a, **k):
+        raise urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed"))
+    S.urllib.request.urlopen = _cert
+    check("a real certificate failure falls back to unverified (old behaviour kept for that case)",
+          S._ssl_context().verify_mode == ssl.CERT_NONE)
+finally:
+    S.urllib.request.urlopen = _real_urlopen
+
 print(f"\n{len(FAILS)} failures" + (": " + ", ".join(FAILS) if FAILS else " — all sp1500 scrape tests passed"))
 sys.exit(1 if FAILS else 0)

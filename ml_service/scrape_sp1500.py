@@ -26,17 +26,27 @@ log = logging.getLogger("scrape_sp1500")
 DATA_DIR = Path(__file__).resolve().parent / "data"
 OUTPUT_FILE = DATA_DIR / "sp1500_members.json"
 
-# SSL context: try default first, fall back to unverified if Wikipedia blocks
-try:
-    _SSL_CTX = ssl.create_default_context()
-    # Test with a simple request
-    urllib.request.urlopen("https://en.wikipedia.org/robots.txt",
-                           context=_SSL_CTX, timeout=5)
-except Exception:
-    _SSL_CTX = ssl.create_default_context()
-    _SSL_CTX.check_hostname = False
-    _SSL_CTX.verify_mode = ssl.CERT_NONE
-    log.warning("Using unverified SSL (default context failed for Wikipedia)")
+def _ssl_context():
+    """Verified SSL unless certificate verification ITSELF fails. Until 2026-09-30 the probe sent Python's
+    default User-Agent, Wikipedia answered 403, and ANY exception switched every fetch — including the ETF
+    holdings that define the tradable universe — to an unverified context. Only an SSL error does now."""
+    ctx = ssl.create_default_context()
+    try:
+        urllib.request.urlopen(urllib.request.Request("https://en.wikipedia.org/robots.txt",
+                                                      headers={"User-Agent": "Mozilla/5.0"}),
+                               context=ctx, timeout=10)
+    except Exception as e:
+        if isinstance(e, ssl.SSLError) or isinstance(getattr(e, "reason", None), ssl.SSLError):
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            log.warning("Using unverified SSL (certificate verification failed: %s)", e)
+        else:
+            log.info("SSL probe inconclusive (%s: %s) — keeping certificate verification ON", type(e).__name__, e)
+    return ctx
+
+
+_SSL_CTX = _ssl_context()
 
 URLS = {
     "sp500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
