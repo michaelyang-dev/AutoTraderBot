@@ -438,9 +438,13 @@ detector (live uses today's members over its history: corr 0.998, max |diff| 0.0
 **Measured, accepted or owner decisions:**
 - The backtest's breadth set also holds ex- and future members (~350 extra names): live-like minus backtest breadth
   mean +0.11pp, p10/p90 −1.5/+1.7pp; the blend differs by >0.1 on 7 of 517 sampled dates, never by >0.2.
-- **Stops:** live raises peaks on intraday prices and triggers intraday (sells at the market when seen); the backtest
-  uses daily closes for both. Live stops therefore fire slightly earlier / on intraday dips. Not yet quantified
-  (needs CRSP highs/lows) — owner decision whether to align.
+- **Stops — THE LARGEST GAP (EXP-062, fix e572e7e, deploy after the close).** Live raised peaks on intraday prices
+  and sold on intraday dips; the backtest uses daily closes for both. Same engine + deployed package, 8yr 12 starts:
+  live-style stops **−4.88pp CAGR / −0.104 Sharpe, worse on 12/12 starts**, MaxDD −0.57pp, ~60% more stop-outs
+  (peaks-from-highs alone −2.89pp; intraday triggers alone −0.38pp). Fix: peaks and stops evaluated once in the last
+  10 minutes before the scheduled close (13:00 on half days) with the backtest's rule; IBKR_STOP_AT_CLOSE=0 rolls back.
+  26yr confirmation: research/LOG.md cycle 60. Existing peaks (set from intraday prices) are kept, so held names keep a
+  slightly tighter reference until they make a new closing high or are rebought.
 - **Execution:** live rebuilds at the open on the prior close's signals; the backtest trades at the same close. Bounded
   by the shift+1 test (−0.35pp CAGR); research/BUGS.md A1 corrected (it claimed live traded near the close).
 - **BNY:** the vendor's per-ticker history splices a closed-end fund before 2026-05-21; live truncates it (excluded

@@ -82,5 +82,6 @@ LIVE_MEMBERSHIP_SOURCE = "SSGA holdings SPY/MDY/SPSM (>=90% overlap guard) -> Wi
 LIVE_SPLIT_HANDLING = "day's splits (Polygon reference) scale book shares and stop peaks before any reconciliation"
 LIVE_MIN_FEATURE_BARS = 21          # backtest rule (ret_20d valid); was 252 — new listings could never reach the lowvol sleeve
 LIVE_BREADTH_SET = "index members only (no ETFs)"
-# Known, measured differences (not changed): stops use intraday prices live vs closes in the backtest (owner decision);
-# live trades at the next open vs the backtest's same close (bounded by the shift+1 test, -0.35pp CAGR).
+LIVE_STOP_TIMING = "once, last 10 min before the close, backtest rule (IBKR_STOP_AT_CLOSE=1)"  # e572e7e, EXP-062; was intraday (-4.88pp CAGR 8yr)
+# Known, measured difference (not changed): live trades at the next open vs the backtest's same close (bounded by
+# the shift+1 test, -0.35pp CAGR).
