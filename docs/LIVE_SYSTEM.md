@@ -427,6 +427,11 @@ the 17:00 settle (2 min), quality gate latest = 2026-09-30, so the EVENING build
 stale-evening bug is gone); 10 short-history names now in the feature set (ADIG, BNY, FDXF, HONA, MBGL, MFP, Q, SOLS,
 VGNT, VSNT); coverage dist_sma200 99.5% / roe 95.4% / gm 99.5% / vol_60d 99.9%; 23 BUY; member-only breadth 19.1%
 (blend 0); healthy, not stale.
+**18:23 refresh job:** first correctly labelled archive file `closes_2026-09-30` (1,541 final closes); data_gaps patched
+16/25 short names with history through today, but logged FAILED — check_data_gaps had no return and the forked runner
+(0155bab) reads None as 'returned False', so it had failed every night since 09-30 00:40 (housekeeping, never paged;
+the status line read PARTIAL). Fixed 060a6c9 (explicit return True, test), on the box 18:50; every STEPS function now
+ends in an explicit return.
 
 ## Book 3, 2026-09-30 — CLEAN (first rebuild on SSGA membership + final-bar cache)
 09:19 pre-open refresh reused the final 09-29 bars (1,541 from cache, 0 vendor calls) · served signals identical to the
