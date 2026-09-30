@@ -422,7 +422,11 @@ mark, NAV $61,856): tranche state counter 0/5, next book 0; connected; Telegram 
 sessions ending at today's close (completed-sessions window, eea223f). **Now live in the engine:** trailing stops
 evaluated once in the last 10 minutes before the close with the backtest rule (EXP-062, first evaluation 2026-10-01
 15:50; rollback IBKR_STOP_AT_CLOSE=0) and stock-split handling (first calendar read at 2026-10-01's first check).
-The signal server picks up a2967dc (21-bar minimum history, member-only breadth) at the 17:50 cron restart.
+**17:50 signal-server restart on eb2741c — verified 17:56:** the settle rule refetched all 1,541 files written before
+the 17:00 settle (2 min), quality gate latest = 2026-09-30, so the EVENING build is on TODAY's close (the original
+stale-evening bug is gone); 10 short-history names now in the feature set (ADIG, BNY, FDXF, HONA, MBGL, MFP, Q, SOLS,
+VGNT, VSNT); coverage dist_sma200 99.5% / roe 95.4% / gm 99.5% / vol_60d 99.9%; 23 BUY; member-only breadth 19.1%
+(blend 0); healthy, not stale.
 
 ## Book 3, 2026-09-30 — CLEAN (first rebuild on SSGA membership + final-bar cache)
 09:19 pre-open refresh reused the final 09-29 bars (1,541 from cache, 0 vendor calls) · served signals identical to the
