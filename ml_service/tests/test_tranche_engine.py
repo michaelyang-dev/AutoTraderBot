@@ -27,6 +27,7 @@ os.environ.setdefault("IBKR_TRANCHE_STRIDE", "5")
 import ibkr_engine as E  # noqa: E402
 
 E.send_telegram = lambda m: None
+E.IBKREngine._fetch_splits_on = lambda self, day: {}   # no network in tests; split handling: tests/test_split_handling.py
 FAILS = []
 
 

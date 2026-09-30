@@ -179,9 +179,19 @@ def _is_partial_session(idx, coverage=None):
     return False
 
 
+MIN_FEATURE_BARS = 21             # a symbol enters the feature set once ret_20d exists (backtest compute_features rule)
 PARTIAL_ROW_MIN_COVERAGE = 0.90   # last row must carry >= 90% of the recent per-session print count
 SESSION_SETTLE_HOUR_ET = 17       # today's bar counts as final from 17:00 ET; == massive_data_provider.SETTLE_HOUR_ET
 SPLICE_MAX_RATIO = 4.0            # one-day close ratio above this = two securities under one ticker (BNY 12.6x, SOLS 487,000x; GME's record day was 2.35x)
+
+
+def _breadth(uni, today, members):
+    """Share of index members above their 50-day SMA (the regime input). Members only (2026-09-30 parity fix):
+    the backtest's breadth set is built from member PERMNOs and holds no ETFs, while live's feature map also carries
+    ~22 ETF / cross-asset symbols (SPY, sector ETFs, GLD, TLT, ...) — they moved live breadth by ~0.4pp on
+    2026-09-29 (21.4% with them, 21.0% without). Falls back to 0.5 (mid-ramp) if nothing is measurable."""
+    d50 = uni.get_feature_map(today, "dist_sma50", members)
+    return sum(1 for v in d50.values() if v > 0) / max(len(d50), 1) if d50 else 0.5
 
 
 def _splice_guard(raw):
@@ -353,13 +363,20 @@ def _compute_features_from_raw(raw, prices):
         if sym not in raw or len(raw[sym]) == 0:
             continue
         df = raw[sym]
-        # Fix: require minimum 252 bars of non-null close data
-        # Stocks with insufficient history (e.g. FISV with 126 bars) produce
-        # NaN for ret_252d and other long-lookback features, corrupting signals
+        # MINIMUM HISTORY = the backtest's rule (2026-09-30 parity fix). build_universe_2000.compute_features keeps a
+        # symbol once it has a valid price and a valid ret_20d (>= 21 bars); its longer-lookback features are simply
+        # NaN, which already keeps it out of the momentum sleeve (ret_252d, dist_sma200) and the value sleeve
+        # (ret_252d). Live used to require 252 bars and dropped such names ENTIRELY, so a new listing or spin-off
+        # could never reach the lowvol sleeve, whose composite needs only 2 of its 4 factors. On 34 of 437 sampled
+        # 2018-26 rebalance dates (7.8%) the validated backtest's lowvol sleeve held one (mean 14% of the sleeve;
+        # SNDK for ~3.5 months after its 2025 spin-off). A truncated/spliced vendor history now also degrades to
+        # "short name" (NaN long features) instead of vanishing. A/B on 2026-09-29 data: identical BUY list.
         valid_bars = df["close"].dropna().shape[0]
-        if valid_bars < 252:
-            log.warning(f"Skipping {sym}: only {valid_bars} bars (need 252+)")
+        if valid_bars < MIN_FEATURE_BARS:
+            log.warning(f"Skipping {sym}: only {valid_bars} bars (need {MIN_FEATURE_BARS}+)")
             continue
+        if valid_bars < 252:
+            log.info(f"{sym}: {valid_bars} bars — short history, long-lookback features NaN (backtest parity)")
         c = df["close"].reindex(date_index)
         v = df["volume"].reindex(date_index) if "volume" in df.columns else pd.Series(1, index=date_index)
 
@@ -1001,9 +1018,8 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
         "s7_value": t7 or {},
     }
 
-    # Breadth blend
-    dist_sma50 = uni.get_feature_map(today, "dist_sma50")
-    breadth = sum(1 for v in dist_sma50.values() if v > 0) / max(len(dist_sma50), 1) if dist_sma50 else 0.5
+    # Breadth blend — over the index MEMBERS only (see _breadth)
+    breadth = _breadth(uni, today, members)
     blend = min(1.0, max(0.0, (breadth - 0.35) / 0.25))
 
     # Legacy regime tilts removed — not in backtest, negligible impact

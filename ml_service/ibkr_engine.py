@@ -175,6 +175,17 @@ TRANCHE_MIN_TRADE_PCT = 0.003   # backtest: an existing holding is not resized f
 # between their own rebuilds. Backtest (24 starts): 26yr +0.77pp CAGR / +0.036 Sharpe / +5.5pp MaxDD.
 TRANCHE_OVERLAY_DOWN = os.getenv("IBKR_OVERLAY_DOWN", "0") == "1"
 TRANCHE_OVERLAY_THR = 0.95
+# STOCK SPLITS (2026-09-30). The backtest's prices are split-adjusted, so a split is invisible to it. Live, a split
+# multiplies the broker's share count and divides the price overnight, but neither the per-book ledger nor the
+# trailing-stop peaks were adjusted: a 2:1 split read as a -50% drawdown and would have fired the 40% stop in EVERY
+# book holding the name at the next open (and _reconcile_books credited all the extra shares to ONE book). High-priced
+# holdings (SNDK ~$1,730, MU ~$1,065, LITE ~$973 on 2026-09-29) are exactly the names that split. Now, before the
+# first stop check / rebuild of each ET day, the engine reads that day's splits from the Massive (Polygon) reference
+# API and, once, scales each book's shares by the ratio and each book's peak by its inverse. Fail-safe: while the
+# calendar cannot be read, a name whose broker quantity moved by a split-like ratio vs the ledger is kept out of the
+# stops and the reconciliation, and the owner is alerted, instead of being sold.
+SPLIT_CHECK = os.getenv("IBKR_SPLIT_CHECK", "1") == "1"
+SPLIT_LIKE_HI, SPLIT_LIKE_LO = 1.4, 0.72       # broker qty / ledger qty outside this band looks like a split
 
 class IBKREngine:
     def __init__(self):
@@ -286,6 +297,106 @@ class IBKREngine:
             else:
                 books[assign_to][sym] = books[assign_to].get(sym, 0) + (actual - held)
         return books
+
+    @staticmethod
+    def _split_adjust(books, peaks, sym, ratio):
+        """Pure: apply a `ratio` split (shares after / shares before; 2.0 = 2-for-1, 0.1 = 1-for-10) of `sym` to
+        every book — quantity x ratio rounded DOWN (the broker pays cash in lieu of fractions; a slice that becomes
+        0 shares leaves the book) and the book's trailing peak / ratio. Returns (books, peaks); inputs untouched."""
+        books = {t: dict(b) for t, b in books.items()}
+        peaks = dict(peaks)
+        if not ratio or ratio <= 0:
+            return books, peaks
+        for t, b in books.items():
+            q = b.get(sym, 0)
+            if q <= 0:
+                continue
+            nq = int(q * ratio + 1e-9)
+            key = f"{t}:{sym}"
+            if nq > 0:
+                b[sym] = nq
+                if key in peaks:
+                    peaks[key] = peaks[key] / ratio
+            else:
+                b.pop(sym, None)
+                peaks.pop(key, None)
+        return books, peaks
+
+    @staticmethod
+    def _split_like(books, positions_qty):
+        """Symbols whose broker quantity differs from the ledger total by a split-like ratio."""
+        out = set()
+        for sym, actual in positions_qty.items():
+            held = sum(b.get(sym, 0) for b in books.values())
+            if held > 0 and actual > 0 and not (SPLIT_LIKE_LO < actual / held < SPLIT_LIKE_HI):
+                out.add(sym)
+        return out
+
+    def _fetch_splits_on(self, day_iso):
+        """{ticker: ratio} for every US split executing on `day_iso`, from the Massive (Polygon) reference API."""
+        key = os.getenv("MASSIVE_API_KEY") or os.getenv("POLYGON_API_KEY")
+        if not key:
+            raise RuntimeError("no MASSIVE_API_KEY in the environment")
+        url = "https://api.polygon.io/v3/reference/splits"
+        params = {"execution_date": day_iso, "limit": 1000, "apiKey": key}
+        out = {}
+        for _ in range(5):                                  # pagination guard (a day has far fewer than 1000)
+            r = requests.get(url, params=params, timeout=15)
+            r.raise_for_status()
+            d = r.json()
+            for x in d.get("results", []):
+                t, f, to = x.get("ticker"), x.get("split_from"), x.get("split_to")
+                if t and f and to and float(f) > 0:
+                    out[t] = float(to) / float(f)
+            nxt = d.get("next_url")
+            if not nxt:
+                break
+            url, params = nxt, {"apiKey": key}
+        return out
+
+    def _apply_todays_splits(self):
+        """Once per ET day, before any reconciliation: scale books and peaks for today's splits of held names.
+        Returns True when today's calendar has been read (successfully), False otherwise."""
+        if not SPLIT_CHECK or not (TRANCHES > 1 and self._tranche.get("initialized")):
+            return True
+        from zoneinfo import ZoneInfo
+        st = self._tranche
+        today = datetime.now(ZoneInfo("US/Eastern")).date().isoformat()
+        if st.get("split_check_day") == today:
+            return True
+        if time.time() < getattr(self, "_split_retry_at", 0):
+            return False
+        held = {s for b in st["books"].values() for s in b}
+        try:
+            splits = self._fetch_splits_on(today)
+        except Exception as e:
+            self._split_retry_at = time.time() + 600
+            log.error(f"SPLIT CALENDAR unavailable ({e}) — split-like quantity changes will be held out of stops")
+            if st.get("split_alert_day") != today:
+                st["split_alert_day"] = today
+                self._save_tranche_state()
+                send_telegram("⚠️ Could not read today's stock-split calendar. Stops are suspended ONLY for names whose "
+                              "share count changed by a split-like ratio; retrying every 10 min.")
+            return False
+        applied = st.setdefault("splits_applied", {})
+        done = set(applied.get(today, []))
+        for sym, ratio in sorted(splits.items()):
+            if sym not in held or sym in done or abs(ratio - 1.0) < 1e-9:
+                continue
+            before = {t: b.get(sym, 0) for t, b in st["books"].items() if b.get(sym, 0)}
+            st["books"], self.trailing_peaks = self._split_adjust(st["books"], self.trailing_peaks, sym, ratio)
+            after = {t: b.get(sym, 0) for t, b in st["books"].items() if b.get(sym, 0)}
+            done.add(sym)
+            log.warning(f"SPLIT {sym} x{ratio:g} applied to the ledger {before} -> {after} and to its trailing peaks")
+            send_telegram(f"✂️ {sym} split {ratio:g}-for-1 today: book shares {before} → {after}, stop peaks divided "
+                          f"by {ratio:g} (no false stop).")
+        applied[today] = sorted(done)
+        cutoff = (datetime.now(ZoneInfo("US/Eastern")).date() - timedelta(days=45)).isoformat()
+        st["splits_applied"] = {d: v for d, v in applied.items() if d >= cutoff}
+        st["split_check_day"] = today
+        self._save_tranche_state()
+        self._save_trailing_peaks()
+        return True
 
     @staticmethod
     def _tranche_orders(book, target_qty, prices, book_nav, positions_qty, others_total):
@@ -884,13 +995,25 @@ class IBKREngine:
         lower price has its own, lower peak -- the backtest's construction. A stop sells only that
         book's shares (bounded by the actual position minus the other books' holdings)."""
         st = self._tranche
+        cal_ok = self._apply_todays_splits()                # splits BEFORE any reconciliation (see SPLIT_CHECK)
         positions_qty = {s: int(p["qty"]) for s, p in self.positions.items() if p["qty"] > 0}
+        suspect = set() if cal_ok else self._split_like(st["books"], positions_qty)
+        if suspect and getattr(self, "_split_suspect_alerted", None) != (datetime.now().date(), frozenset(suspect)):
+            self._split_suspect_alerted = (datetime.now().date(), frozenset(suspect))
+            log.error(f"SPLIT-LIKE quantity change with no split calendar: {sorted(suspect)} — held out of stops")
+            send_telegram(f"⚠️ Share count changed by a split-like ratio for {sorted(suspect)} and the split calendar "
+                          "is unavailable: their stops and ledger are frozen until it is read. Please check.")
         if positions_qty:
-            st["books"] = self._reconcile_books(st["books"], positions_qty, str(st["next_tranche"]))
+            pq = dict(positions_qty)
+            for s_ in suspect:                               # leave a suspected split's ledger untouched
+                pq[s_] = sum(b.get(s_, 0) for b in st["books"].values())
+            st["books"] = self._reconcile_books(st["books"], pq, str(st["next_tranche"]))
             live_keys = {f"{t}:{s}" for t, b in st["books"].items() for s in b}
             for orphan in [k for k in list(self.trailing_peaks) if k not in live_keys]:
                 del self.trailing_peaks[orphan]
         for sym, pos in list(self.positions.items()):
+            if sym in suspect:
+                continue
             holders = [t for t, b in st["books"].items() if b.get(sym, 0) > 0]
             if not holders:
                 continue
@@ -1245,6 +1368,14 @@ class IBKREngine:
             send_telegram(f"🧩 Tranche transition: existing {len(positions_qty)} holdings split into "
                           f"{TRANCHES} sub-books; book {t} rebuilds today, the others follow every "
                           f"{TRANCHE_STRIDE} sessions.")
+        # Stock splits first (see SPLIT_CHECK): a split must scale the ledger, not be "reconciled" into one book.
+        if st.get("initialized") and not self._apply_todays_splits():
+            suspect = self._split_like(st["books"], positions_qty)
+            if suspect:
+                log.error(f"Tranche rebuild paused: split-like quantity change {sorted(suspect)} and no split calendar")
+                send_telegram(f"⏸️ Book {t} rebuild paused: {sorted(suspect)} share counts changed by a split-like "
+                              "ratio and the split calendar is unavailable. Retrying every 10 minutes.")
+                return
         # Reconcile bookkeeping with the broker (stops, manual trades, partial fills since last time).
         st["books"] = self._reconcile_books(st["books"], positions_qty, str(t))
         book = st["books"][str(t)]
