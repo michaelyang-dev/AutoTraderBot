@@ -504,10 +504,11 @@ fresh 2026-09-29 data (offline rebuilds into temp caches, read-only IBKR/FMP/FRE
    cached symbol whose last bar is older than the session most symbols end on is refetched (content-based, whoever wrote
    the file); yfinance `end=tomorrow` in the runtime patch and in `data_gaps`; `data_gaps` never overwrites a file with
    older data. None of the 15 is a BUY on correct data today.
-3. **Price archive mislabelled — writer FIXED (166a4b6), history NOT yet quarantined.** `archive_daily_prices` labelled
+3. **Price archive mislabelled — writer FIXED (166a4b6); history QUARANTINED 2026-09-30 ~10:10 ET (owner approved):
+   all 91 old files moved to `data/price_archive/_mislabeled_pre_2026-09-30/` with a README.** `archive_daily_prices` labelled
    each cache file's last row with the wall-clock date: `closes_D` held mostly D-1's closes (Mondays: a ~15:05
    snapshot). Research only; nothing reads it. Now archives only bars that had settled when the file was written, under
-   their own session date. Moving the pre-09-30 files aside needs the owner's OK (remote file moves).
+   their own session date.
 4. **Fundamentals quarter mixing — FIXED (eea223f; on the box since ~02:10, loaded by the post-06:00 signal-server
    restart together with defect 6).** `groupby("tic").last()` takes each column's
    last NON-NULL value, so a blank field in the newest quarter came from an older quarter (dlcq for 208 of 1,496 pool
