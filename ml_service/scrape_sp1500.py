@@ -2,7 +2,7 @@
 """
 S&P 1500 Constituent Scraper
 ==============================
-Scrapes current SP500/SP400/SP600 membership from Wikipedia.
+Current SP500/SP400/SP600 membership: SSGA ETF holdings (SPY/MDY/SPSM) first, Wikipedia fallback.
 Saves to data/sp1500_members.json for the live signal server.
 
 Run weekly via cron on AWS:
@@ -46,11 +46,79 @@ URLS = {
 
 EXPECTED_COUNTS = {"sp500": (490, 510), "sp400": (390, 410), "sp600": (590, 620)}
 
+# PRIMARY SOURCE (2026-09-30): the daily holdings of State Street's full-replication index ETFs. Wikipedia's
+# S&P 600 page had not applied the September 2026 rebalance on 2026-09-29 (15 adds / 11 deletes missing vs
+# SPSM's 09-28 holdings; its CWEN.A is the wrong share class — the index holds CWEN). That changed live
+# picks: with the ETF-based list, ATRC and AXTI replace LGND and VICR in the 2026-09-29 BUY list. Its S&P
+# 500 and 400 pages matched SPY / MDY exactly. ETF holdings switch on the index's effective date (the fund
+# rebalances at the prior close), so a 06:00 scrape sees that morning's membership. Wikipedia remains the
+# fallback, then the last-good list. Parsed with the standard library (no xlsx dependency on the box).
+SSGA_ETF = {"sp500": "spy", "sp400": "mdy", "sp600": "spsm"}
+SSGA_URL = ("https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/"
+            "holdings-daily-us-en-{etf}.xlsx")
+MIN_OVERLAP = 0.90       # an ETF list sharing < 90% of names with the reference list is treated as a bad parse
+TICKER_RE = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
+
 
 def _fetch(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
         return resp.read().decode()
+
+
+def _fetch_bytes(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=60, context=_SSL_CTX) as resp:
+        return resp.read()
+
+
+def _xlsx_rows(data: bytes):
+    """Yield {column_letter: cell_text} for each row of the first worksheet. Standard library only."""
+    import io
+    import xml.etree.ElementTree as ET
+    import zipfile
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    z = zipfile.ZipFile(io.BytesIO(data))
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(f"{ns}si"):
+            shared.append("".join(t.text or "" for t in si.iter(f"{ns}t")))
+    sheet = sorted(n for n in z.namelist() if n.startswith("xl/worksheets/sheet"))[0]
+    for row in ET.fromstring(z.read(sheet)).iter(f"{ns}row"):
+        cells = {}
+        for c in row.iter(f"{ns}c"):
+            col = re.match(r"[A-Z]+", c.get("r", "")).group(0) if c.get("r") else None
+            v, t = c.find(f"{ns}v"), c.get("t")
+            if t == "s" and v is not None:
+                val = shared[int(v.text)]
+            elif t == "inlineStr":
+                val = "".join(x.text or "" for x in c.iter(f"{ns}t"))
+            else:
+                val = v.text if v is not None else None
+            if col:
+                cells[col] = val
+        yield cells
+
+
+def _ssga_constituents(data: bytes) -> tuple:
+    """(sorted tickers, 'As of ...' text) from an SSGA daily-holdings xlsx. Cash, money-market, futures,
+    rights and earn-out lines have non-ticker symbols ('-', 'RTYZ6', '2200963D') and are dropped by
+    TICKER_RE; share classes are normalised to the dot form the rest of the system uses (BRK.B, MOG.A)."""
+    rows = list(_xlsx_rows(data))
+    as_of = next((v for r in rows[:8] for v in r.values() if v and "As of" in v), "")
+    hdr = next(i for i, r in enumerate(rows[:25]) if "Ticker" in r.values())
+    col = next(k for k, v in rows[hdr].items() if v == "Ticker")
+    out = set()
+    for r in rows[hdr + 1:]:
+        s = (r.get(col) or "").strip().upper().replace("/", ".").replace(" ", ".").replace("-", ".")
+        if TICKER_RE.match(s):
+            out.add(s)
+    return sorted(out), as_of.strip()
+
+
+def _overlap(a, b) -> float:
+    a, b = set(a), set(b)
+    return len(a & b) / max(len(a), len(b), 1)
 
 
 def _tickers_from_table(table_html: str) -> list[str]:
@@ -98,34 +166,67 @@ def scrape() -> dict:
 
     results = {}
     failures = []
+    sources = {}
     for name, url in URLS.items():
+        lo, hi = EXPECTED_COUNTS[name]
+        wiki = None
         log.info("Fetching %s from Wikipedia...", name)
         try:
             html = _fetch(url)
             tickers = _extract_constituents(html)
-            lo, hi = EXPECTED_COUNTS[name]
             if not (lo <= len(tickers) <= hi):
                 raise ValueError(
                     f"got {len(tickers)} tickers, expected {lo}-{hi}. "
                     "Wikipedia format may have changed."
                 )
-            results[name] = tickers
-            log.info("  %s: %d tickers", name, len(tickers))
+            wiki = tickers
+            log.info("  %s (Wikipedia): %d tickers", name, len(tickers))
         except Exception as e:
+            log.error("  %s: Wikipedia FAILED (%s)", name, e)
+
+        etf = SSGA_ETF[name]
+        ssga, as_of = None, ""
+        try:
+            ssga, as_of = _ssga_constituents(_fetch_bytes(SSGA_URL.format(etf=etf)))
+            ref = wiki or previous.get(name) or []
+            ov = _overlap(ssga, ref) if ref else 1.0
+            if not (lo <= len(ssga) <= hi):
+                raise ValueError(f"{len(ssga)} holdings, expected {lo}-{hi}")
+            if ov < MIN_OVERLAP:
+                raise ValueError(f"only {ov:.1%} overlap with the reference list (bad parse?)")
+            log.info("  %s (%s holdings, %s): %d tickers, %.1f%% overlap with %s", name, etf.upper(), as_of,
+                     len(ssga), ov * 100, "Wikipedia" if wiki else "the last-good list")
+        except Exception as e:
+            log.error("  %s: %s holdings unusable (%s) — falling back", name, etf.upper(), e)
+            ssga = None
+
+        if ssga:
+            results[name] = ssga
+            sources[name] = f"ssga:{etf.upper()} {as_of}"
+            if wiki:
+                add, rem = sorted(set(ssga) - set(wiki)), sorted(set(wiki) - set(ssga))
+                if add or rem:
+                    log.warning("  %s: Wikipedia differs from %s — ETF-only %s | Wikipedia-only %s",
+                                name, etf.upper(), add, rem)
+        elif wiki:
+            results[name] = wiki
+            sources[name] = "wikipedia"
+        else:
             last_good = previous.get(name) or []
             if not last_good:
-                raise  # no fallback available — keep the old fail-loud behavior
+                raise RuntimeError(f"{name}: no ETF, Wikipedia or last-good list available")
             failures.append(name)
             results[name] = last_good
-            log.error("FAILED %s (%s) — reusing %d last-good tickers from %s",
-                      name, e, len(last_good), previous.get("updated", "?"))
+            sources[name] = f"last-good {previous.get('updated', '?')}"
+            log.error("FAILED %s — reusing %d last-good tickers from %s",
+                      name, len(last_good), previous.get("updated", "?"))
 
     total = sum(len(v) for v in results.values())
     log.info("Total SP1500: %d%s", total,
              f" (STALE: {', '.join(failures)})" if failures else "")
 
     data = {"updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "stale": failures, **results}
+            "stale": failures, "source": sources, **results}
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_FILE, "w") as f:
