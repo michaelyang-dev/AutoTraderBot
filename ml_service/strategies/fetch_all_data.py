@@ -397,6 +397,7 @@ def fetch_options_snapshots(symbols):
 
     log("  Fetching options snapshots for %d symbols ..." % len(symbols))
     rows = []
+    session_ts = []   # per-symbol max(day.last_updated) — the session the snapshot actually describes
     for i, sym in enumerate(symbols):
         try:
             r = _req.get(
@@ -414,6 +415,10 @@ def fetch_options_snapshots(symbols):
             ivs = []
             underlying_price = None
 
+            lu = [c.get("day", {}).get("last_updated") for c in results]
+            lu = [v for v in lu if isinstance(v, (int, float)) and v > 0]
+            if lu:
+                session_ts.append(max(lu))
             for c in results:
                 ct = c.get("details", {}).get("contract_type", "")
                 vol = c.get("day", {}).get("volume", 0) or 0
@@ -451,6 +456,16 @@ def fetch_options_snapshots(symbols):
 
     df = pd.DataFrame(rows)
     if len(df) > 0:
+        # 2026-09-30: label by the SESSION the data describes, not the wall clock. The Sunday 21:00 run was
+        # storing Friday's session under a Sunday date (options_history had both 09-25 and 09-27 for the same
+        # session). Median of the per-symbol latest contract print, converted to New York time.
+        if session_ts:
+            sess = pd.Timestamp(int(np.median(session_ts)), unit="ns", tz="UTC").tz_convert("America/New_York")
+            label = sess.strftime("%Y-%m-%d")
+            if label != today:
+                log("  Options session label %s (run date %s)" % (label, today))
+            today = label
+            df["date"] = label
         # Save current snapshot (for live signal server)
         df.to_parquet(cache, index=False)
         log("  Options snapshots: %d symbols saved" % len(df))

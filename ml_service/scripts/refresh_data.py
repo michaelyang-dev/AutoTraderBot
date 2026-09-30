@@ -45,17 +45,28 @@ def log(msg):
 
 
 def refresh_enhanced_data():
-    """Run fetch_all_data.py to refresh FMP caches."""
-    log("Refreshing FMP enhanced data (price targets, DCF, growth, profiles)...")
+    """Refresh the FMP 'enhanced' caches (price targets, DCF, growth, EV, profiles, economic calendar).
+
+    2026-09-30: FMP ONLY. It used to call fetch_all_data.main(), which ALSO swept options snapshots for all
+    1,502 names — the same ~4-minute sweep refresh_options() runs again later in this job. On the weekly
+    day when the 7-day FMP caches expire (~7.5 min of FMP calls) the duplicate sweep pushed the step past
+    its 600s budget (2026-09-29 17:40 "enhanced_data exceeded 600s timeout" -> false 'DATA REFRESH
+    PARTIAL' alert; every file had in fact been written). Each fetcher keeps its own TTL cache and saves
+    its own file, so a partial run keeps everything already fetched."""
+    log("Refreshing FMP enhanced data (price targets, DCF, growth, EV, profiles, economic calendar)...")
     t0 = time.time()
-    try:
-        from strategies.fetch_all_data import main as fetch_main
-        fetch_main()
-        log(f"Enhanced data refreshed in {time.time() - t0:.0f}s")
-        return True
-    except Exception as e:
-        log(f"ERROR refreshing enhanced data: {e}")
-        return False
+    from strategies import fetch_all_data as F
+    from sp500_universe import get_all_symbols, get_etf_symbols
+    etfs = set(get_etf_symbols())
+    symbols = sorted(s for s in get_all_symbols() if s not in etfs)
+    F.fetch_price_targets(symbols)
+    F.fetch_dcf_values(symbols)
+    F.fetch_financial_growth(symbols)
+    F.fetch_enterprise_values(symbols)
+    F.fetch_company_profiles(symbols)
+    F.fetch_economic_calendar()
+    log(f"Enhanced (FMP) data refreshed in {time.time() - t0:.0f}s")
+    return True
 
 
 def refresh_vix_cache():
@@ -453,35 +464,81 @@ def refresh_snapshot_history():
         return False
 
 
-def _run_with_timeout(func, label, timeout_sec=600, retries=1):
-    """Run a refresh function with a hard timeout and optional retry."""
-    import signal as _sig
-
-    def _handler(signum, frame):
-        raise TimeoutError(f"{label} exceeded {timeout_sec}s timeout")
-
-    for attempt in range(1 + retries):
-        old = _sig.signal(_sig.SIGALRM, _handler)
-        _sig.alarm(timeout_sec)
+def _step_child(func):
+    """Body of a forked step process. Exit code is the ONLY result channel: 0 = func returned truthy,
+    3 = func returned falsy, 4 = func raised. os._exit skips inherited atexit handlers."""
+    code = 4
+    try:
+        code = 0 if func() else 3
+    except BaseException as e:            # noqa: BLE001 — report everything, the parent decides
+        log(f"  step raised {type(e).__name__}: {e}")
+        code = 4
+    finally:
         try:
-            result = func()
-            return result
-        except TimeoutError as e:
-            log(f"TIMEOUT: {e}")
-            if attempt < retries:
-                log(f"  Retrying {label} (attempt {attempt + 2}/{retries + 1})...")
-                time.sleep(5)
-            result = False
-        except Exception as e:
-            log(f"ERROR in {label}: {e}")
-            if attempt < retries:
-                log(f"  Retrying {label} (attempt {attempt + 2}/{retries + 1})...")
-                time.sleep(5)
-            result = False
-        finally:
-            _sig.alarm(0)
-            _sig.signal(_sig.SIGALRM, old)
-    return result
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(code)
+
+
+def _stale_outputs(outputs, now=None):
+    """[(path, max_age_hours)] -> list of human-readable problems (missing / too old)."""
+    now = now or time.time()
+    bad = []
+    for rel, max_h in outputs:
+        pth = ML_DIR / rel
+        if not pth.exists():
+            bad.append(f"{rel} missing")
+            continue
+        age_h = (now - pth.stat().st_mtime) / 3600
+        if age_h > max_h:
+            bad.append(f"{rel} {age_h:.0f}h old (max {max_h}h)")
+    return bad
+
+
+def _run_step(func, label, timeout_sec, retries=1, outputs=()):
+    """Run one refresh step in a FORKED CHILD PROCESS with a hard kill at `timeout_sec`.
+
+    Replaces _run_with_timeout (SIGALRM), which had three failure modes (2026-09-29 incident):
+      * the alarm raises TimeoutError INSIDE the step, where any broad `except Exception` (every
+        fetcher has one) can swallow it -> the timeout silently never fires, or fires at a random
+        point and throws away unsaved work;
+      * steps catch their own errors and RETURN False, and the old wrapper only retried on an
+        exception -> retries never ran;
+      * a step could 'succeed' without writing anything.
+    Now: timeout = SIGTERM/SIGKILL of the child (cannot be swallowed); retry on timeout, crash,
+    exception or a falsy return; after a clean exit the step's declared outputs must exist and be
+    within their max age, otherwise the attempt counts as failed.
+    Returns (ok: bool, detail: str)."""
+    import multiprocessing as mp
+    ctx = mp.get_context("fork")
+    detail = "not run"
+    for attempt in range(1 + retries):
+        t0 = time.time()
+        proc = ctx.Process(target=_step_child, args=(func,), name=f"refresh-{label}", daemon=False)
+        proc.start()
+        proc.join(timeout_sec)
+        if proc.is_alive():
+            proc.terminate(); proc.join(15)
+            if proc.is_alive():
+                proc.kill(); proc.join(5)
+            detail = f"timed out after {timeout_sec}s (child killed)"
+        elif proc.exitcode == 0:
+            bad = _stale_outputs(outputs)
+            if not bad:
+                return True, f"ok in {time.time() - t0:.0f}s" + (f" (attempt {attempt + 1})" if attempt else "")
+            detail = "finished but outputs not fresh: " + "; ".join(bad)
+        elif proc.exitcode == 3:
+            detail = "step reported failure (returned False)"
+        elif proc.exitcode == 4:
+            detail = "step raised an exception (see log above)"
+        else:
+            detail = f"child died (exit code {proc.exitcode})"
+        log(f"STEP {label}: attempt {attempt + 1}/{retries + 1} FAILED — {detail}")
+        if attempt < retries:
+            log(f"  Retrying {label} in 10s...")
+            time.sleep(10)
+    return False, detail
 
 
 def archive_daily_prices():
@@ -569,45 +626,65 @@ def cleanup_journal_db():
         return False
 
 
+# Step table (2026-09-30). `live` = does a failure change what the LIVE engine trades?
+#   The live signal path is build_signals_v9(raw, enhanced_data=None, ...) (signal_server.py) — the FMP
+#   "enhanced" caches are deliberately NOT fed to live selection (parity with the backtest, whose
+#   FastBacktester.DEPLOYED_EMPTY_MAPS clears the same maps). tests/test_refresh_runner.py asserts that
+#   call signature: if someone wires enhanced data into live signals, the test fails and this table must
+#   be re-classified. Budgets are ~2x the slowest run seen in logs/refresh_data.log.
+STEPS = [
+    # label,            func-name,                  budget_s, retries, live,  what it feeds,                                             outputs [(path, max_age_h)]
+    ("enhanced_fmp",    "refresh_enhanced_data",    1500,     1,       False, "FMP price targets/DCF/growth/EV/profiles/econ calendar — research + snapshot history only",
+        [("data/enhanced_data/price_targets.parquet", 96), ("data/enhanced_data/dcf_values.parquet", 96),
+         ("data/enhanced_data/financial_growth.parquet", 192), ("data/enhanced_data/enterprise_values.parquet", 192),
+         ("data/enhanced_data/company_profiles.parquet", 192), ("data/enhanced_data/economic_calendar.parquet", 48)]),
+    ("VIX",             "refresh_vix_cache",        180,      2,       True,  "VIX / VIX3M in the live universe's regime dict",
+        [("data/enhanced_data/vix_cache.parquet", 2)]),
+    ("fundamentals",    "refresh_fundamentals",     3600,     1,       False, "FMP fundamentals — live FALLBACK only (WRDS Compustat + EDGAR are primary)",
+        [("data/fundamentals_ratios.parquet", 48), ("data/fundamentals_income.parquet", 48),
+         ("data/fundamentals_metrics.parquet", 48), ("data/fundamentals_earnings.parquet", 48)]),
+    ("options",         "refresh_options",          900,      1,       False, "options P/C + IV snapshots — research history only",
+        [("data/enhanced_data/options_snapshots.parquet", 2)]),
+    ("snapshots",       "refresh_snapshot_history", 300,      1,       False, "point-in-time history files — research only", []),
+    ("price_archive",   "archive_daily_prices",     300,      1,       False, "daily close archive — research only", []),
+    ("journal_cleanup", "cleanup_journal_db",       120,      0,       False, "journal DB housekeeping", []),
+    ("fama_french",     "refresh_fama_french",      300,      2,       False, "FF factors — research; live momentum-crash detector is price-based",
+        [("data/wrds/fama_french_5factors_momentum_daily.parquet", 2)]),
+    ("data_gaps",       "check_data_gaps",          600,      0,       False, "Massive cache gap scan + yfinance patch", []),
+    ("cache_flush",     "flush_old_fundamentals",   120,      0,       False, "cache housekeeping", []),
+]
+
+
 def main():
     log("=" * 60)
     log("  DAILY DATA REFRESH")
     log("=" * 60)
+    t_all = time.time()
+    results = {}
+    for label, fname, budget, retries, live, feeds, outputs in STEPS:
+        ok, detail = _run_step(globals()[fname], label, budget, retries=retries, outputs=outputs)
+        results[label] = (ok, detail, live, feeds)
+        log(f"STEP {label}: {'OK' if ok else 'FAILED'} — {detail}")
 
-    ok1 = _run_with_timeout(refresh_enhanced_data, "enhanced_data", 600, retries=1)  # 2x headroom: bulk FMP (11 sources x ~1500) occasionally >300s; false-alarmed 2026-06-23
-    ok2 = _run_with_timeout(refresh_vix_cache, "VIX", 60, retries=1)
-    ok3 = _run_with_timeout(refresh_fundamentals, "fundamentals", 3600, retries=1)  # 60min: the 40min ceiling false-alarmed 4 of 6 runs in early July (FMP slow days); pipeline is resumable so a longer ceiling just lets it finish
-    ok4 = _run_with_timeout(refresh_options, "options", 300, retries=1)
-    # v12: Ortex REMOVED (subscription canceled, SI hurts returns)
-    ok5 = True  # skip Ortex
-    ok6 = _run_with_timeout(refresh_snapshot_history, "snapshots", 120)
-    ok7 = _run_with_timeout(archive_daily_prices, "price_archive", 120)
-    ok8 = _run_with_timeout(cleanup_journal_db, "journal_cleanup", 60)
-    ok_ff = _run_with_timeout(refresh_fama_french, "fama_french", 120)
-
-    ok9 = _run_with_timeout(check_data_gaps, "data_gaps", 120)
-    ok10 = _run_with_timeout(flush_old_fundamentals, "cache_flush", 60)
-
-    if ok1 or ok2 or ok3 or ok4:
+    if any(results[k][0] for k in ("enhanced_fmp", "VIX", "fundamentals", "options")):
         restart_ml_server()
 
-    # FMP fundamentals failure is OK — WRDS Compustat is primary, FMP is just fallback
-    critical_ok = ok1 and ok2 and ok6 and ok_ff
-    status = "OK" if critical_ok else "PARTIAL"
-    log(f"Refresh complete: {status} (enhanced={ok1}, vix={ok2}, fundamentals={ok3}, options={ok4}, fama_french={ok_ff}, snapshots={ok6}, prices={ok7}, journal={ok8}, cache_flush={ok10})")
+    failed = [(k, v) for k, v in results.items() if not v[0]]
+    live_failed = [(k, v) for k, v in failed if v[2]]
+    status = "OK" if not failed else ("LIVE-INPUT FAILURE" if live_failed else "PARTIAL (research data only)")
+    log(f"Refresh complete in {time.time() - t_all:.0f}s: {status} — " +
+        ", ".join(f"{k}={'ok' if v[0] else 'FAIL'}" for k, v in results.items()))
 
-    # Alert on failure via Telegram — only for critical data, not FMP fundamentals
-    if not critical_ok:
-        failures = []
-        if not ok1: failures.append("enhanced_data")
-        if not ok2: failures.append("VIX")
-        if not ok_ff: failures.append("fama_french")
-        if not ok6: failures.append("snapshots")
-        _send_telegram_alert(
-            f"⚠️ DATA REFRESH {status}\n"
-            f"Failed: {', '.join(failures)}\n"
-            f"System will use last known good data."
-        )
+    # Housekeeping-only failures are logged, not paged.
+    paged = [(k, v) for k, v in failed if k not in ("journal_cleanup", "data_gaps", "cache_flush")]
+    if paged:
+        head = ("🚨 DATA REFRESH — LIVE INPUT FAILED" if live_failed else
+                "ℹ️ DATA REFRESH — research data only (live trading NOT affected)")
+        lines = [head]
+        for k, (ok, detail, live, feeds) in paged:
+            lines.append(f"• {k}: {detail}\n  feeds: {feeds}{' [LIVE]' if live else ''}")
+        lines.append("Last good files stay in place; the next scheduled run retries.")
+        _send_telegram_alert("\n".join(lines))
     else:
         log("All refreshes succeeded — no alerts needed")
 
