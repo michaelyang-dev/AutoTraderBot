@@ -29,6 +29,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,55 @@ log = logging.getLogger("massive_data")
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 CACHE_DIR = DATA_DIR / "massive_cache"
+
+# ── CACHE VALIDITY (2026-09-30) ─────────────────────────────────────────────
+# A per-symbol cache file is reused only if it is younger than CACHE_MAX_AGE_H **and** was
+# written after the most recent SETTLED session close (weekday SETTLE_HOUR_ET:00 ET).
+#
+# Age alone was the rule until 2026-09-30, and it let two wrong things through, found while
+# verifying the 2026-09-30 book-3 rebuild:
+#   * every post-close build (17:50 cron restart, ~18:33 refresh-job restart) reused files fetched
+#     that MORNING, before the day's bar existed, so the evening signals were computed on the
+#     PREVIOUS session (2026-09-29 evening = 2026-09-28's close; the evening dry run of book 3 was
+#     therefore a day stale and differed from the fresh build: +LGND/RDDT/VICR, -ADSK/ILMN);
+#   * after the Sunday 21:20 restart the 18h clock expires Monday ~15:20, so Monday's refetch
+#     cached a ~15:05 intraday snapshot (15-min delayed feed) as Monday's bar; the 17:50/18:33
+#     builds and Tuesday's 09:18 PRE-OPEN build then used that snapshot as Monday's close until
+#     the ~09:33 refetch. A Tuesday rebalance could have traded on it.
+# The settle condition only ever makes a file INVALID earlier (never valid longer), so it can
+# add refetches but can never serve older data than the age rule did. With it, the evening
+# restart refetches the completed session and the next morning's pre-open build reuses those
+# FINAL bars with no vendor call in the pre-open window.
+# 17:00 = close 16:00 + closing-auction prints + the feed's 15-min delay, with margin. Keep in
+# step with signal_builder.SESSION_SETTLE_HOUR_ET (the partial-session clock rule).
+SETTLE_HOUR_ET = 17
+CACHE_MAX_AGE_H = 18
+_ET = ZoneInfo("America/New_York")
+
+
+def last_settle_ts(now_ts: float = None) -> float:
+    """Epoch seconds of the most recent weekday SETTLE_HOUR_ET:00 ET at or before now_ts.
+    Holidays are not special-cased: on a weekday holiday this costs one redundant refetch."""
+    now = datetime.fromtimestamp(now_ts if now_ts is not None else time.time(), _ET)
+    cand = now.replace(hour=SETTLE_HOUR_ET, minute=0, second=0, microsecond=0)
+    if cand > now:
+        cand = (cand - timedelta(days=1)).replace(hour=SETTLE_HOUR_ET)
+    while cand.weekday() >= 5:
+        cand = (cand - timedelta(days=1)).replace(hour=SETTLE_HOUR_ET)
+    # re-anchor to the wall clock of the chosen date so the UTC offset is that date's (DST-safe)
+    cand = datetime(cand.year, cand.month, cand.day, SETTLE_HOUR_ET, tzinfo=_ET)
+    return cand.timestamp()
+
+
+def cache_file_fresh(mtime: float, now_ts: float = None) -> tuple:
+    """(is_fresh, reason) for a cache file written at epoch `mtime`. Pure — unit-tested."""
+    now_ts = now_ts if now_ts is not None else time.time()
+    age_h = (now_ts - mtime) / 3600
+    if age_h >= CACHE_MAX_AGE_H:
+        return False, "age"
+    if mtime < last_settle_ts(now_ts):
+        return False, "pre-settle"
+    return True, "ok"
 
 # Polygon API base
 API_BASE = "https://api.polygon.io"
@@ -349,12 +399,14 @@ class MassiveDataProvider:
         raw = {}
         uncached = []
 
-        # Check disk cache
+        # Check disk cache (validity rule: see CACHE VALIDITY at the top of this module)
+        _now = time.time()
+        _stale = {"age": 0, "pre-settle": 0}
         for sym in symbols:
             cache_file = CACHE_DIR / f"{sym}_{cache_tag}.parquet"
             if cache_file.exists():
-                age_hours = (time.time() - cache_file.stat().st_mtime) / 3600
-                if age_hours < 18:  # cache valid for 18 hours
+                fresh, why = cache_file_fresh(cache_file.stat().st_mtime, _now)
+                if fresh:
                     try:
                         df = pd.read_parquet(cache_file)
                         df.index = pd.to_datetime(df.index)
@@ -362,7 +414,15 @@ class MassiveDataProvider:
                         continue
                     except Exception:
                         pass
+                else:
+                    _stale[why] += 1
             uncached.append(sym)
+        if _stale["pre-settle"]:
+            log.info("cache: %d file(s) younger than %dh were written before the last settled close "
+                     "(%s ET) and are refetched so the completed session's FINAL bar is used "
+                     "(%d expired by age)", _stale["pre-settle"], CACHE_MAX_AGE_H,
+                     datetime.fromtimestamp(last_settle_ts(_now), _ET).strftime("%a %Y-%m-%d %H:%M"),
+                     _stale["age"])
 
         # ── CACHE DEPTH GUARD (2026-08-19) ───────────────────────────────────
         # The cache is per-symbol and reused for 18h with NO check on how much history

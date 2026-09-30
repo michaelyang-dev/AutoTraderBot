@@ -158,7 +158,14 @@ def _is_partial_session(idx, coverage=None):
     if len(idx) < 2:
         return False
     now_et = datetime.now(ZoneInfo("US/Eastern"))
-    if pd.Timestamp(idx[-1]).date() == now_et.date() and now_et.hour < 16:
+    # CLOCK RULE: today's bar is not final until SESSION_SETTLE_HOUR_ET (17:00), not the 16:00 bell
+    # (2026-09-30). The price cache now refetches only after the session SETTLES (see
+    # massive_data_provider CACHE VALIDITY); a file refetched mid-session by the 18h age rule holds
+    # a ~15-min-delayed intraday snapshot for EVERY name, so row coverage is ~100% and the data rule
+    # below cannot catch it. With `hour < 16` the 16:00-16:30 refreshes would have promoted that
+    # snapshot to "today's close". No trading happens 16:00-17:00; the evening builds (17:50/18:33)
+    # are unaffected.
+    if pd.Timestamp(idx[-1]).date() == now_et.date() and now_et.hour < SESSION_SETTLE_HOUR_ET:
         return True
     # DATA RULE (2026-09-08, third coverage alarm): the clock alone is not enough. At 16:13 ET
     # the session had closed, so the clock rule said "final", but the vendor had published the
@@ -173,6 +180,7 @@ def _is_partial_session(idx, coverage=None):
 
 
 PARTIAL_ROW_MIN_COVERAGE = 0.90   # last row must carry >= 90% of the recent per-session print count
+SESSION_SETTLE_HOUR_ET = 17       # today's bar counts as final from 17:00 ET; == massive_data_provider.SETTLE_HOUR_ET
 SPLICE_MAX_RATIO = 4.0            # one-day close ratio above this = two securities under one ticker (BNY 12.6x, SOLS 487,000x; GME's record day was 2.35x)
 
 

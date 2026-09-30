@@ -47,12 +47,38 @@ check("threshold: 89% row partial, 91% row not", SB._is_partial_session(full.ind
 check("None coverage falls back to the clock rule only", SB._is_partial_session(full.index, None) is False)
 check("len<2 never partial (caller is never left with nothing)", SB._is_partial_session(full.index[:1], 0.1) is False)
 
-# clock rule preserved: index ending TODAY before 16:00 ET is partial regardless of coverage
+# clock rule: index ending TODAY before the 17:00 ET settle is partial regardless of coverage
+# (was 16:00 until 2026-09-30; see SESSION_SETTLE_HOUR_ET)
 from zoneinfo import ZoneInfo  # noqa: E402
 now = datetime.now(ZoneInfo("US/Eastern"))
 today_idx = pd.DatetimeIndex([pd.Timestamp(now.date() - timedelta(days=1)), pd.Timestamp(now.date())])
-expect_clock = now.hour < 16
-check("clock rule unchanged: today's row before 16:00 ET is partial", SB._is_partial_session(today_idx, 1.0) is expect_clock, f"hour={now.hour}")
+expect_clock = now.hour < 17
+check("clock rule: today's row before the 17:00 ET settle is partial", SB._is_partial_session(today_idx, 1.0) is expect_clock, f"hour={now.hour}")
+check("settle hour is 17 and equals the price cache's settle hour", SB.SESSION_SETTLE_HOUR_ET == 17)
+
+
+class _FakeDT(datetime):
+    """datetime whose now() is pinned, to exercise the clock rule at fixed ET wall times."""
+    PIN = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.PIN.astimezone(tz) if tz else cls.PIN
+
+
+_real_dt = SB.datetime
+try:
+    SB.datetime = _FakeDT
+    et = ZoneInfo("US/Eastern")
+    d = pd.Timestamp("2026-09-30")
+    idx2 = pd.DatetimeIndex([pd.Timestamp("2026-09-29"), d])
+    for hh, mm, want in [(9, 18, True), (15, 59, True), (16, 15, True), (16, 59, True), (17, 0, False), (17, 50, False)]:
+        _FakeDT.PIN = datetime(2026, 9, 30, hh, mm, tzinfo=et)
+        check(f"clock rule at {hh:02d}:{mm:02d} ET with a full row: partial={want}", SB._is_partial_session(idx2, 1.0) is want)
+    _FakeDT.PIN = datetime(2026, 10, 1, 9, 18, tzinfo=et)
+    check("next morning: yesterday's full row is final", SB._is_partial_session(idx2, 1.0) is False)
+finally:
+    SB.datetime = _real_dt
 
 # raw-dict measure agrees with the matrix measure
 raw = {}
