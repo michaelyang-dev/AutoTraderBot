@@ -439,6 +439,10 @@ $190k, NTNX $21k → $170k, …), with 11 exits ($675k) and 11 new names ($879k 
 **Still different BY DESIGN:** one 20-day book (vs 4 tranche books); whole shares on a ~$1.5M account (rounding negligible
 there, material in IBKR's ~$15k books); intraday stops (IBKR at the close since 09-30; EXP-062: intraday −4.88pp CAGR on
 the 8yr). Alpaca-vs-IBKR therefore measures tranching + small-account rounding + stop timing, not two strategies.
+**Deployed 2026-10-01 17:53 ET:** box `git pull --ff-only` bundle 060a6c9..567174c (no tracked changes, no pm2 watch);
+`node --check` + the 9 tests pass on the box; `pm2 restart trading-engine` ONLY (IBKR engine and signal server untouched —
+no Python changed). Clean start: Alpaca connected, cash $246,116.80, NAV $1,483,269, 23 positions rehydrated (all `ml`),
+stderr empty; `js_rebal_state.json` unchanged (15/20, last 09-10) — first resize at the next Alpaca rebalance (≈10-08).
 
 ## After-close deploy 2026-09-30 16:12-16:14 ET — engine on eb2741c
 Box pulled 5af1e4e..eb2741c; all 19 test files pass on the box. Engine restarted 16:14:05 (after the 16:05 close
