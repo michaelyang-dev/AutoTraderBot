@@ -21,7 +21,7 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 | Signals | `:5001` /signals | same | same shared sleeve code |
 | Sleeves | **mom .70 / val .21 / lowvol .09 (2026-09-08, was .50/.35/.15)**; bear .1111/.3333/.5556, **sector 0.00**, breadth-blended | same | same (`PROD_WEIGHTS_*`) |
 | Risk-parity in sleeves | **NO** (signal_builder skips it) | same | model with `use_rp=False` |
-| Rebalance | **TRANCHED 2026-09-08: 4 virtual sub-books of NAV/4, ONE rebuilt every 5 trading days** (`TRANCHES=4`, `TRANCHE_STRIDE=5`; state `ibkr_tranche_state.json`; per-book trailing peaks keyed `book:SYM`); legacy 20-day single book = `IBKR_TRANCHES=1` | still 20-day single book (paper mirror) | clean-room `tranches=4, tranche_stride=5` (`research/VERIFY2_cleanroom.py`) |
+| Rebalance | **TRANCHED 2026-09-08: 4 virtual sub-books of NAV/4, ONE rebuilt every 5 trading days** (`TRANCHES=4`, `TRANCHE_STRIDE=5`; state `ibkr_tranche_state.json`; per-book trailing peaks keyed `book:SYM`); legacy 20-day single book = `IBKR_TRANCHES=1` | still 20-day single book (paper mirror); **since 2026-10-01 every rebalance resizes held targets BOTH ways (0.3%-of-NAV band, `server/rebalanceResize.js`)** — before, held names were never topped up | clean-room `tranches=4, tranche_stride=5` (`research/VERIFY2_cleanroom.py`) |
 | Position cap | 15% of NAV (≈10% of the 1.49x book) | same | model with `cap: 0.10` |
 | Trailing stop | 40% from peak | same | same |
 | Take-profit | none | none (deleted 2026-06-25) | none |
@@ -415,6 +415,30 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 (ledger == IBKR: 39 names, PAYX 13 = 5+0+4+4, MU 3 = 1+0+1+1). Side effect: cash $351 → −$1,040 (the $1.4k the
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
+
+## Alpaca paper mirror: held names were never topped up — FIXED 2026-10-01 (deployed after the close)
+The owner asked why LITE sits in Alpaca but not IBKR. Same `:5001` signals, different book mechanics: LITE was a BUY at
+every IBKR rebuild (09-09, 09-23, 09-30; rank 21/23 on 10-01) but rounds to 0 shares in a NAV/4 book under bear weights
+(book-3 target ≈$567 = 0.58 share; IBKR sold its last legacy share 09-30 @ $982.97). The backtest truncates the same way
+(`int()`), so this is expected behavior, not a bug; `research/EXP063_account_rounding.py` tests rounding at the account
+level instead. Alpaca bought LITE before 07-15 (avg $809.78) and kept it. Returns to 09-30: from 07-20 IBKR +16.9% /
+Alpaca +5.8% / SPY +2.8%; from 09-08 +0.5% / −0.2% / −0.4%.
+
+**Defect found on the way:** Alpaca was **0.83x invested with $246k cash** (NAV $1.48M, target 1.49x; vol-scale 1.0, no
+breaker). STEP 2 skips held symbols ("Already held — skip") and STEP 1g only trimmed (> 20% over target and > $5k), so at
+every rebalance held names stayed under target and the cash the new names did not absorb sat idle from 09-10 on. The
+backtest and IBKR resize every held target in both directions unless |Δ| < 0.3% of the book.
+**Fix:** STEP 1g resizes held targets both ways with the backtest's 0.3% band — once per rebalance episode
+(`rebalState.resized_for`), top-ups only outside the close buffer, never past 1.49x × volScale, always leaving room for
+the new names' targets. Sizing is the pure `server/rebalanceResize.js` (`planRebalanceResizes`), unit-tested by
+`node server/tests/rebalance_resize.test.js` (9 tests incl. 5,000 randomized portfolios).
+**Dry run on the live paper account (read-only, 17:30 ET):** next rebalance under the OLD rule → 0.92x (trims $69k, no
+top-ups); under the NEW rule → **1.49x** (1 trim: SNDK $119k → $49k; 11 top-ups = $838k: MXL $31k → $201k, MU $24k →
+$190k, NTNX $21k → $170k, …), with 11 exits ($675k) and 11 new names ($879k of targets). Next Alpaca rebalance ≈ 10-08
+(15/20 trading days on 10-01): the idle cash is deployed then, not off-schedule.
+**Still different BY DESIGN:** one 20-day book (vs 4 tranche books); whole shares on a ~$1.5M account (rounding negligible
+there, material in IBKR's ~$15k books); intraday stops (IBKR at the close since 09-30; EXP-062: intraday −4.88pp CAGR on
+the 8yr). Alpaca-vs-IBKR therefore measures tranching + small-account rounding + stop timing, not two strategies.
 
 ## After-close deploy 2026-09-30 16:12-16:14 ET — engine on eb2741c
 Box pulled 5af1e4e..eb2741c; all 19 test files pass on the box. Engine restarted 16:14:05 (after the 16:05 close

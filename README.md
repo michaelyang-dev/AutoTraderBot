@@ -318,8 +318,10 @@ both horizons) and verdict. Highlights:
   (EDGAR overlay).
 - **Vendor quirks.** Per-ticker vendor history can splice two securities after a ticker change (e.g. BNY); such
   names are truncated and treated as short-history until clean history accrues.
-- **Paper mirror ≠ live.** The Alpaca engine runs the signals as a single 20-day book with fractional shares and
-  intraday stops; it is a sanity mirror, not a replica of the tranched live book.
+- **Paper mirror ≠ live.** The Alpaca engine runs the same signals as a single 20-day book on a ~$1.5M paper
+  account (whole-share rounding negligible) with intraday stops; since 2026-10-01 each rebalance resizes held names
+  to target in both directions, like the backtest (before, it never topped them up and drifted to 0.83x invested).
+  Comparing it with IBKR measures tranching, small-account rounding and stop timing — not two different strategies.
 - **Statistical confidence.** Improvements are validated across many start dates, but several edges are small
   relative to start-date dispersion; plan with ranges, not point estimates.
 

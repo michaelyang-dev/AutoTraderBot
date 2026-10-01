@@ -9,6 +9,10 @@
 //  max positions, 15% cap, 40% stop, ~1.49x effective leverage. The momentum /
 //  mean_reversion / mega_cap buckets below are DISABLED (0 slots); all picks come
 //  from the factor (v12) signal. See docs/LIVE_SYSTEM.md for the verified details.
+//  Differences that remain BY DESIGN: one 20-day book (IBKR runs 4 tranche books), and
+//  stops evaluated intraday each cycle (IBKR evaluates at the close since 2026-09-30).
+//  Since 2026-10-01 every rebalance resizes held targets both ways (STEP 1g), so the
+//  book is rebuilt to its weights like the backtest's instead of drifting under-invested.
 // ══════════════════════════════════════════════════════════════════════
 
 const http = require("http");
@@ -17,6 +21,7 @@ const path = require("path");
 const notify = require("./notifications");
 const journal = require("../db/journal");
 const { toAlpacaSymbol, fromAlpacaSymbol } = require("./symbolMap");
+const { planRebalanceResizes, REBAL_BAND_PCT } = require("./rebalanceResize");
 
 // Throttle the per-cycle [regime] diagnostic: log only on change or hourly
 let _regimeLog = { last: null, ts: 0 };
@@ -2576,44 +2581,59 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
         }
       }
 
-      // STEP 1g: TRIM oversized positions on rebalance day (v12 — matches backtest)
-      // Backtest reconstructs ALL weights every 20 days. Live must do the same.
-      if (isRebalDay && mlSignals && mlSignals.length > 0) {
-        const mlBuys = mlSignals.filter(s => s.signal === "BUY");
-        const tProb = mlBuys.reduce((sum, s) => sum + s.probability, 0);
-        if (tProb > 0) {
-          for (const pos of currentPositions) {
-            const sym = pos.symbol;
-            if (closedSymbols.has(sym)) continue;
-            const sig = mlBuys.find(s => s.symbol === sym);
-            if (!sig) continue; // already handled by sell section
-
-            let targetPct = (sig.probability / tProb) * RISK.MAX_CASH_DEPLOY_PCT * currentVolScale;
-            targetPct = Math.min(targetPct, RISK.MAX_POSITION_PCT);
-            const targetVal = cyclePortfolioValue * targetPct;
-            const currentVal = Math.abs(parseFloat(pos.market_value || 0));
-
-            // Trim if >20% above target (avoid churning on small drifts)
-            if (currentVal > targetVal * 1.20 && currentVal - targetVal > 5000) {
-              const trimAmount = currentVal - targetVal;
-              const trimShares = Math.floor(trimAmount / pos.current_price);
-              if (trimShares > 0) {
-                try {
-                  // Use placeOrder to sell specific qty (closePosition sells ALL)
-                  await placeOrder({ symbol: sym, qty: trimShares, side: "sell", type: "market" });
-                  addLog(`TRIM ${sym}: ${trimShares} shares ($${trimAmount.toFixed(0)} over target ${(targetPct*100).toFixed(1)}%)`, "system");
-                } catch (err) {
-                  addLog(`Trim failed ${sym}: ${err.message}`, "error");
-                }
-              }
-            }
+      // STEP 1g: RESIZE held target names to their weights on rebalance day, in BOTH directions (v12 parity,
+      // 2026-10-01). The backtest and IBKR resize every held target to its weight unless the change is under 0.3%
+      // of the book. This step used to trim only (> 20% over target and > $5k) and STEP 2 skips held symbols, so
+      // held names were never topped up and freed cash sat idle (2026-10-01: 0.83x invested, $246k cash, target
+      // 1.49x). Sizing is the pure, unit-tested planRebalanceResizes (server/rebalanceResize.js). Runs ONCE per
+      // rebalance episode — an episode can span cycles while new buys complete, and last_rebal_date only changes
+      // when it completes — and top-ups wait for a cycle outside the close buffer, like every other buy.
+      let resizedThisCycle = false;
+      if (isRebalDay && mlSignals && mlSignals.length > 0 && rebalState.resized_for !== rebalState.last_rebal_date) {
+        const skip = new Set(["SPY"]);
+        for (const o of pendingOrders) skip.add(fromAlpacaSymbol(o.symbol));
+        for (const pos of currentPositions) {
+          const tag = positionStrategy[pos.symbol];
+          if ((tag && tag !== "ml") || trendPositions[pos.symbol]) skip.add(pos.symbol);
+        }
+        const plan = planRebalanceResizes({
+          positions: currentPositions, buySignals: mlSignals.filter(s => s.signal === "BUY"),
+          portfolioValue: cyclePortfolioValue, volScale: currentVolScale, leverage: RISK.MAX_CASH_DEPLOY_PCT,
+          maxPositionPct: RISK.MAX_POSITION_PCT, closed: closedSymbols, skip,
+        });
+        let nTrim = 0, nTop = 0;
+        for (const o of plan.sells) {
+          try {
+            // placeOrder sells a specific qty (closePosition would sell ALL)
+            await placeOrder({ symbol: o.symbol, qty: o.qty, side: "sell", type: "market" });
+            nTrim++;
+            addLog(`TRIM ${o.symbol}: ${o.qty} shares ($${(o.currentVal - o.targetVal).toFixed(0)} over target ${(o.targetPct * 100).toFixed(1)}%)`, "system");
+          } catch (err) {
+            addLog(`Trim failed ${o.symbol}: ${err.message}`, "error");
           }
         }
+        if (!skipNewBuys) {
+          for (const o of plan.buys) {
+            try {
+              await placeOrder({ symbol: o.symbol, qty: o.qty, side: "buy", type: "market" });
+              nTop++;
+              addLog(`TOP-UP ${o.symbol}: ${o.qty} shares ($${(o.targetVal - o.currentVal).toFixed(0)} under target ${(o.targetPct * 100).toFixed(1)}%)`, "system");
+            } catch (err) {
+              addLog(`Top-up failed ${o.symbol}: ${err.message}`, "error");
+            }
+          }
+          rebalState.resized_for = rebalState.last_rebal_date;
+          saveRebalState();
+        }
+        resizedThisCycle = nTrim + nTop > 0;
+        addLog(`[rebalance-resize] ${nTrim} trims, ${nTop} top-ups (band ${(REBAL_BAND_PCT * 100).toFixed(1)}% of NAV)`
+          + `${plan.short.length ? ` | top-ups cut to leave room for new names: ${plan.short.map(s => `${s.symbol} ${s.got}/${s.wanted}`).join(", ")}` : ""}`
+          + `${skipNewBuys && plan.buys.length ? ` | ${plan.buys.length} top-ups deferred (close buffer)` : ""}`, "system");
       }
 
-      // Refresh positions and cash after stop-loss + rebalance sells + trims so slot counts are accurate
+      // Refresh positions and cash after stop-loss + rebalance sells + resizes so slot counts and cash are accurate
       let activePositions = currentPositions;
-      if (closedSymbols.size > 0) {
+      if (closedSymbols.size > 0 || resizedThisCycle) {
         try {
           activePositions = await getPositions();
           const freshAcct = await getAccount();
