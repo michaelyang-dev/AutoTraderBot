@@ -1,724 +1,346 @@
 # AutoTrader v12
 
-Autonomous multi-factor equity trading system running on AWS EC2. Trades the S&P 1500 universe through Interactive Brokers (live) and Alpaca (paper mirror) with ~1.49x closed-loop leverage. Fully automated data pipeline, signal generation, order execution, risk management, and monitoring.
+Autonomous long-only equity system that trades the S&P 1500 with a momentum / value / low-volatility-quality
+sleeve mix, ~1.49x closed-loop leverage, and a four-book staggered ("tranched") rebalance. Live money runs on
+Interactive Brokers; an Alpaca paper account mirrors the same signals. Data pipeline, signal generation, sizing,
+execution, risk controls and monitoring are fully automated on one AWS EC2 host.
 
-> **Source of truth:** `docs/LIVE_SYSTEM.md` (full parameter table + verified divergence ledger,
-> 2026-07-10 parity audit) and `ml_service/live_config.py` (canonical machine-readable config —
-> import it in ALL research that claims to test the live strategy).
+> **Status — 2026-10-01.** Live on IBKR. Last tranche rebuild: book 3 on 2026-09-30 (30/30 orders filled,
+> ledger == broker). Next rebuild: book 0 on 2026-10-07. Market breadth is ~19% of S&P 1500 members above their
+> 50-day average, so the sleeve mix is fully on its defensive (bear) weights. Every live data input was
+> independently re-verified on 2026-09-30 ([Data status](#data-status)), and a live-vs-backtest parity audit the
+> same day fixed the remaining gaps ([Parity](#live-vs-backtest-parity)).
 
-**Canonical expectation numbers (re-baselined 2026-07-10, `research/final_live_config_test.py`):
-the EXACT live config — live weight scheme, vol-scaling, 1.49x closed-loop leverage, 6.3% margin
-financing on the borrowed portion. Multi-start averaged, deployed data condition (enhanced OFF,
-SI OFF), 10bps round-trip costs, no look-ahead. Two horizons — read both:**
-
-| | Recent regime (2018–2025, 3-start avg) | Through-cycle (2001–2025, 2-start avg) |
-|---|---|---|
-| **CAGR (levered, financed)** | **+28.3%** | **+20.7%** |
-| **Sharpe** | 0.95 | 0.77 |
-| **Max Drawdown** | **-33.9%** | **-63.8%** (GFC; no margin-call modeling) |
-| Same config at 1x, unfinanced | +20.6% / 1.00 / -23.5% | +15.6% / 0.81 / -48.0% |
-
-> **Why two horizons, and which to believe.** 2018-2025 was a momentum-friendly, mega-cap-led
-> regime with no sustained bear; the 26-year column includes the dot-com bust and the GFC and is
-> the *through-cycle stress lens*, not a prediction. The truth forward is regime-dependent and
-> lands between them. **Plan with the conservative column** — the levered GFC drawdown (and the
-> unmodeled margin-call risk inside it) is why leverage stays modest and vol-scaling stays on.
-> Vol-scaling (target 15% 1x-vol, 40d lookback, de-risk-only) was validated best-of-5 policies at
-> 1x AND at leverage: levered it costs ~zero CAGR (financing savings + variance-drag savings offset
-> the exposure drag) while cutting MaxDD ~10pp on both horizons. Up-scaling variants (e.g.
-> t.20/cap1.5) LOSE at leverage — financing + Reg-T clamping + variance drag
-> (`research/volpolicy_levered_test.py`).
-
-> **Live ≠ old research config (audited 2026-07-10, kept deliberately).** The deployed signals skip
-> the old backtest's within-sleeve risk-parity and cap positions at 15% of NAV (≈10% of the levered
-> book). Both divergences were quantified and the live scheme backtests BETTER (+22.8%/0.94 vs
-> +20.9%/0.89 at 1x, 2018-25). All prior headline numbers (25.4%, 22.0%, 21.0%) tested the legacy
-> config and are superseded for live expectations. See [Backtest Results](#backtest-results) for
-> the legacy figures and the inflated-data warning that still applies to enhanced/SI snapshots.
-
-### July 2026 changes (all deployed + verified)
-- **Closed-loop sizing** (7/04): the engine targets 1.49x *measured* gross each rebalance
-  (`_calibrate_quantities`); the old fixed `LEVERAGE=1.8` overshoot (which had silently drifted the
-  live book to 1.53-1.55x) is now only a safety ceiling.
-- **Vol-scaling activates** at 20 NAV days (~7/14) — policy validated on 25 years (see above).
-- **Rebalance clocks hardened**: persisted on both engines, NYSE-holiday-gated (phantom-day bug fixed 7/04).
-- **Parity fixes**: Alpaca take-profit deleted (6/25); Alpaca rebalance schedule persisted (6/25);
-  consensus-fallback trading neutered (7/10 — signal outage now means HOLD, matching IBKR/backtest);
-  untagged-position consensus-sell hole closed.
-- **Data pipeline**: Wikipedia SP1500 scraper fixed for the July markup change, with per-index
-  last-good fallback (`stale` field); journal-cleanup transaction bug fixed; fundamentals refresh
-  timeout 40→60min.
-- **Telegram**: new `/daily` (per-position day moves, both books); `/pnl` regular-hours vs
-  after-hours split; green/red chips; ruled tables without the copy-button overlay; send-failure
-  logging; EOD summary fires 16:05 sharp on trading days only.
-- **Data-vendor parity measured** (7/10): WRDS-vs-Polygon daily-return corr 0.9998 (1,517 names);
-  momentum rank Spearman 0.996, top-25 picks 25/25 identical. Fundamentals are WRDS
-  Compustat/IBES on BOTH sides (FMP is only a fallback) — the residual difference is the
-  quarterly staleness of the live WRDS files, not the vendor.
-- **Alpaca vol-scaling fixed** (7/11): was inert since inception (60-second returns annualized as
-  daily → scale pinned 1.0); now computed from daily equity closes, matching IBKR's policy.
+**Sources of truth:** [`docs/LIVE_SYSTEM.md`](docs/LIVE_SYSTEM.md) (operating ledger: every deploy, incident and
+verification, dated) · [`ml_service/live_config.py`](ml_service/live_config.py) (canonical machine-readable config)
+· [`ml_service/research/LOG.md`](ml_service/research/LOG.md) (every experiment and its verdict).
 
 ---
 
-## Table of Contents
+## Contents
 
+- [Validated performance](#validated-performance)
 - [Strategy](#strategy)
+- [Portfolio construction and risk](#portfolio-construction-and-risk)
 - [Architecture](#architecture)
-- [Data Pipeline](#data-pipeline)
-- [Signal Generation](#signal-generation)
-- [Risk Management](#risk-management)
-- [Rebalance Logic](#rebalance-logic)
-- [Configuration](#configuration)
-- [Backtest Results](#backtest-results)
-- [Research Findings](#research-findings)
-- [Project Structure](#project-structure)
-- [Setup & Deployment](#setup--deployment)
-- [Operations & Monitoring](#operations--monitoring)
-- [Known Limitations](#known-limitations)
+- [Data status](#data-status)
+- [Data pipeline and guards](#data-pipeline-and-guards)
+- [Live vs backtest parity](#live-vs-backtest-parity)
+- [Operations](#operations)
+- [Tests](#tests)
+- [Project structure](#project-structure)
+- [Research summary](#research-summary)
+- [Known limitations](#known-limitations)
+- [Change history](#change-history)
+
+---
+
+## Validated performance
+
+Backtest of the **deployed configuration** (the EXP-059 package on the tranched book) in the independent
+clean-room engine (`research/VERIFY2_cleanroom.py`, patched by `research/EXP059_frontier.py`), 24 monthly start
+dates per horizon, ending 2026-08-31:
+
+| Horizon | CAGR (mean; range over starts) | Sharpe | Max drawdown (mean; worst start) |
+|---|---|---|---|
+| 2018 → 2026 | **+35.8%** (+27.4% … +41.3%) | 1.13 | **−31.4%** (−33.7%) |
+| 2001 → 2026 | **+19.8%** (+17.0% … +23.0%) | 0.79 | **−41.3%** (−51.6%) |
+
+What is inside those numbers: point-in-time S&P 1500 membership; total-return prices (CRSP, Compustat for 2026);
+point-in-time Compustat fundamentals by report date; 1.49x closed-loop leverage built from **whole shares at
+NAV/4 per book, starting from $50K**; the vol-scaling overlay; the credit gate at depth 0.00; trailing stops on
+closing prices; **10 bps per trade** (5 commission + 5 slippage); margin interest from a **time-varying** broker
+financing curve (benchmark + spread: ~3.3% average over 2001-26, ~3.9% over 2018-26, ~5.8% today). No look-ahead
+(shift-tests and forward-IC audits in `research/BUGS.md`).
+
+How to read it:
+
+- **The 2001-2026 row is the planning number.** 2018-2026 is a momentum-friendly decade; the long horizon includes
+  the dot-com bust, the GFC and 2020 and is the through-cycle stress lens. Forward results are regime-dependent.
+- **Drawdowns are large by design.** Leverage plus concentrated momentum names: the mean worst drawdown is ~41%
+  on the long horizon and the worst start lost 52%. Margin calls are not modeled.
+- **Returns are fat-tailed.** A large share of the total comes from a handful of days; a single start date can
+  move 8-year CAGR by several points (the range column).
+- **The tranche structure is a risk-shaping change, not proven alpha.** Its Sharpe edge has a confidence interval
+  that spans zero (`research/LOG.md` cycle 56). The EXP-059 package on top of it: 26yr +1.56pp CAGR / +0.064
+  Sharpe (24/24 starts) / +5.5pp MaxDD; 8yr +3.4pp / +0.105 (24/24).
 
 ---
 
 ## Strategy
 
-Three-sleeve momentum/value/quality approach. Each sleeve independently selects stocks, then weights are blended proportionally.
+Three sleeves pick stocks independently from the **S&P 1500**; their weights are blended by a market-breadth
+regime and a momentum-crash detector. All sleeve code lives once in `strategies/multi_strategy_engine.py` and is
+imported by both the live signal builder and the backtester.
 
-### Momentum Sleeve (50% weight)
+| Sleeve | Picks | Score | Filters |
+|---|---|---|---|
+| **Momentum** | top 5, **equal weight** | skip-month momentum `ret_252d − ret_20d`; ×1.15 if 20d vol < 25% and score > 20%; ×1.05 if ROE > 15% | above 200-day SMA; when SPY is below its 200-day SMA, top-3 sectors ×2 and bottom-3 excluded |
+| **Value** (quality + long-term reversal) | top 10, score-weighted | `−ret_252d×0.30 + gross_margin×0.25 + min(ROE,0.5)×0.25` | ROE > 5%, gross margin 15-100%, dist to 200-day SMA > −15%, debt/equity < 3 |
+| **Low-vol quality** | top 10, score-weighted | mean z-score of low 60d vol, gross margin, low debt/equity, 6-month momentum | needs ≥ 2 of the 4 factors |
 
-Selects the top 5 stocks by skip-month momentum (12-month return minus last month's return). This is the classic Jegadeesh & Titman (1993) momentum factor, which avoids the short-term reversal effect.
+**Sleeve mix (regime blend).** Breadth = share of index members above their 50-day SMA. The mix moves linearly
+from the bear weights at ≤ 35% breadth to the bull weights at ≥ 60%:
 
-**Scoring:**
-```
-base_score = ret_252d - ret_20d    (skip-month momentum)
-```
+| | Momentum | Value | Low-vol |
+|---|---|---|---|
+| Bull (≥ 60% breadth) | 80% | 15% | 5% |
+| Bear (≤ 35% breadth) | 11.1% | 33.3% | 55.6% |
+| Momentum crash (price-based UMD 20-day sum < −0.05) | 16.7% | 50% | 33.3% |
 
-**Filters:**
-- Must be above 200-day SMA (trend filter — excludes stocks in downtrends)
-- Consolidation boost: if vol_20d < 25% annualized AND score > 20%, multiply by 1.15x
-- Quality boost: if ROE > 15%, multiply by 1.05x
+The breadth rule and both endpoints were re-tested in EXP-061 (2026-09-22): always-bull is worse on 8/8 starts
+over 26 years, and in 2025 — the last narrow, AI-led year — the blend was ~14 points better than always-bull.
 
-**Position sizing:** Signal-proportional — higher-conviction stocks get larger allocations, capped at 15% per position.
+**Combination.** Sleeve weights × blended sleeve allocation, summed per name, each name clipped at 15%, gross ≤ 1,
+names below 0.5% dropped. The signal server publishes every member with a `probability` proportional to its
+combined weight (top name = 0.95); the engine renormalises them.
 
-### Value Sleeve (35% weight)
+**Deliberately not used** (tested; see [Research summary](#research-summary)): FMP "enhanced" data (price
+targets, DCF, growth), short interest, EPS / revenue-surprise boosts, ML rankers, sentiment, VIX timing.
 
-Selects top 10 stocks by a composite of profitability + valuation + momentum:
+---
 
-```
-score = -ret_252d * 0.30 + gross_margin * 0.25 + min(ROE, 0.50) * 0.25
-```
+## Portfolio construction and risk
 
-**Filters:**
-- ROE > 5%, gross margin > 15%
-- Not in severe downtrend (dist_sma200 > -15%)
-- Debt/equity < 3.0
+**Tranched book (live since 2026-09-09).** The account is four virtual sub-books of NAV/4. Every 5th trading day
+one book is rebuilt to the current signals (so each book holds for 20 trading days); the other three are left
+alone. Bookkeeping is per book (`data/ibkr_tranche_state.json`) and reconciled against the broker on every check.
 
-### Low-Vol Quality Sleeve (15% weight)
+| Control | Rule |
+|---|---|
+| **Leverage** | each rebuilt book is sized **closed-loop** to 1.49x × vol-scale × credit-gate of its NAV, in whole shares (four passes over integer quantities; the backtest sizes identically) |
+| **Vol-scale** | `clamp(0.15×1.49 / realised 40-day NAV vol, 0.30, 1.0)` — de-risk only; window ends at the last **completed** close |
+| **Credit gate** | HY-OAS ≥ 95th percentile of its expanding history → the rebuilding book goes **flat** (depth 0.00); FRED data, fail-safe 1.0 |
+| **De-risk overlay** | on each rebuild day, any other book more than 5% above today's target is trimmed pro rata; never levers up |
+| **Position cap** | 15% of the book's NAV per name |
+| **Trailing stop** | 40% below the book's peak, **evaluated once in the last 10 minutes before the close** with the backtest's rule (peak from closes); sells only that book's slice |
+| **Stock splits** | each trading day, before any check, that day's splits (Massive/Polygon reference) scale every book's shares by the ratio and its peak by the inverse |
+| **Min trade** | existing holdings are not resized for changes below 0.3% of the book NAV |
+| **Trade gates** | no trading on stale signals, on degraded feature coverage (floors: 85% for trend / 60d vol / 6-month return, 80% gross margin, 70% ROE), outside market hours, or on non-trading days |
+| **Watchdog** | the engine force-restarts if its loop stalls > 6 minutes; ledger and peaks persist after every fill |
+| **Kill switch** | `pm2 stop ibkr-engine` |
 
-Selects top 10 stocks by z-score composite across the S&P 1500:
-
-```
-composite = mean(z_inv_vol, z_gross_margin, z_inv_leverage, z_momentum_6m, z_inv_ev_rev, z_fwd_earnings_yield)
-```
-
-Acts as a defensive anchor — no trend filter, works in both bull and bear markets.
-
-### Weight Blending
-
-In normal conditions, the three sleeves combine at their stated weights. During stress:
-
-- **UMD crash** (Fama-French momentum factor 20-day sum < -0.05): Shifts to 15% momentum / 45% value / 30% lowvol / 10% sector
-- **Low breadth** (< 35% of stocks above 50-day SMA): Blends toward bear weights (10% momentum / 20% value / 60% lowvol)
+Rollback flags (`.env`, no comment lines): `IBKR_TRANCHES=1` (single book), `IBKR_STOP_AT_CLOSE=0` (old intraday
+stops), `IBKR_SPLIT_CHECK=0`, `IBKR_OVERLAY_DOWN=0`, `MOM_EQUAL_WEIGHT=0`, unset `PROD_BULL_WEIGHTS` (70/21/9).
 
 ---
 
 ## Architecture
 
 ```
-                        ┌──────────────────────────────────────┐
-                        │          Signal Server               │
-                        │       (FastAPI, port 5001)            │
-                        │                                      │
-                        │  Massive/Polygon ──→ Daily prices     │
-                        │  WRDS Compustat  ──→ ROE, margins,    │
-                        │                      debt/equity      │
-                        │  WRDS IBES      ──→ EPS surprise      │
-                        │  Fama-French    ──→ UMD crash regime   │
-                        │  Wikipedia      ──→ SP1500 membership  │
-                        │                                      │
-                        │  ┌────────────────────────────────┐  │
-                        │  │ _compute_features_from_raw()   │  │
-                        │  │ strategy1_momentum_reversal()  │  │
-                        │  │ strategy5_lowvol_quality()     │  │
-                        │  │ _strategy_value()              │  │
-                        │  └──────────────┬─────────────────┘  │
-                        │                 │                     │
-                        │     ~22 BUY signals + weights         │
-                        └────────────┬─────────────────────────┘
-                                     │ GET /signals (JSON)
-                        ┌────────────┴────────────┐
-                        ↓                         ↓
-              ┌──────────────────┐    ┌──────────────────┐
-              │  Alpaca Engine   │    │   IBKR Engine     │
-              │  (Node.js)       │    │   (Python/asyncio)│
-              │                  │    │                   │
-              │  Paper trading   │    │  Paper or Live    │
-              │  Port 3000       │    │  Port 4001 (live) │
-              │                  │    │  Port 4002 (paper)│
-              │  1.5x leverage   │    │  1.5x leverage    │
-              │  40% trail stop  │    │  40% trail stop   │
-              │  20-day rebal    │    │  20-day rebal     │
-              │  15% position cap│    │  15% position cap │
-              │  Trim on rebal   │    │  Trim on rebal    │
-              └──────────────────┘    └──────────────────┘
-
-              All services managed by PM2 on AWS EC2 (Ubuntu)
-```
-
-### Service Communication
-
-1. **Signal server** generates fresh signals every 15 minutes during market hours
-2. **Trading engines** poll `/signals` to get current BUY list and weights
-3. **On rebalance day** (every 20 trading days): engines sell dropouts, trim oversized, buy new positions, top up undersized
-4. **Between rebalance days**: only trailing stops fire (40% from peak), positions drift
-5. **Telegram bot** sends trade alerts, error notifications, and daily portfolio summary
-
----
-
-## Data Pipeline
-
-All data updates are automated via cron jobs (Mon-Fri, Eastern Time):
-
-| Time | Script | What it does | Frequency |
-|------|--------|-------------|-----------|
-| 6:00 AM | `scrape_sp1500.py` | Scrape SP500/SP400/SP600 membership from Wikipedia, update sector map from FMP | Daily |
-| 5:30 PM | `refresh_data.py` | Refresh FMP fundamentals (income, ratios, earnings for ~1,500 stocks), VIX cache, Fama-French factors from Ken French's website, options snapshots from Polygon, price archive, fundamentals cache flush, journal cleanup | Daily |
-| 5:50 PM | `pm2 restart signal-server` | Restart signal server to pick up fresh data from 5:30 refresh | Daily |
-| Quarterly | Manual WRDS upload | Re-download Compustat + IBES parquets from WRDS | ~Every 3 months |
-| Quarterly | Log cleanup | Delete logs older than 90 days | Automatic |
-
-### Data Sources
-
-| Source | What it provides | Update method |
-|--------|-----------------|---------------|
-| **Massive/Polygon** | Daily OHLCV prices for ~1,500 stocks | Live API, refreshed every 15 min |
-| **WRDS Compustat** | ROE, gross margin, debt/equity, revenue growth (via `seqq`, `saleq`, `cogsq`, `niq`) | Quarterly manual upload, uses `rdq` (report date) for point-in-time |
-| **WRDS IBES** | Earnings surprise, consensus estimates | Quarterly manual upload, uses `ANNDATS` for point-in-time |
-| **Fama-French** | mktrf, smb, hml, rmw, cma, umd (momentum) factors | Daily auto-download from Ken French website |
-| **FMP** | Fundamentals fallback, VIX, sector classification | Daily auto-refresh via API |
-| **Wikipedia** | SP500, SP400, SP600 constituent lists | Daily auto-scrape |
-
-### What is NOT used (tested, hurts returns)
-
-| Data | Why disabled |
-|------|-------------|
-| FMP enhanced data (price targets, DCF, financial growth, analyst estimates) | Point-in-time backtest proved it hurts CAGR by -2pp (dilutes momentum signal) |
-| Short interest (Ortex, Compustat, FINRA) | Hurts CAGR by -3pp |
-| ML cross-sectional features | IC=0.014, too weak to beat hand-tuned factors |
-
----
-
-## Signal Generation
-
-The signal builder (`signal_builder.py`) produces signals through this pipeline:
-
-1. **Fetch prices** for ~1,500 SP1500 stocks (550 calendar days of history for SMA200)
-2. **Compute technical features**: returns at 7 horizons (5d-252d), volatility at 3 horizons (10d/20d/60d, annualized), SMA distances (50d/200d), RSI-14
-3. **Load fundamentals** from WRDS Compustat: ROE (`niq*4/seqq`), gross margin (`(saleq-cogsq)/saleq`), debt/equity (`(dlttq+dlcq)/seqq`)
-4. **Run three strategy functions** that each return `{symbol: weight}` dicts
-5. **Check UMD crash regime**: if Fama-French momentum factor 20-day sum < -0.05, shift to defensive weights
-6. **Breadth blend**: interpolate between bull and bear weight configs based on % of stocks above 50-day SMA
-7. **Combine** all sleeve picks with blended weights
-8. **Apply 15% position cap**, normalize to sum to 1.0
-9. **Output** ~22 BUY signals with signal-proportional weights
-
-### Signal Output Format
-
-```json
-{
-  "signals": [
-    {"symbol": "SNDK", "probability": 0.95, "rank": 1, "is_top_5": true, "signal": "BUY"},
-    {"symbol": "MU",   "probability": 0.54, "rank": 2, "is_top_5": true, "signal": "BUY"},
-    ...
-    {"symbol": "AAPL", "probability": 0.00, "rank": 500, "is_top_5": false, "signal": "HOLD"}
-  ]
-}
-```
-
-The `probability` field represents the combined sleeve weight (normalized 0-0.95). The trading engines convert this to dollar allocations: `target_$ = equity * leverage * (prob_i / sum(all_buy_probs))`, capped at 15% per position.
-
----
-
-## Risk Management
-
-| Control | Value | How it works |
-|---------|-------|-------------|
-| **Position cap** | 15% max | No single stock can exceed 15% of portfolio. Enforced in signal builder and both trading engines. |
-| **Trailing stop** | 40% from peak | Peak price tracked per position (persisted to disk on IBKR). If price drops 40% from peak, position is sold immediately. Checked every 10 minutes (IBKR) or every cycle (Alpaca). |
-| **UMD crash detection** | umd_20d < -0.05 | When the Fama-French momentum factor crashes, sleeve weights shift from momentum-heavy to value/lowvol-heavy. |
-| **Breadth regime** | < 35% above SMA50 | Blends toward defensive weights when market breadth is poor. |
-| **Stale signal rejection** | is_stale flag | IBKR engine refuses to trade if signal server reports stale data. Sends Telegram alert. |
-| **Order sanity check** | 0 < qty < 10,000 | IBKR engine rejects absurd order quantities. |
-| **Auto-reconnect** | 30s retry | IBKR engine reconnects on Gateway disconnect, cancels all pending orders to prevent duplicates. |
-| **Kill switch** | `pm2 stop ibkr-engine` | Instantly stops all trading. |
-
----
-
-## Rebalance Logic
-
-Every **20 trading days**, the engine performs a full portfolio reconstruction (matching the backtest exactly):
-
-1. **Sell** all positions not in the current signal set (no minimum hold period on rebalance day)
-2. **Trim** positions that are >20% above target weight (sell the excess, not the whole position)
-3. **Buy** new positions that appeared in signals
-4. **Top up** existing positions that are undersized
-5. **Mark rebalance complete** — next rebalance in 20 trading days
-
-**Between rebalance days:** No buying, no selling. Only trailing stops fire. Positions drift naturally (lets winners run).
-
-**On restart:** Both engines allow immediate rebalance on first boot to ensure the portfolio converges to target. The IBKR engine only rebalances during market hours (9:30 AM - 4:00 PM ET).
-
----
-
-## Configuration
-
-All parameters are synchronized between backtest (`main_production_backtest.py`), signal builder (`signal_builder.py`), Alpaca engine (`tradingEngine.js`), and IBKR engine (`ibkr_engine.py`):
-
-| Parameter | Value | Where set |
-|-----------|-------|-----------|
-| Momentum weight | 50% | `signal_builder.py` STRATEGY_CONFIG_BULL |
-| Value weight | 35% | `signal_builder.py` STRATEGY_CONFIG_BULL |
-| Low-vol weight | 15% | `signal_builder.py` STRATEGY_CONFIG_BULL |
-| Momentum picks | Top 5 | `signal_builder.py` build_signals_v9(top_n=5) |
-| Rebalance period | 20 trading days | `tradingEngine.js` REBAL_INTERVAL_CYCLES / `ibkr_engine.py` REBAL_DAYS |
-| Trailing stop | 40% from peak | `tradingEngine.js` TRAILING_STOP_PCT / `ibkr_engine.py` TRAILING_STOP |
-| Position cap | 15% per stock | `signal_builder.py` / `tradingEngine.js` MAX_POSITION_PCT / `ibkr_engine.py` POSITION_CAP |
-| Leverage (effective) | ~1.49x both accounts | IBKR `LEVERAGE=1.8` (small $30K acct, heavy share rounding); Alpaca `MAX_CASH_DEPLOY_PCT=1.6` ($1.3M acct, light rounding). Different numbers, same ~1.49x effective. |
-| Min trade (top-up skip) | 1% of portfolio, existing holdings only | `ibkr_engine.py` MIN_TRADE_PCT (new positions never skipped) |
-| Bull sleeve weights | 50 / 35 / 15 (mom/val/lowvol) | `signal_builder.py` STRATEGY_CONFIG_BULL / backtest config |
-| Bear sleeve weights | 10 / 30 / 50 / 10 (mom/val/lowvol/sector) | `signal_builder.py` STRATEGY_CONFIG_BEAR (backtest parameterized to match) |
-| UMD-crash weights | 15 / 45 / 30 / 10 | identical in both `signal_builder.py` and `main_production_backtest.py` |
-| Universe | SP1500 (~1,500) | `scrape_sp1500.py` → `sp1500_members.json` |
-| Short interest | Disabled (hurts ~3pp) | `signal_builder.py` (`_si_change_rank = {}`) |
-| Enhanced data | Disabled (PIT version hurts; static is look-ahead) | `signal_server.py` (passes None to build_signals_v9) |
-| Market data | Real-time (IBKR streaming bundle, June 2026) | `ibkr_engine.py` `reqMarketDataType(1)` |
-| Transaction costs | 10bps round-trip | `main_production_backtest.py` COST_BPS + SLIPPAGE_BPS |
-| Fundamentals source | WRDS Compustat (seqq, not ceqq) + IBES | `signal_builder.py` _fill_fundamentals() |
-
-### Environment Variables
-
-```env
-# Broker credentials
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-
-# IBKR (port 4001=live, 4002=paper)
-IB_PORT=4002
-IB_HOST=127.0.0.1
-
-# Data providers
-FMP_API_KEY=...
-MASSIVE_API_KEY=...
-
-# Alerts
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
-
-# Optional
-SIGNAL_SERVER_PORT=5001
+              Massive/Polygon bars ─┐   SSGA SPY/MDY/SPSM holdings ─┐   WRDS Compustat + EDGAR ROE ─┐
+                                    ▼                                ▼                               ▼
+                  ┌──────────────────────────────────────────────────────────────────────────────────┐
+                  │  signal_server.py (FastAPI :5001) → signal_builder.build_signals_v9              │
+                  │  price cache (settle rule) · guards · features · 3 sleeves · breadth/UMD blend   │
+                  │  rebuilt every 15 min in market hours; /signals, /health (stale + coverage flags) │
+                  └───────────────────────────────┬──────────────────────────────────────────────────┘
+                                                  │ GET /health, /signals
+                       ┌──────────────────────────┴───────────────────────────┐
+                       ▼                                                      ▼
+        ┌───────────────────────────────┐                     ┌───────────────────────────────┐
+        │ ibkr_engine.py  (LIVE money)  │                     │ server/tradingEngine.js       │
+        │ 4 tranche books, closed-loop  │  FRED HY-OAS ──►    │ Alpaca PAPER mirror           │
+        │ sizing, gates, stops at close │  credit_gate.py     │ single 20-day book, fractional│
+        └───────────────────────────────┘                     └───────────────────────────────┘
+                 Telegram alerts + read-only commands · PM2 on AWS EC2 · weekly AWS Backup snapshot
 ```
 
 ---
 
-## Backtest Results
+## Data status
 
-### Methodology
+Last full verification **2026-09-30** (`docs/LIVE_SYSTEM.md` → "Live data verification" and "parity audit").
 
-- **Universe:** S&P 1500 (point-in-time membership from WRDS)
-- **Period:** 2018-2025 primary (curated universe); 2000-2025 through-cycle stress test on the long-history universe (see [26-Year Through-Cycle Results](#26-year-through-cycle-results-2000-2025-at-1x-deployed-config))
-- **Look-ahead prevention:** All snapshot data (fin_growth, ev_data, estimates, price_targets, revenue_surprise, beat_streak, earnings_signals, short interest) is cleared before backtesting
-- **Transaction costs:** 10bps round-trip (5bps commission + 5bps slippage)
-- **Robustness:** 7-day start-day averaging to control for start-date sensitivity
-- **Leverage:** 1x only (no leverage in backtest)
-- **Fundamentals:** WRDS Compustat with `rdq` (report date) for point-in-time, using `seqq` for equity (matching live exactly)
+| Input | Source | Refresh | Verified 2026-09-30 |
+|---|---|---|---|
+| **Daily prices** (1,541 symbols incl. ETFs) | Massive (Polygon) split-adjusted daily bars; yfinance only for names whose vendor history is short | full refetch after each session settles (17:50 restart); the pre-open build reuses those final bars; 15-min rebuilds in market hours | closes **equal IBKR's to the cent** on 80 names (all buys, all holdings, 40 random), no missing sessions; features equal an independent recomputation exactly |
+| **Index membership** | SSGA daily holdings of SPY / MDY / SPSM (Wikipedia fallback, then last-good) | 06:00 weekdays | **equal the funds' holdings exactly** (503 / 400 / 603); the Wikipedia S&P 600 page had missed the September rebalance |
+| **Fundamentals** (ROE, gross margin, debt/equity) | WRDS Compustat quarterly, newest whole row per company by report date; EDGAR ROE overlay for companies that filed after the last pull | WRDS pulls (last 2026-09-07); EDGAR patch 18:40 + reconciliation 18:55 | net income and equity **equal FMP's** for the same quarter; GM / D/E differ only by vendor definition (Compustat is the backtest's source) |
+| **Credit spread** | FRED ICE BofA US High Yield OAS | 08:35 weekdays | **equals FRED**; gate off (11.8th percentile on 2026-09-30) |
+| **Momentum-crash detector** | own price matrix (price-based UMD) | each build | matches the backtest's series (corr 0.998; crash/no-crash agree on 82/82 days) |
+| **Breadth** | own feature map, index members only | each build | recomputed independently from raw closes |
+| **Stock splits** | Massive (Polygon) reference splits | each trading day | — |
+| **NAV history** (vol-scale) | IBKR, authoritative 16:05 close mark | daily | — |
 
-### Results (2018-2025, at 1x) — DEPLOYED CONFIG
-
-| Metric | Value |
-|--------|-------|
-| **CAGR** | 22.0% +/- 2.5% |
-| **Sharpe Ratio** | 0.90 |
-| **Max Drawdown** | -28.3% |
-
-### Data-condition verification (June 2026)
-
-The backtest was re-run with the v12 config under 4 data conditions to confirm what's deployed and trace an earlier inflated claim. All start-day averaged, same params:
-
-| Condition | CAGR | Sharpe | MaxDD | |
-|-----------|------|--------|-------|--|
-| **A. DEPLOYED (enhanced OFF, SI OFF)** | **22.0%** | **0.90** | **-28.3%** | ← what live actually runs |
-| B. enhanced ON, SI OFF | 23.6% | 0.98 | -33.9% | static enhanced = look-ahead bias |
-| C. enhanced OFF, SI ON | 19.2% | 0.82 | -31.7% | confirms SI hurts (-2.8pp) |
-| D. EVERYTHING ON | 23.9% | 1.00 | -32.7% | source of the old "25.4%/1.00" claim |
-
-**Takeaway:** The honest deployed number is condition A (22.0% / 0.90). The previously reported 25.4% / 1.00 matches condition D — enhanced data + short interest both enabled with static (look-ahead) snapshots. That's inflated and not what trades. Disabling short interest is confirmed correct (it hurts even without look-ahead: 19.2% vs 22.0%). Enhanced data only "helps" via look-ahead; the point-in-time version hurts (hence disabled).
-
-### Year-by-Year (at 1x)
-
-> Note: the year-by-year figures below are from the earlier (pre-correction) run and are directionally indicative but slightly optimistic. The corrected full-period number is 22.0% CAGR (see verification table above).
-
-| Year | Strategy | S&P 500 | vs SPY |
-|------|----------|---------|--------|
-| 2018 | +16.2% | -5.2% | +21.4pp |
-| 2019 | +13.5% | +31.1% | -17.6pp |
-| 2020 | +26.1% | +17.3% | +8.8pp |
-| 2021 | +23.5% | +30.5% | -7.0pp |
-| 2022 | -5.2% | -18.6% | +13.5pp |
-| 2023 | +32.5% | +26.7% | +5.8pp |
-| 2024 | +49.5% | +25.6% | +23.9pp |
-| 2025 | +17.2% | +18.0% | -0.8pp |
-
-### 26-Year Through-Cycle Results (2000-2025, at 1x, deployed config)
-
-Run on the long-history universe (`sp1500_universe_2000.pkl`, 1,743 names back to 2000), 3-start-day averaged. This window contains the two sustained bears the 2018-2025 sample lacks — the dot-com bust and the GFC — and is the real stress test.
-
-| Metric | Baseline | + vol-scaling overlay (live) |
-|--------|----------|------------------------------|
-| **CAGR** | ~13.5% (11.0% canonical start) | ~9-11% |
-| **Sharpe** | 0.63 | 0.54 |
-| **Max Drawdown** | **-59%** | **-47%** |
-
-**Crash-window drawdowns (1x):**
-
-| Window | Drawdown | Vol-scaling helped? |
-|--------|----------|---------------------|
-| Dot-com (2000-02) | -29% | No (slow grind, low realized vol never triggered de-risk) |
-| **GFC (2008-09)** | **-59% → -47%** | Yes (fast high-vol crash) |
-| COVID (2020) | -46% → -31% | Yes |
-| 2022 bear | -29% | — |
-
-**Two findings from the long horizon:**
-
-1. **The recent 22% is regime, not edge.** True through-cycle CAGR is low-teens with brutal (-47% to -59%) crash drawdowns. Momentum gets crushed in a real deleveraging bear regardless of the low-vol sleeve. The vol-scaling overlay is validated against a real GFC (cuts the worst drawdown ~12pp) — but only for fast, high-vol crashes, not slow grinds.
-2. **Sleeve-weight tweaks don't add edge.** Over 26 years, deployed 50/35/15, 60/40 mom/val, and pure-momentum are **statistically identical** (~13.5% CAGR, Sharpe 0.61-0.63, -59% MaxDD). A 60/40 tilt looks better *only* in-sample (2018-2025: 20.9% vs 18.6%) but is **worse out-of-sample** (2000-2017, which the config was never tuned on: 7.3% vs 7.7%, Sharpe 0.42 vs 0.44). Textbook recent-regime overfit — the deployed config is retained. See `research/phase6_6040_longhorizon.py`.
+Research-only inputs, **not read by live signals**: FMP enhanced data, options snapshots, VIX, Fama-French,
+sentiment, the daily close archive (`data/price_archive`, correctly labelled from 2026-09-30; older files
+quarantined in `_mislabeled_pre_2026-09-30/`).
 
 ---
 
-## Research Findings
+## Data pipeline and guards
 
-Extensive testing conducted May 2026 across ML, alternative factors, and portfolio construction methods. All tests used the same honest backtesting methodology (no look-ahead, start-day averaging).
+**Price cache.** A cached per-symbol file is reused only if it is < 18 h old **and** was written after the last
+settled close (17:00 ET); a cached file whose last bar is older than the session most symbols end on is refetched
+regardless of who wrote it. Evening builds therefore use the day's final bars, and the pre-open build needs no
+vendor call.
 
-### ML Approaches
+**Signal-side guards** (each has a regression test): partial-session guard (today's bar is never used before 17:00
+ET, nor when < 90% of names printed); vendor-hole fill (interior gaps ≤ 3 sessions); splice guard (a one-day price
+ratio > 4x means two securities under one ticker; history truncated); minimum history 21 bars (the backtest's
+rule); quality gate; feature-coverage guard (the engine refuses to trade below its per-feature floors); EXP-059
+flags logged at start-up.
 
-| Approach | Metric | Finding |
-|----------|--------|---------|
-| LightGBM cross-sectional ranker | OOS IC = +0.014 | Positive in 7/7 years but too weak to beat hand-tuned factors. Top features: net_margin, momentum acceleration, GP/assets |
-| XGBoost LambdaRank | NDCG@8 | Zero impact on returns |
-| Crash risk model | AUC = 0.673 | Identifies risky stocks (top 10% has 2-3x crash rate) but filtering them kills returns because high-momentum stocks ARE volatile |
-| Regime detection (FF + FRED macro) | 58% accuracy | Marginal — not enough data (478 samples) for reliable prediction |
+**Nightly refresh** (`scripts/refresh_data.py`): a table of steps, each run in a forked child with a hard time
+budget, retries, and output-freshness post-conditions; alerts say whether a failure touches **live** inputs or
+research data only.
 
-### Alternative Factors
-
-| Factor | Impact on CAGR |
-|--------|---------------|
-| Accruals (Sloan 1996) | -10pp |
-| Gross profitability (Novy-Marx) | -15pp |
-| Book-to-market | -12pp |
-| Cash flow yield | -13pp |
-| Earnings quality | -11pp |
-| All Compustat factors combined | -5pp |
-| Short interest (Compustat) | -3pp |
-| FMP enhanced data (point-in-time) | -2pp |
-
-**Why?** Every fundamental factor **dilutes the momentum signal**. Momentum and value are negatively correlated (Fama-French). Blending them in the same scoring function weakens both. The correct approach is separate sleeves with separate allocations — which is what v12 does.
-
-### Position Sizing
-
-| Method | Avg CAGR |
-|--------|----------|
-| **Signal-proportional** | **24.9%** |
-| Equal weight | 20.2% |
-| Blended (60% signal / 40% inv-vol) | 20.2% |
-| Inverse-volatility | 12.2% |
-| Risk-adjusted momentum | 10.4% |
-| Quality-gated | 11-15% |
-
-### Concentration Analysis (n=5 vs broader)
-
-Bootstrap confidence intervals show the Sharpe difference between n=5 and n=30 is **not statistically significant** (Sharpe diff CI: [-0.76, +1.19]). On 25-year data, n=5 (16.9% CAGR) and n=10 (16.6% CAGR) are essentially identical. The concentration choice is a **risk decision, not a return decision** — n=5 has higher tail risk (max single position drifts to 44%) but statistically indistinguishable returns.
-
-| n | 25yr CAGR | 25yr Sharpe | Max Position Drift |
-|---|-----------|-------------|-------------------|
-| 5 | 16.9% | 0.79 | 44% |
-| 10 | 16.6% | 0.80 | 37% |
-| 15 | ~16% | ~0.80 | 29% |
-
-### NLP / Alternative Data
-
-| Signal | Gate 1 (Predictive?) | Gate 2 (Orthogonal?) | Gate 3 (Binds on picks?) |
-|--------|---------------------|---------------------|------------------------|
-| Lazy Prices filing similarity (Cohen et al.) | IC=+0.079, CI: [+0.010, +0.146] — YES | Correlation -0.017 — YES | **0% binding rate — FAILS** |
-
-The filing similarity signal is real and orthogonal but **never fires on momentum picks** — companies with strong momentum don't gut their filing language. Signals that flag losers are redundant with momentum by construction. Useful signals must create dispersion **within winners**.
-
-### Uncorrelated Strategy Combinations
-
-| Strategy | CAGR | Sharpe | Correlation with Momentum |
-|----------|------|--------|--------------------------|
-| Our momentum | 27.6% | 1.15 | — |
-| GLD trend-following | 6.6% | 0.87 | **-0.023** |
-| SPY index trend | 6.5% | 0.58 | +0.48 |
-| Short-horizon mean reversion | 6.2% | 0.35 | +0.47 |
-
-GLD trend has near-zero correlation — the diversification thesis is validated. A 70/30 momentum/GLD combo cuts MaxDD from -18% to -12% but costs ~6pp CAGR. The proper version is a diversified managed-futures sleeve (gold + commodities + FX + rates) at 10-15% allocation — future research.
-
-### Key Conclusion
-
-The strategy is at its efficient frontier with available data. Every signal-level improvement either dilutes momentum (fundamentals, ML) or is redundant (NLP distress detection). The remaining gains live at the **portfolio level** — combining uncorrelated return streams (cross-asset trend) rather than improving the stock selection engine. The strategy resists improvement because momentum is already doing most of the work that other signals would do.
+| Time (ET) | Job |
+|---|---|
+| 06:00 weekdays | `scrape_sp1500.py` — S&P 500/400/600 membership (SSGA → Wikipedia → last-good), sector map |
+| 08:35 weekdays | `credit_gate.py` — FRED HY-OAS percentile |
+| 09:00 / 13:00 / 19:30 weekdays | `data_freshness_check.py` |
+| 17:30 weekdays, 21:00 Sun | `scripts/refresh_data.py` — FMP research data, VIX, fundamentals fallback, options, snapshots, close archive, Fama-French, data-gap repair; restarts the signal server |
+| 17:50 weekdays, 21:20 Sun | `pm2 restart signal-server` (refetches the settled session) |
+| 18:40 / 18:55 weekdays | EDGAR fundamentals patch / overlay reconciliation |
+| Sat 00:30 | AWS Backup snapshot of the instance |
 
 ---
 
-## Project Structure
+## Live vs backtest parity
 
-### File roles at a glance
+Audited 2026-09-30 on the validated universe and on live data.
 
-The codebase has four kinds of files. The thing that ties it together: the **strategy logic lives once** in `strategies/multi_strategy_engine.py` (the momentum/value/low-vol sleeves + regime weights), and is imported by *both* the live signal builder and the backtester — so they can't drift apart.
+**Identical:** feature formulas; sleeve code (shared module); the probability → weight mapping; the 0.5% weight
+floor and 15% clip; closed-loop whole-share sizing per book; the 0.3% min-trade band; the tranche schedule;
+inputs that are empty on both sides (short interest, earnings boosts, price targets); the crash detector.
 
+**Fixed on 2026-09-30** (details and evidence in `docs/LIVE_SYSTEM.md`):
+
+| Gap | Effect | Fix |
+|---|---|---|
+| Trailing stops were evaluated **intraday** with peaks from intraday highs; the backtest uses closes | EXP-062, same engine: −4.88pp CAGR (2018-25) and −1.56pp (2001-25), worse on 12/12 starts on both, ~60% more stop-outs, no drawdown benefit | stops once at the close, backtest rule |
+| No **stock-split** handling — a 2:1 split read as −50% and would fire every book's stop | live-only failure mode | daily split calendar scales shares and peaks |
+| Live dropped names with < 252 bars; the backtest keeps them from 21 bars | backtest's low-vol sleeve held such a name on 7.8% of rebalance dates | 21-bar minimum |
+| Breadth also counted ~22 ETFs | ~0.4pp of breadth | members only |
+| Evening price files predated the close; a renamed-ticker repair wrote histories one session short; membership lagged | stale evening signals; 15 tickers silently unranked; 2 buys wrong on 2026-09-30 | settle rule, content guard, SSGA membership |
+
+**Measured and accepted:** live trades at the next open on the prior close's signals while the backtest trades at
+that close (bounded by a one-day-lag test at −0.35pp CAGR); the backtest's breadth set also contains past and future
+members (±1.5pp on most days); live prices are split-adjusted price-only while the backtest is total-return
+(identical buy list on 2026-09-29).
+
+---
+
+## Operations
+
+PM2 services on the EC2 host:
+
+| Service | What it runs |
+|---|---|
+| `ibkr-engine` | `start_ibkr_engine.sh` → `ml_service/ibkr_engine.py` (live account via IB Gateway, port 4001) |
+| `signal-server` | `start_signal_server.sh` → `ml_service/signal_server.py` (port 5001) |
+| `trading-engine` | `server/index.js` → Alpaca paper engine |
+| `pm2-logrotate` | log rotation |
+
+```bash
+pm2 list                                   # service status
+curl -s localhost:5001/health              # last update, is_stale, coverage, coverage_ok
+pm2 logs ibkr-engine --lines 50            # engine log (rebalances, fills, stops, splits)
+pm2 restart signal-server                  # rebuild signals (start script exports .env)
+pm2 stop ibkr-engine                       # kill switch
 ```
-        strategies/multi_strategy_engine.py   ← THE strategy (single source of truth)
-                  │
-        ┌─────────┴─────────┐
-        ↓                   ↓
-  signal_builder.py    main_production_backtest.py
-   (LIVE signals)       (BACKTEST)
-```
 
-**1. LIVE — trades real money (runs 24/7 on AWS under PM2):**
+**Telegram:** fills, stops, splits, gate changes, data-refresh failures (live vs research-only), coverage alarms
+and the daily summary; read-only commands for the allow-listed users (`/daily`, `/pnl`, status), actions owner-only.
 
-| File | What it does |
-|------|--------------|
-| `strategies/multi_strategy_engine.py` | **The strategy brain.** Momentum/value/low-vol sleeve functions + `PROD_WEIGHTS_*` regime weights. Shared with the backtest. |
-| `signal_builder.py` | Live harness — runs the brain on live data, applies regime blend + 15% cap, outputs ~22 ranked BUY signals. |
-| `signal_server.py` | FastAPI server (port 5001). Refreshes signals every 15 min; serves `/signals` and `/health`. |
-| `ibkr_engine.py` | IBKR **live** engine (Python/asyncio) — trades the $30K account. |
-| `server/tradingEngine.js` | Alpaca **paper** engine (Node.js) — the $1.3M shadow account. |
-| `massive_data_provider.py`, `wrds_data_provider.py`, `scrape_sp1500.py`, `sp1500_membership.py`, `sp500_history.py` | Data + universe (Polygon prices, WRDS Fama-French/FRED, S&P 1500 membership). |
-| `scripts/refresh_data.py` | Daily 5:30 PM cron — refreshes prices, fundamentals, VIX, Fama-French. |
+**Deploy:** commit and test locally → push → on the host `git pull` (or `git pull --ff-only <bundle>`) → run
+`ml_service/tests` on the host → restart only the affected service, outside market hours. Never put comment lines
+in `.env` (both start scripts `export $(cat .env | xargs)`).
 
-**2. BACKTEST — validates the strategy:**
+---
 
-| File | What it does |
-|------|--------------|
-| `main_production_backtest.py` | **THE canonical backtester.** Imports the same strategy brain as live. Produces the official 22.0% number. |
-| `research/v12_ground_truth.py` | Reproduces the deployed number cleanly (enhanced/SI cleared). Run this to verify the headline figure. |
-| `research/locate_v12_number.py`, `research/compare_v12_bear_configs.py` | Audit scripts (traced the old inflated 25.4%, compared bear weights). |
+## Tests
 
-**3. RESEARCH — archive of (mostly rejected) experiments:** ~107 scripts in `research/` plus standalone files like `crypto_momentum_backtest.py`, `factor_timing_backtest.py`, `ml_enhance_test.py`. Historical record only — not run in normal operation. See [Research Findings](#research-findings).
+`ml_service/tests/` — plain-Python regression suites, one per failure mode found in production; run each with
+`python3 tests/<file>.py` from `ml_service/`.
 
-**4. DORMANT — built but disabled:** `edgar_realtime.py`, `event_short_manager.py`, `event_detector.py`, `xbrl_detector.py` (the short sleeve — all short strategies lose money; kept for data collection only).
+| Suite | Pins |
+|---|---|
+| `test_tranche_engine` | books, reconciliation, bounded sells, sizing, cadence, crash/retry recovery |
+| `test_stop_at_close` · `test_split_handling` | close-window stops (incl. half days) · split adjustment, fail-safe |
+| `test_vol_window` · `test_overlay_trims` | completed-session vol window · de-risk overlay parity with the clean room |
+| `test_cache_settle` · `test_cache_depth_guard` · `test_vendor_hole` · `test_splice_guard` · `test_partial_row_guard` | price-cache validity and the price-data guards |
+| `test_universe_parity` · `test_fund_rowwise` · `test_mom_equal_weight` · `test_coverage_gate` | backtest-parity rules and the coverage gate |
+| `test_sp1500_scrape` · `test_refresh_runner` · `test_freshness_edgar_rule` · `test_daily_fallback` | membership scraper, nightly runner, freshness rules, `/daily` |
+| `lint_engine_names` | undefined-name check for `ibkr_engine.py` and `credit_gate.py` |
 
-### Full tree
+---
+
+## Project structure
 
 ```
 AutoTraderBot/
-├── .env                              ← API keys (not in git)
-├── .env.example                      ← Template for .env
-├── ecosystem.config.js               ← PM2 service configuration
-├── package.json                      ← Node.js dependencies
-├── README.md
-│
-├── server/
-│   ├── index.js                      ← Express API server (Alpaca proxy)
-│   ├── tradingEngine.js              ← Alpaca trading engine (Node.js)
-│   ├── journal.js                    ← Trade journal / order tracking
-│   └── grafanaMetrics.js             ← Metrics endpoint
-│
-├── ml_service/
-│   ├── signal_builder.py             ← LIVE: signal harness (v12 config, uses shared brain)
-│   ├── signal_server.py              ← LIVE: FastAPI server (/signals, /health)
-│   ├── ibkr_engine.py                ← LIVE: IBKR trading engine (async, ib_insync)
-│   ├── main_production_backtest.py              ← BACKTEST: the one canonical backtester
-│   ├── wrds_universe.py              ← Universe builder from WRDS data
-│   ├── wrds_data_provider.py         ← WRDS data loading (FF, FRED)
-│   ├── massive_data_provider.py      ← Polygon/Massive price data
-│   ├── scrape_sp1500.py              ← Daily SP1500 membership scraper
-│   ├── data_pipeline.py              ← FMP data fetching
-│   ├── sp500_universe.py             ← Universe management
-│   ├── edgar_realtime.py             ← EDGAR 8-K monitor (dormant)
-│   ├── event_short_manager.py        ← Short sleeve manager (disabled)
-│   │
-│   ├── strategies/
-│   │   ├── multi_strategy_engine.py  ← THE STRATEGY BRAIN (shared by live + backtest):
-│   │   │                                sleeves + strategy_value() + PROD_WEIGHTS_*
-│   │   ├── alpha_engine.py           ← ML alpha pipeline (research)
-│   │   └── xgboost_ranker.py         ← XGBoost ranking model (research)
-│   │
-│   ├── scripts/
-│   │   ├── refresh_data.py           ← Daily data refresh (cron)
-│   │   ├── rebalance_now.py          ← Manual one-time rebalance
-│   │   ├── build_universe_2000.py    ← Build 25-year backtest universe
-│   │   ├── ibkr_resync.py            ← IBKR position resync tool
-│   │   ├── manual_rebalance.py       ← Manual rebalance tool
-│   │   └── buy_missing.py            ← Buy missing positions tool
-│   │
-│   ├── research/                     ← Research scripts:
-│   │   ├── *ML*: alpha_engine, train_alpha, xgboost_ranker
-│   │   ├── *Factors*: compustat_alpha_factors, sleeve_attribution
-│   │   ├── *Validation*: concentration_validation, n_risk_and_costs
-│   │   ├── *Improvements*: improvements_v12, adaptive_stop, tier1
-│   │   ├── *NLP*: lazy_prices (EDGAR filing similarity)
-│   │   └── *Portfolio*: uncorrelated_strategies
-│   │
-│   └── data/
-│       ├── wrds/                     ← WRDS parquets (Compustat, IBES, FF, FRED)
-│       ├── enhanced_data/            ← FMP snapshot history
-│       ├── massive_cache/            ← Polygon price bar cache (~30MB)
-│       ├── fundamentals_cache/       ← FMP fundamentals (daily flush, ~640MB)
-│       └── price_archive/            ← Daily closing price snapshots
-│
-├── tests/                            ← Test suite (needs update)
-├── deploy/                           ← Deployment scripts
-└── logs/                             ← Application logs
+├── README.md · STRUCTURE.md · docs/LIVE_SYSTEM.md (operating ledger) · docs/BACKTEST_LIVE_PARITY.md
+├── start_ibkr_engine.sh · start_signal_server.sh · ecosystem.config.js
+├── server/                    Alpaca paper engine (Node.js): tradingEngine.js, index.js, journal.js
+└── ml_service/
+    ├── ibkr_engine.py         LIVE engine: tranches, sizing, gates, stops, splits, Telegram
+    ├── signal_server.py       LIVE signal API (FastAPI)
+    ├── signal_builder.py      LIVE signal harness: guards, features, fundamentals, blend
+    ├── strategies/multi_strategy_engine.py   THE strategy (sleeves + regime weights), shared with the backtest
+    ├── massive_data_provider.py   price bars + cache rules
+    ├── scrape_sp1500.py · sp1500_membership.py   membership
+    ├── credit_gate.py · data_freshness_check.py · live_config.py
+    ├── scripts/               refresh_data.py, EDGAR patch/reconcile, universe builders, ops tools
+    ├── main_production_backtest.py   backtester (shares the strategy module)
+    ├── research/              VERIFY2_cleanroom.py, EXP0xx experiments, LOG.md, BUGS.md
+    ├── tests/                 regression suites
+    └── data/                  (not in git) caches, WRDS parquets, state files, archives
 ```
 
 ---
 
-## Setup & Deployment
+## Research summary
 
-### Prerequisites
+`ml_service/research/LOG.md` holds every experiment with its protocol (≥ 12 monthly starts, sign consistency,
+both horizons) and verdict. Highlights:
 
-- AWS EC2 instance (t3.medium or larger, Ubuntu 24.04)
-- Python 3.11+
-- Node.js 18+
-- PM2 (`npm install -g pm2`)
-- WRDS subscription (for Compustat/IBES data)
-- API keys: Alpaca, FMP, Massive/Polygon, Telegram
-
-### Installation
-
-```bash
-# Clone
-git clone https://github.com/michaelyang-dev/AutoTraderBot.git
-cd AutoTraderBot
-
-# Python environment
-cd ml_service
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Node environment
-cd ../server
-npm install
-
-# Configuration
-cd ..
-cp .env.example .env
-# Edit .env with your API keys
-
-# Upload WRDS data
-# Download from WRDS: Compustat quarterly, IBES actuals/surprise/price_targets,
-# Fama-French 5-factors + momentum, FRED rates
-# Place parquets in ml_service/data/wrds/
-
-# Set up cron jobs
-crontab -e
-# Add the cron entries from the Data Pipeline section
-
-# Start services
-pm2 start ecosystem.config.js
-pm2 save
-```
-
-### Switching IBKR from Paper to Live
-
-1. Start IB Gateway with live credentials (port 4001)
-2. Set `IB_PORT=4001` in `.env`
-3. `pm2 restart ibkr-engine`
-4. Monitor first rebalance via Telegram and `pm2 logs ibkr-engine`
+- **Shipped:** tranched rebalance (risk shaping); credit gate (HY-OAS p95, depth 0.00); EXP-059 package
+  (equal-weight momentum, 80/15/5 bull split, de-risk-only overlay); real-time price-based crash detector; EDGAR ROE
+  freshness overlay; close-based stops (EXP-062 parity fix).
+- **Kept after re-testing:** the breadth blend and its thresholds (EXP-061); 1.49x leverage; the 40% stop.
+- **Rejected:** ML rankers (IC ≈ 0.01), fundamental factor blends inside momentum, short interest, FMP enhanced
+  data, news/NLP sentiment, weather and attention data, short strategies, crypto momentum, VIX gates, timing rules
+  for leverage, second return engines (EXP-060; a small gold line is the only survivor).
 
 ---
 
-## Operations & Monitoring
+## Known limitations
 
-### Telegram Alerts
-
-The system sends Telegram notifications for:
-- Every buy and sell order (symbol, shares, price)
-- Connection loss and reconnection
-- Stale signal detection
-- Engine crashes
-- Daily portfolio summary at 4:05 PM ET (NAV, position count, LIVE/PAPER mode)
-
-### Common Commands
-
-```bash
-# Check all services
-pm2 list
-
-# Signal server health
-curl http://localhost:5001/health
-
-# View trading logs
-pm2 logs ibkr-engine --lines 50
-pm2 logs signal-server --lines 20
-
-# Emergency stop
-pm2 stop ibkr-engine
-
-# Resume trading
-pm2 restart ibkr-engine
-
-# Force manual rebalance (caution)
-cd ml_service && python3 scripts/rebalance_now.py
-
-# Check data freshness
-ls -la ml_service/data/wrds/fama_french_5factors_momentum_daily.parquet
-tail -3 logs/refresh_data.log
-```
-
-### Quarterly Maintenance
-
-1. Download fresh Compustat + IBES data from WRDS
-2. Upload parquets to `ml_service/data/wrds/` on AWS
-3. Restart signal server: `pm2 restart signal-server`
+- **Regime dependence.** The strategy is momentum-led; through-cycle drawdowns are deep (see the table above) and
+  leverage amplifies them. Margin calls are not modeled.
+- **Whole shares on a small account.** Each book is NAV/4, so very expensive names (e.g. ~$1,000+ shares) can
+  round to zero in a book; the closed loop re-deploys the cash. Modeled in the backtest (≈0.2pp/yr at this size).
+- **Execution at the open.** Live fills one overnight after the signal close (bounded at −0.35pp/yr).
+- **Fundamentals freshness.** WRDS pulls are periodic; between pulls only ROE is refreshed (EDGAR overlay).
+- **Vendor quirks.** Per-ticker vendor history can splice two securities after a ticker change (e.g. BNY); such
+  names are truncated and treated as short-history until clean history accrues.
+- **Paper mirror ≠ live.** The Alpaca engine runs the signals as a single 20-day book with fractional shares and
+  intraday stops; it is a sanity mirror, not a replica of the tranched live book.
+- **Statistical confidence.** Improvements are validated across many start dates, but several edges are small
+  relative to start-date dispersion; plan with ranges, not point estimates.
 
 ---
 
-## Known Limitations
+## Change history
 
-### Backtest vs Live Divergences
+- **2026-09-30** — Data-layer verification and parity audit: settle-aware price cache and stale-content guard;
+  renamed-ticker repair fixed; membership from SSGA fund holdings with verified SSL; whole-row fundamentals; stops at
+  the close; stock-split handling; 21-bar minimum history; member-only breadth; completed-session vol window;
+  nightly refresh runner fixes; close archive relabelled. Book 3 rebuilt cleanly.
+- **2026-09-22** — EXP-059 package shipped (equal-weight momentum, 80/15/5 bull split, de-risk-only overlay).
+- **2026-09-08** — Tranched rebalance deployed (4 books, 5-day stride), sleeves 70/21/9 base, credit gate depth 0.00.
+- **2026-08 → 09-08** — Live-only failure fixes: gross-margin bound and partial-session guard (Aug), coverage gate
+  and vendor-hole fill (Sep 2), splice guard (Sep 8).
+- **2026-07** — Closed-loop sizing, vol-scaling live, EDGAR ROE overlay (07-13), credit gate (07-18), live sleeves
+  aligned to the full S&P 1500 (07-25), real-time price-based crash detector.
 
-| Item | Backtest | Live | Impact |
-|------|----------|------|--------|
-| **Bear exposure** | Scales equity to 40% (60% cash) | Rotates sleeve weights (stays fully invested) | Live gets ~3pp higher CAGR, ~5pp worse MaxDD |
-| **Execution** | Trades at close price | Market orders during the day | ~0.1% slippage difference |
-| **Trailing stops** | Checked daily at close | Checked every 10 minutes | Live catches crashes faster |
-| **Leverage** | 1x only | ~1.49x margin | Not simulated in backtest |
-| **Position rounding** | Exact (fractional) dollar amounts | Whole shares only (IBKR blocks fractional via API) | On the $30K IBKR acct this is large — a $1,900 share is 6% of equity. This is why IBKR runs `LEVERAGE=1.8` to deploy ~1.49x effective. |
-| **Costs** | 10bps round-trip | ~2-5bps (Alpaca free, IBKR ~1-2bps + spread) | Live costs lower than backtest |
-
-### Strategic Limitations
-
-- **Momentum crashes:** Rare (~2-3 per decade) but violent. The UMD crash detector and SMA200 filter provide partial protection, but the first few days of a crash are unavoidable.
-- **Concentration risk:** 50% in the momentum sleeve with only 5 picks. Max single position drifts to ~44% between rebalances. Bootstrap analysis shows n=5 vs n=10 Sharpe is statistically indistinguishable — concentration is a risk choice, not a return advantage.
-- **Statistical significance:** Paired bootstrap shows the strategy's Sharpe advantage over SPY buy-and-hold is NOT statistically significant on 8 years of data (Sharpe diff CI: [-0.45, +0.75]). The point estimate favors the strategy (+0.19 Sharpe) but the confidence interval includes zero. 25-year data narrows the interval but still doesn't achieve significance.
-- **Cost sensitivity:** Annual turnover ~1,100%. At realistic 20bps round-trip costs (vs 10bps in backtest), cost drag is ~2.2% annually. This is the highest-leverage variable — every additional 10bps costs ~1.1% of return.
-- **Regime dependence (the big one):** The headline 22% CAGR is a *favorable-regime* number. Over the full 2000-2025 cycle the same strategy earns only **low-teens at 1x with -47% to -59% crash drawdowns** — the 2018-2025 era was momentum-friendly with no sustained bear. The pre-2010 market is structurally different (liquidity, sector mix, no mega-cap momentum regime), so the recent edge may not persist. Plan with the through-cycle number, not the recent one. The n=5 concentration advantage likewise exists mainly in the 2019-2024 era; on pre-2018 data broader portfolios perform similarly.
-- **Data dependency:** Live trading requires functioning APIs (Polygon, FMP, WRDS). If all data sources fail simultaneously, the engine stops trading (stale signal rejection).
-- **Single-country exposure:** SP1500 only (US equities). No international diversification.
-- **Value sleeve mislabeling:** The "value" sleeve is actually quality + long-term reversal (ROE, gross margin, -ret_252d) with no genuine valuation metric (no B/M, FCF yield, or EV/EBIT). It's partially redundant with the low-vol quality sleeve.
-- **Backtest/live code is now unified (June 2026):** Previously the value sleeve and regime weights were written *twice* (in `signal_builder.py` and `main_production_backtest.py`), which caused a bear-weight drift (backtest 10/20/60 vs live 10/30/50 — both tested ~equal, live kept). These have been **consolidated** into `strategies/multi_strategy_engine.py` as `strategy_value()` and `PROD_WEIGHTS_BULL/BEAR/CRASH` — a single source of truth imported by both. Change a weight once, it changes everywhere. Verified: backtest unchanged (22.0%) and live signals byte-identical after the refactor.
-- **Reproducibility:** Running `python main_production_backtest.py` directly executes its hardcoded `configs` list (currently old v10 experiments), NOT the deployed v12. To reproduce the deployed numbers, use `research/v12_ground_truth.py`, which runs the exact v12 config with enhanced/SI cleared.
-
-### Future Research Directions
-
-1. **Diversified trend sleeve** (highest priority): Gold + commodities + FX + rates trend-following at 10-15% allocation. Validated as genuinely uncorrelated (-0.023 with momentum). Requires futures/ETF data.
-2. **International momentum**: Japanese, European, EM equities — uncorrelated with US momentum, IBKR already supports international trading.
-3. **Dispersion within winners**: Signals that differentiate among stocks all going up — earnings revision momentum, positioning/crowding, management tone. Harder target but the only way to improve stock selection.
-4. **Intra-rebalance drift trigger**: Trim positions when they cross 25% weight instead of waiting 20 days. Reduces tail risk from position concentration drift.
+Earlier history and every incident: `docs/LIVE_SYSTEM.md`.
 
 ---
 
 ## License
 
-MIT. Not financial advice. Past performance does not guarantee future results. Use at your own risk.
+MIT. Not financial advice. Past performance — and backtests in particular — do not guarantee future results.
