@@ -46,8 +46,8 @@ dates per horizon, ending 2026-08-31:
 | 2018 → 2026 | **+35.8%** (+27.4% … +41.3%) | 1.13 | **−31.4%** (−33.7%) |
 | 2001 → 2026 | **+19.8%** (+17.0% … +23.0%) | 0.79 | **−41.3%** (−51.6%) |
 
-What is inside those numbers: point-in-time S&P 1500 membership; total-return prices (CRSP, Compustat for 2026);
-point-in-time Compustat fundamentals by report date; 1.49x closed-loop leverage built from **whole shares at
+What is inside those numbers: point-in-time S&P 1500 membership; survivorship-free total-return prices;
+point-in-time quarterly fundamentals by report date; 1.49x closed-loop leverage built from **whole shares at
 NAV/4 per book, starting from $50K**; the vol-scaling overlay; the credit gate at depth 0.00; trailing stops on
 closing prices; **10 bps per trade** (5 commission + 5 slippage); margin interest from a **time-varying** broker
 financing curve (benchmark + spread: ~3.3% average over 2001-26, ~3.9% over 2018-26, ~5.8% today). No look-ahead
@@ -128,8 +128,8 @@ stops), `IBKR_SPLIT_CHECK=0`, `IBKR_OVERLAY_DOWN=0`, `MOM_EQUAL_WEIGHT=0`, unset
 ## Architecture
 
 ```
-              Massive/Polygon bars ─┐   SSGA SPY/MDY/SPSM holdings ─┐   WRDS Compustat + EDGAR ROE ─┐
-                                    ▼                                ▼                               ▼
+              Massive/Polygon bars ─┐   SSGA SPY/MDY/SPSM holdings ─┐   fundamentals + EDGAR ROE ─┐
+                                    ▼                               ▼                             ▼
                   ┌──────────────────────────────────────────────────────────────────────────────────┐
                   │  signal_server.py (FastAPI :5001) → signal_builder.build_signals_v9              │
                   │  price cache (settle rule) · guards · features · 3 sleeves · breadth/UMD blend   │
@@ -156,7 +156,7 @@ Last full verification **2026-09-30** (`docs/LIVE_SYSTEM.md` → "Live data veri
 |---|---|---|---|
 | **Daily prices** (1,541 symbols incl. ETFs) | Massive (Polygon) split-adjusted daily bars; yfinance only for names whose vendor history is short | full refetch after each session settles (17:50 restart); the pre-open build reuses those final bars; 15-min rebuilds in market hours | closes **equal IBKR's to the cent** on 80 names (all buys, all holdings, 40 random), no missing sessions; features equal an independent recomputation exactly |
 | **Index membership** | SSGA daily holdings of SPY / MDY / SPSM (Wikipedia fallback, then last-good) | 06:00 weekdays | **equal the funds' holdings exactly** (503 / 400 / 603); the Wikipedia S&P 600 page had missed the September rebalance |
-| **Fundamentals** (ROE, gross margin, debt/equity) | WRDS Compustat quarterly, newest whole row per company by report date; EDGAR ROE overlay for companies that filed after the last pull | WRDS pulls (last 2026-09-07); EDGAR patch 18:40 + reconciliation 18:55 | net income and equity **equal FMP's** for the same quarter; GM / D/E differ only by vendor definition (Compustat is the backtest's source) |
+| **Fundamentals** (ROE, gross margin, debt/equity) | standardized quarterly fundamentals, newest whole row per company by report date; EDGAR ROE overlay for companies that filed after the last update | periodic dataset updates (last 2026-09-07); EDGAR patch 18:40 + reconciliation 18:55 | net income and equity **equal FMP's** for the same quarter; GM / D/E differ only by vendor definition (the backtest uses the same source as live) |
 | **Credit spread** | FRED ICE BofA US High Yield OAS | 08:35 weekdays | **equals FRED**; gate off (11.8th percentile on 2026-09-30) |
 | **Momentum-crash detector** | own price matrix (price-based UMD) | each build | matches the backtest's series (corr 0.998; crash/no-crash agree on 82/82 days) |
 | **Breadth** | own feature map, index members only | each build | recomputed independently from raw closes |
@@ -287,7 +287,7 @@ AutoTraderBot/
     ├── main_production_backtest.py   backtester (shares the strategy module)
     ├── research/              VERIFY2_cleanroom.py, EXP0xx experiments, LOG.md, BUGS.md
     ├── tests/                 regression suites
-    └── data/                  (not in git) caches, WRDS parquets, state files, archives
+    └── data/                  (not in git) caches, datasets, state files, archives
 ```
 
 ---
@@ -314,7 +314,8 @@ both horizons) and verdict. Highlights:
 - **Whole shares on a small account.** Each book is NAV/4, so very expensive names (e.g. ~$1,000+ shares) can
   round to zero in a book; the closed loop re-deploys the cash. Modeled in the backtest (≈0.2pp/yr at this size).
 - **Execution at the open.** Live fills one overnight after the signal close (bounded at −0.35pp/yr).
-- **Fundamentals freshness.** WRDS pulls are periodic; between pulls only ROE is refreshed (EDGAR overlay).
+- **Fundamentals freshness.** The fundamentals dataset is updated periodically; between updates only ROE is refreshed
+  (EDGAR overlay).
 - **Vendor quirks.** Per-ticker vendor history can splice two securities after a ticker change (e.g. BNY); such
   names are truncated and treated as short-history until clean history accrues.
 - **Paper mirror ≠ live.** The Alpaca engine runs the signals as a single 20-day book with fractional shares and
