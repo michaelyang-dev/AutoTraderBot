@@ -41,7 +41,13 @@ check("sell bounded by broker position minus other books", ("0","A",-5,"overlay_
 # no price -> name skipped, and its book's gross ignores it: gross = 3000, target 0.10x = 1500 -> f = 0.5 -> A 30->15
 t = F({"0": {"A": 30, "Z": 100}}, "9", px, nav, 0.10, {"A": 30, "Z": 100})
 check("unpriced name skipped", t == [("0","A",-15,"overlay_derisk")], str(t))
-check("zero/negative target -> nothing", F(books, "9", px, nav, 0.0, pos) == [] and F(books, "9", px, 0.0, 1.0, pos) == [])
+# CREDIT GATE at depth 0.00 -> target 0 -> every other book flattened (clean room: `tgt2 <= 0` trims). Fixed 2026-10-02:
+# the live function used to return [] here, so a gate event left 3 of 4 books invested for up to 15 sessions.
+t0 = F(books, "9", px, nav, 0.0, pos)
+check("zero target (credit gate flat) flattens every book, like the clean room",
+      sorted(t0) == sorted((b, s, -q, "overlay_derisk") for b, bk in books.items() for s, q in bk.items() if px.get(s) and q * px[s] >= nav * 0.003),
+      str(t0))
+check("non-positive book NAV -> nothing", F(books, "9", px, 0.0, 1.0, pos) == [])
 check("never emits a buy", all(d < 0 for _, _, d, _ in F(books, "9", px, nav, 0.05, pos)))
 
 # ---- parity with the clean-room formula (random books) ----
@@ -63,7 +69,7 @@ rng = random.Random(7); mism = 0
 for _ in range(300):
     syms = [f"S{i}" for i in range(8)]; prc = {s: rng.uniform(5, 900) for s in syms}
     bks = {str(b): {s: rng.randint(1, 200) for s in rng.sample(syms, rng.randint(1, 6))} for b in range(4)}
-    tn = rng.uniform(5000, 60000); lev = rng.uniform(0.0, 1.6)
+    tn = rng.uniform(5000, 60000); lev = 0.0 if rng.random() < 0.2 else rng.uniform(0.0, 1.6)   # 20%: gate flat
     posq = {}
     for bk in bks.values():
         for s, q in bk.items(): posq[s] = posq.get(s, 0) + q

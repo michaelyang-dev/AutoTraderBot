@@ -85,3 +85,9 @@ LIVE_BREADTH_SET = "index members only (no ETFs)"
 LIVE_STOP_TIMING = "once, last 10 min before the close, backtest rule (IBKR_STOP_AT_CLOSE=1)"  # e572e7e LIVE 2026-09-30 16:14 (EXP-062); was intraday (-4.88pp CAGR 8yr)
 # Known, measured difference (not changed): live trades at the next open vs the backtest's same close (bounded by
 # the shift+1 test, -0.35pp CAGR).
+# EXP-063 (2026-10-02, research/LOG.md cycle 61) — account-level whole-share rounding, BUILT BEHIND A FLAG, owner's call:
+LIVE_ACCOUNT_ROUNDING = "off"  # ibkr_engine.ACCOUNT_ROUNDING (env IBKR_ACCOUNT_ROUNDING = off | floor | round)
+# Per-book int() at the live size costs ~1.6pp/yr CAGR (2018-26) / ~0.5pp/yr (2001-26) vs fractional shares (R62 model,
+# real prices, 24 starts); the package numbers above (compounding from $50k, adjusted prices) understate that drag.
+# PENDING DEPLOY (fixed in code 2026-10-02): _overlay_trims trims the other books to 0 when the credit gate's target is 0,
+# as the clean room does — the live function used to return no trims, leaving 3 of 4 books invested in a gate event.

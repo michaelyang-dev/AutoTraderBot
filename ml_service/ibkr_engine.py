@@ -196,6 +196,18 @@ SPLIT_LIKE_HI, SPLIT_LIKE_LO = 1.4, 0.72       # broker qty / ledger qty outside
 # the old intraday behaviour.
 STOP_AT_CLOSE = os.getenv("IBKR_STOP_AT_CLOSE", "1") == "1"
 STOP_WINDOW_MIN = 10
+# ACCOUNT-LEVEL ROUNDING (EXP-063, 2026-10-02) — OFF by default, owner's call (research/LOG.md cycle 61). With it OFF
+# each book sizes its own NAV/4 slice and truncates to whole shares, so a bear-weight momentum slot of ~$567 in a
+# ~$1,000 stock (0.58 share) is 0 in EVERY book: LITE / SNDK were BUY signals at every rebuild in Sep 2026 and held 0.
+# With it ON the books keep FRACTIONAL virtual shares and only the ACCOUNT holds whole shares — "floor" (never more
+# than the books' sum) or "round" (nearest, never rounding UP through POSITION_CAP of NAV) — and the account trades
+# only when that whole number changes, one net order per name. st["acct_target"] is the whole-share position the
+# engine intends per name; reconciliation compares the broker with IT (stops, manual trades, partial fills), never
+# with a re-rounding. Research, 24 starts, shares counted as a $62k account: 8yr floor +0.87pp CAGR / +0.021 Sharpe,
+# round +1.89pp / +0.029; 26yr floor +0.29pp / +0.008, round +0.59pp / +0.011 — positive on every start of both.
+# Rollback: IBKR_ACCOUNT_ROUNDING=off — the ledger is truncated back to whole shares and reconciled to the broker.
+_ACCOUNT_ROUNDING_RAW = os.getenv("IBKR_ACCOUNT_ROUNDING", "off").strip().lower()
+ACCOUNT_ROUNDING = _ACCOUNT_ROUNDING_RAW if _ACCOUNT_ROUNDING_RAW in ("off", "floor", "round") else "off"
 
 class IBKREngine:
     def __init__(self):
@@ -238,7 +250,8 @@ class IBKREngine:
         in_session = now.weekday() < 5 and (9, 30) <= (now.hour, now.minute) < (16, 0)
         return {"books": {str(t): {} for t in range(TRANCHES)}, "stride_counter": TRANCHE_STRIDE - 1,
                 "next_tranche": 0, "last_counted_day": now.date().isoformat() if in_session else None,
-                "initialized": False, "last_tranche_rebal": None, "last_tranche": None}
+                "initialized": False, "last_tranche_rebal": None, "last_tranche": None,
+                "acct_target": None, "acct_mode": None}     # ACCOUNT_ROUNDING bookkeeping (None = not in use)
 
     def _load_tranche_state(self):
         st = self._tranche_default()
@@ -249,12 +262,23 @@ class IBKREngine:
                 for k in st:
                     if k in d:
                         st[k] = d[k]
-                st["books"] = {str(t): {s: int(q) for s, q in st["books"].get(str(t), {}).items()}
-                               for t in range(TRANCHES)}
+                if ACCOUNT_ROUNDING != "off":
+                    # virtual (fractional) book shares; whole-share ledgers from before are valid virtual ledgers
+                    st["books"] = {str(t): {s: float(q) for s, q in st["books"].get(str(t), {}).items() if float(q) > 1e-9}
+                                   for t in range(TRANCHES)}
+                else:
+                    # whole shares. A ledger written with ACCOUNT_ROUNDING on is truncated here (rollback); the
+                    # reconciliation then credits the broker's surplus to the next book, as for any manual buy.
+                    st["books"] = {str(t): {s: int(q) for s, q in st["books"].get(str(t), {}).items() if int(q) > 0}
+                                   for t in range(TRANCHES)}
+                    st["acct_target"], st["acct_mode"] = None, None
                 log.info(f"Loaded tranche state: counter {st['stride_counter']}/{TRANCHE_STRIDE}, "
                          f"next book {st['next_tranche']}, initialized={st['initialized']}")
                 log.info(f"EXP-059 de-risk overlay (IBKR_OVERLAY_DOWN): {'ON' if TRANCHE_OVERLAY_DOWN else 'off'} "
                          f"(threshold {TRANCHE_OVERLAY_THR}, min trade {TRANCHE_MIN_TRADE_PCT:.1%} of book)")
+                log.info(f"EXP-063 account-level rounding (IBKR_ACCOUNT_ROUNDING): {ACCOUNT_ROUNDING}"
+                         + ("" if _ACCOUNT_ROUNDING_RAW in ("off", "floor", "round")
+                            else f" (UNRECOGNISED value {_ACCOUNT_ROUNDING_RAW!r} -> off)"))
         except Exception as e:
             log.warning(f"Could not load tranche state: {e}")
         return st
@@ -309,10 +333,11 @@ class IBKREngine:
         return books
 
     @staticmethod
-    def _split_adjust(books, peaks, sym, ratio):
+    def _split_adjust(books, peaks, sym, ratio, virtual=False):
         """Pure: apply a `ratio` split (shares after / shares before; 2.0 = 2-for-1, 0.1 = 1-for-10) of `sym` to
         every book — quantity x ratio rounded DOWN (the broker pays cash in lieu of fractions; a slice that becomes
-        0 shares leaves the book) and the book's trailing peak / ratio. Returns (books, peaks); inputs untouched."""
+        0 shares leaves the book) and the book's trailing peak / ratio. Returns (books, peaks); inputs untouched.
+        virtual=True (ACCOUNT_ROUNDING): book quantities are virtual fractions and are scaled exactly."""
         books = {t: dict(b) for t, b in books.items()}
         peaks = dict(peaks)
         if not ratio or ratio <= 0:
@@ -321,9 +346,9 @@ class IBKREngine:
             q = b.get(sym, 0)
             if q <= 0:
                 continue
-            nq = int(q * ratio + 1e-9)
+            nq = q * ratio if virtual else int(q * ratio + 1e-9)
             key = f"{t}:{sym}"
-            if nq > 0:
+            if nq > (1e-9 if virtual else 0):
                 b[sym] = nq
                 if key in peaks:
                     peaks[key] = peaks[key] / ratio
@@ -333,11 +358,13 @@ class IBKREngine:
         return books, peaks
 
     @staticmethod
-    def _split_like(books, positions_qty):
-        """Symbols whose broker quantity differs from the ledger total by a split-like ratio."""
+    def _split_like(books, positions_qty, acct_target=None):
+        """Symbols whose broker quantity differs from the ledger total by a split-like ratio. With ACCOUNT_ROUNDING the
+        ledger's whole-share position is acct_target (the books hold virtual fractions)."""
         out = set()
         for sym, actual in positions_qty.items():
-            held = sum(b.get(sym, 0) for b in books.values())
+            held = (int(acct_target.get(sym, 0)) if acct_target is not None
+                    else sum(b.get(sym, 0) for b in books.values()))
             if held > 0 and actual > 0 and not (SPLIT_LIKE_LO < actual / held < SPLIT_LIKE_HI):
                 out.add(sym)
         return out
@@ -394,7 +421,14 @@ class IBKREngine:
             if sym not in held or sym in done or abs(ratio - 1.0) < 1e-9:
                 continue
             before = {t: b.get(sym, 0) for t, b in st["books"].items() if b.get(sym, 0)}
-            st["books"], self.trailing_peaks = self._split_adjust(st["books"], self.trailing_peaks, sym, ratio)
+            st["books"], self.trailing_peaks = self._split_adjust(st["books"], self.trailing_peaks, sym, ratio,
+                                                                  virtual=ACCOUNT_ROUNDING != "off")
+            if ACCOUNT_ROUNDING != "off" and st.get("acct_target") and sym in st["acct_target"]:
+                nq = int(int(st["acct_target"][sym]) * ratio + 1e-9)        # the broker's new whole-share count
+                if nq > 0:
+                    st["acct_target"][sym] = nq
+                else:
+                    st["acct_target"].pop(sym, None)
             after = {t: b.get(sym, 0) for t, b in st["books"].items() if b.get(sym, 0)}
             done.add(sym)
             log.warning(f"SPLIT {sym} x{ratio:g} applied to the ledger {before} -> {after} and to its trailing peaks")
@@ -443,11 +477,16 @@ class IBKREngine:
         f = target / gross. Never scales UP. Skips |delta x px| < TRANCHE_MIN_TRADE_PCT of the book NAV and
         names without a price. Sells are bounded by (actual position - other books' holdings), like
         _tranche_orders. Returns [(book_id, sym, delta_qty<0, reason)] — identical maths to the clean-room
-        harness (research/EXP059_frontier.py, overlay_down)."""
+        harness (research/EXP059_frontier.py, overlay_down).
+        CREDIT GATE (fixed 2026-10-02): a target of 0 (gate ON at depth 0.00) gives f = 0, i.e. every other book
+        is flattened on the tranche day, as the clean room does (`tgt2 <= 0` trims) and as the validated package
+        numbers assume. Before, `target_eff <= 0` returned no trims: only the rebuilding book went to cash and the
+        other three stayed invested until their own rebuilds (up to 15 more sessions) — the parity test drew a
+        continuous leverage and never hit 0."""
         out = []
-        if book_nav <= 0 or target_eff <= 0:
+        if book_nav <= 0:
             return out
-        target = book_nav * target_eff
+        target = max(0.0, book_nav * target_eff)
         for bid, book in books.items():
             if str(bid) == str(skip_book) or not book:
                 continue
@@ -478,6 +517,131 @@ class IBKREngine:
                 sellable = min(-dq, max(0, int(positions_qty.get(sym, 0)) - int(others.get(sym, 0))), q_old)
                 if sellable > 0:
                     out.append((str(bid), sym, -sellable, "overlay_derisk"))
+        return out
+
+    # ── ACCOUNT_ROUNDING (EXP-063): virtual fractional books, whole shares only at the account. All pure. ──────────
+    @staticmethod
+    def _acct_whole(total, price, nav, mode):
+        """Whole shares the ACCOUNT holds for `total` virtual shares (the sum over the books). floor: never more than
+        the books want. round: nearest (half up), but never rounded UP through POSITION_CAP of NAV — without a price
+        and a NAV a round-up is refused. Identical to research/EXP063_account_rounding.py (acct_floor / acct_round)."""
+        if total <= 1e-12:
+            return 0
+        if mode == "round":
+            n = int(total + 0.5)
+            if n > total and not (price and price > 0 and nav and nav > 0 and n * price <= POSITION_CAP * nav * 1.0000001):
+                n -= 1
+            return n
+        return int(total + 1e-9)
+
+    @staticmethod
+    def _book_totals(books):
+        tot = {}
+        for b in books.values():
+            for s, q in b.items():
+                tot[s] = tot.get(s, 0.0) + q
+        return tot
+
+    @staticmethod
+    def _acct_orders(books_before, books_after, acct_target, prices, nav, mode):
+        """Whole-share ACCOUNT orders for every name whose virtual total changed between the two ledgers:
+        [(sym, delta, new_target)], sells first. A name whose whole number does not change is not traded (the
+        research harness's rule: keep the holding when the rounded count equals the one held)."""
+        tb = IBKREngine._book_totals(books_before)
+        ta = IBKREngine._book_totals(books_after)
+        sells, buys = [], []
+        for sym in sorted(set(tb) | set(ta)):
+            if abs(ta.get(sym, 0.0) - tb.get(sym, 0.0)) < 1e-12:
+                continue
+            cur = int(acct_target.get(sym, 0))
+            new = IBKREngine._acct_whole(ta.get(sym, 0.0), prices.get(sym), nav, mode)
+            if new < cur:
+                sells.append((sym, new - cur, new))
+            elif new > cur:
+                buys.append((sym, new - cur, new))
+        return sells + buys
+
+    @staticmethod
+    def _reconcile_virtual(books, acct_target, positions_qty, assign_to):
+        """Make the virtual ledger agree with the broker. acct_target is the whole-share position the engine
+        intends per name; a broker SHORTFALL (a stop, a manual sell, a partial fill) removes that many shares of
+        virtual holdings from the books holding the most, a SURPLUS (a manual buy) is credited to `assign_to`, and
+        acct_target becomes the broker's. Virtual holdings the account does not hold (Σ < 1 share) are kept.
+        Returns (books, acct_target); inputs untouched."""
+        books = {t: dict(b) for t, b in books.items()}
+        tgt = {s: int(q) for s, q in (acct_target or {}).items() if int(q) > 0}
+        for sym in sorted(set(positions_qty) | set(tgt)):
+            actual = int(positions_qty.get(sym, 0))
+            intended = tgt.get(sym, 0)
+            if actual == intended:
+                continue
+            if actual < intended:
+                deficit = float(intended - actual)
+                for t in sorted(books, key=lambda t_: -books[t_].get(sym, 0.0)):
+                    if deficit <= 1e-12:
+                        break
+                    take = min(deficit, books[t].get(sym, 0.0))
+                    if take > 0:
+                        books[t][sym] = books[t][sym] - take
+                        deficit -= take
+                        if books[t][sym] <= 1e-9:
+                            books[t].pop(sym, None)
+            else:
+                books[assign_to][sym] = books[assign_to].get(sym, 0.0) + (actual - intended)
+            if actual > 0:
+                tgt[sym] = actual
+            else:
+                tgt.pop(sym, None)
+        return books, tgt
+
+    @staticmethod
+    def _virtual_book(book, target_qty, prices, book_nav):
+        """The rebuilt book's VIRTUAL holdings: today's fractional targets, except that a change smaller than
+        TRANCHE_MIN_TRADE_PCT of the book NAV is skipped (an existing holding keeps its size, a tiny new one is not
+        opened) — the clean room's no-trade band. Names no longer targeted (or unpriced) leave the book."""
+        new = {}
+        for sym, tq in target_qty.items():
+            px = prices.get(sym)
+            if not px or px <= 0 or tq <= 0:
+                continue
+            cur = book.get(sym, 0.0)
+            if abs((tq - cur) * px) < book_nav * TRANCHE_MIN_TRADE_PCT:
+                if cur > 0:
+                    new[sym] = cur
+                continue
+            new[sym] = float(tq)
+        return new
+
+    @staticmethod
+    def _virtual_overlay(books, skip_book, prices, book_nav, target_eff, thr=TRANCHE_OVERLAY_THR):
+        """EXP-059 de-risk-only overlay on VIRTUAL holdings: every book except `skip_book` whose gross is more than
+        (1 - thr) above book_nav x target_eff is scaled to q x f, f = target / gross — f = 0 when the target is 0
+        (credit gate flat), exactly as the clean room (`tgt2 <= 0` trims). Changes under TRANCHE_MIN_TRADE_PCT of
+        the book NAV and unpriced names are skipped. Never scales UP. Returns new books; inputs untouched."""
+        out = {t: dict(b) for t, b in books.items()}
+        if book_nav <= 0:
+            return out
+        target = max(0.0, book_nav * target_eff)
+        for bid, book in books.items():
+            if str(bid) == str(skip_book) or not book:
+                continue
+            gross = sum(q * prices[s] for s, q in book.items() if prices.get(s) and prices[s] > 0)
+            if gross <= 0:
+                continue
+            f = target / gross
+            if f >= thr:
+                continue
+            for sym, q_old in book.items():
+                px = prices.get(sym)
+                if not px or px <= 0:
+                    continue
+                q_new = q_old * f
+                if abs((q_new - q_old) * px) < book_nav * TRANCHE_MIN_TRADE_PCT:
+                    continue
+                if q_new > 1e-9:
+                    out[bid][sym] = q_new
+                else:
+                    out[bid].pop(sym, None)
         return out
 
     def _rebal_left(self):
@@ -1025,6 +1189,8 @@ class IBKREngine:
         """Per-book trailing stops (peak keyed 'book:SYM'): a book that bought a name later at a
         lower price has its own, lower peak -- the backtest's construction. A stop sells only that
         book's shares (bounded by the actual position minus the other books' holdings)."""
+        if ACCOUNT_ROUNDING != "off":
+            return await self._check_trailing_stops_acct()
         st = self._tranche
         cal_ok = self._apply_todays_splits()                # splits BEFORE any reconciliation (see SPLIT_CHECK)
         positions_qty = {s: int(p["qty"]) for s, p in self.positions.items() if p["qty"] > 0}
@@ -1079,6 +1245,108 @@ class IBKREngine:
                         positions_qty[sym] = max(0, positions_qty.get(sym, 0) - qty)
                     st["books"][t].pop(sym, None)
                     self.trailing_peaks.pop(key, None)
+        if STOP_AT_CLOSE:
+            st["stop_eval_day"] = _today
+        self._save_tranche_state()
+        self._save_trailing_peaks()
+
+    # ── ACCOUNT_ROUNDING (EXP-063) engine paths ─────────────────────────────────────────────────────────────
+    def _acct_init(self, positions_qty, assign_to):
+        """First use of ACCOUNT_ROUNDING (or a floor <-> round switch): adopt the broker's whole-share positions as
+        the engine's intended account position. On the very first use the ledger is still whole shares from the
+        per-book regime, so it is first reconciled the old way — otherwise a stop that sold shares since the last
+        reconciliation would be bought back by the first account-level order."""
+        st = self._tranche
+        if st.get("acct_mode") == ACCOUNT_ROUNDING and st.get("acct_target") is not None:
+            return
+        first = st.get("acct_target") is None
+        if first:
+            st["books"] = self._reconcile_books({t: {s: int(q) for s, q in b.items()} for t, b in st["books"].items()},
+                                                positions_qty, assign_to)
+            st["books"] = {t: {s: float(q) for s, q in b.items() if q > 0} for t, b in st["books"].items()}
+        st["acct_target"] = {s: int(q) for s, q in positions_qty.items() if int(q) > 0}
+        prev, st["acct_mode"] = st.get("acct_mode"), ACCOUNT_ROUNDING
+        self._save_tranche_state()
+        log.warning(f"ACCOUNT ROUNDING {ACCOUNT_ROUNDING.upper()} active (was {prev or 'off'}): "
+                    f"{len(st['acct_target'])} positions adopted as the account's whole-share target")
+        send_telegram(f"🧮 Account-level rounding is now <b>{ACCOUNT_ROUNDING}</b>: books keep fractional shares and "
+                      f"only the account rounds to whole shares. {len(st['acct_target'])} current positions adopted "
+                      "unchanged — nothing is traded by the switch itself.")
+
+    async def _check_trailing_stops_acct(self):
+        """ACCOUNT_ROUNDING version of _check_trailing_stops_tranched: per-book peaks and the backtest's stop rule on
+        EVERY virtual holding — including names the account holds 0 whole shares of, as the clean room does — and a
+        stop removes that book's virtual slice; the account sells only what its whole-share position loses."""
+        st = self._tranche
+        cal_ok = self._apply_todays_splits()                # splits BEFORE any reconciliation (see SPLIT_CHECK)
+        positions_qty = {s: int(p["qty"]) for s, p in self.positions.items() if p["qty"] > 0}
+        self._acct_init(positions_qty, str(st["next_tranche"]))
+        suspect = set() if cal_ok else self._split_like(st["books"], positions_qty, st["acct_target"])
+        if suspect and getattr(self, "_split_suspect_alerted", None) != (datetime.now().date(), frozenset(suspect)):
+            self._split_suspect_alerted = (datetime.now().date(), frozenset(suspect))
+            log.error(f"SPLIT-LIKE quantity change with no split calendar: {sorted(suspect)} — held out of stops")
+            send_telegram(f"⚠️ Share count changed by a split-like ratio for {sorted(suspect)} and the split calendar "
+                          "is unavailable: their stops and ledger are frozen until it is read. Please check.")
+        pq = dict(positions_qty)
+        for s_ in suspect:                                   # leave a suspected split's ledger untouched
+            pq[s_] = int(st["acct_target"].get(s_, 0))
+        st["books"], st["acct_target"] = self._reconcile_virtual(st["books"], st["acct_target"], pq,
+                                                                 str(st["next_tranche"]))
+        if positions_qty:                                    # guard: a transient empty fetch must not wipe peaks
+            live_keys = {f"{t}:{s}" for t, b in st["books"].items() for s in b}
+            for orphan in [k for k in list(self.trailing_peaks) if k not in live_keys]:
+                del self.trailing_peaks[orphan]
+        if STOP_AT_CLOSE:
+            from zoneinfo import ZoneInfo
+            _now = datetime.now(ZoneInfo("US/Eastern"))
+            _today = _now.date().isoformat()
+            _ch, _cm = self._close_time_et(_now.date())
+            _mins = _now.hour * 60 + _now.minute
+            if not ((_ch * 60 + _cm) - STOP_WINDOW_MIN <= _mins < _ch * 60 + _cm) or st.get("stop_eval_day") == _today:
+                self._save_tranche_state()
+                self._save_trailing_peaks()
+                return
+            log.info(f"STOP CHECK at the close window ({_now:%H:%M} ET, close {_ch:02d}:{_cm:02d}): peaks and 40% stops "
+                     "evaluated once on every virtual holding, backtest rule (account-level rounding)")
+        nav = (await self.get_portfolio_value()) if ACCOUNT_ROUNDING == "round" else None
+        for sym in sorted({s for b in st["books"].values() for s in b}):
+            if sym in suspect:
+                continue
+            holders = [t for t, b in st["books"].items() if b.get(sym, 0) > 0]
+            contract = (self.positions.get(sym) or {}).get("contract") or Stock(sym, "SMART", "USD")
+            price = await self.get_market_price(contract)
+            self._last_progress = time.time()
+            if not price:
+                continue
+            stopped = []
+            for t in holders:
+                key = f"{t}:{sym}"
+                self.trailing_peaks[key] = max(price, self.trailing_peaks.get(key, 0))
+                peak = self.trailing_peaks[key]
+                if price <= peak * (1.0 - TRAILING_STOP):     # the backtest's comparison (p <= peak x 0.60)
+                    stopped.append((t, (price - peak) / peak, peak))
+            if not stopped:
+                continue
+            after = {t: dict(b) for t, b in st["books"].items()}
+            for t, _, _ in stopped:
+                after[t].pop(sym, None)
+            orders = self._acct_orders(st["books"], after, st["acct_target"], {sym: price}, nav, ACCOUNT_ROUNDING)
+            for t, dd, peak in stopped:
+                log.warning(f"TRAILING STOP book {t}: {sym} dropped {dd:.1%} from peak ${peak:.2f} -> its virtual "
+                            f"{st['books'][t][sym]:.2f} sh leave the book")
+            for s_, d, new in orders:
+                if d < 0:                                    # a stop never buys
+                    await self.sell_position(s_, -d, f"trailing_stop book {'+'.join(t for t, _, _ in stopped)} "
+                                                     f"({stopped[0][1]:.1%})")
+                    if new > 0:
+                        st["acct_target"][s_] = new
+                    else:
+                        st["acct_target"].pop(s_, None)
+            st["books"] = after
+            for t, _, _ in stopped:
+                self.trailing_peaks.pop(f"{t}:{sym}", None)
+            self._save_tranche_state()
+            self._save_trailing_peaks()
         if STOP_AT_CLOSE:
             st["stop_eval_day"] = _today
         self._save_tranche_state()
@@ -1152,7 +1420,7 @@ class IBKREngine:
         return trade
 
     @staticmethod
-    def _calibrate_quantities(signals, prices, nav, vol_scale, credit_derisk=1.0):
+    def _calibrate_quantities(signals, prices, nav, vol_scale, credit_derisk=1.0, whole=True):
         """CLOSED-LOOP position sizing. Chooses integer share counts whose ACTUAL
         gross (after the 15% cap and whole-share truncation) hits
         EFFECTIVE_LEVERAGE x vol_scale x credit_derisk of NAV.
@@ -1167,6 +1435,7 @@ class IBKREngine:
         worst case equals the old behavior, never exceeds it.
 
         Pure function (no self, no I/O) — unit-testable offline.
+        whole=False (ACCOUNT_ROUNDING): fractional VIRTUAL quantities — no truncation, so the loop converges at once.
         Returns (qty_by_symbol, final_multiplier, projected_gross_$)."""
         priced = [(s["symbol"], s.get("probability", 0), prices[s["symbol"]])
                   for s in signals if prices.get(s["symbol"], 0) and prices[s["symbol"]] > 0]
@@ -1181,7 +1450,7 @@ class IBKREngine:
             for sym, prob, px in priced:
                 w = (prob / total_prob) * m if (total_prob > 0 and prob > 0) else m / MAX_POSITIONS
                 w = min(w, POSITION_CAP)        # v12: 15% cap AFTER vol-scale, matches backtest
-                q = int(nav * w / px)
+                q = int(nav * w / px) if whole else nav * w / px
                 if q > 0:
                     qty[sym] = q
                     gross += q * px
@@ -1415,12 +1684,16 @@ class IBKREngine:
                           f"{TRANCHE_STRIDE} sessions.")
         # Stock splits first (see SPLIT_CHECK): a split must scale the ledger, not be "reconciled" into one book.
         if st.get("initialized") and not self._apply_todays_splits():
-            suspect = self._split_like(st["books"], positions_qty)
+            suspect = self._split_like(st["books"], positions_qty,
+                                       st.get("acct_target") if ACCOUNT_ROUNDING != "off" else None)
             if suspect:
                 log.error(f"Tranche rebuild paused: split-like quantity change {sorted(suspect)} and no split calendar")
                 send_telegram(f"⏸️ Book {t} rebuild paused: {sorted(suspect)} share counts changed by a split-like "
                               "ratio and the split calendar is unavailable. Retrying every 10 minutes.")
                 return
+        if ACCOUNT_ROUNDING != "off":                  # EXP-063: virtual books, whole shares at the account
+            await self._rebuild_book_acct(t, signals, portfolio_value, positions_qty)
+            return
         # Reconcile bookkeeping with the broker (stops, manual trades, partial fills since last time).
         st["books"] = self._reconcile_books(st["books"], positions_qty, str(t))
         book = st["books"][str(t)]
@@ -1539,6 +1812,136 @@ class IBKREngine:
         self._save_rebal_state()
         await self.update_positions()
         log.info(f"Tranche rebalance complete (book {t}). Positions: {list(self.positions.keys())}")
+
+    async def _rebuild_book_acct(self, t, signals, portfolio_value, positions_qty):
+        """ACCOUNT_ROUNDING (EXP-063) second half of rebalance_tranche: book `t` gets FRACTIONAL virtual targets and
+        the account trades, per name, only the change of its whole-share position (floor / round of the books'
+        sum). Same signal gate, vol-scale x credit-gate target, sizing, overlay and closing bookkeeping as the
+        per-book path. Crash safety as INCIDENT 2026-09-16: every name's fill and ledger change are persisted
+        before the next name, so a retry only completes what is missing."""
+        st = self._tranche
+        today = datetime.now().date().isoformat()
+        self._acct_init(positions_qty, str(t))
+        st["books"], st["acct_target"] = self._reconcile_virtual(st["books"], st["acct_target"], positions_qty, str(t))
+        book_nav = portfolio_value / TRANCHES
+        vol_scale, realized_vol = self.compute_vol_scale()
+        credit_derisk, credit_st = self.compute_credit_derisk()
+        if credit_derisk < 1.0:
+            log.warning(f"CREDIT GATE ON: HY-OAS pctile {credit_st['pctile']:.1%} -> book {t} target x{credit_derisk:.2f}")
+            send_telegram(f"🛡️ CREDIT GATE ON: HY credit spread at the {credit_st['pctile']:.0%} percentile — "
+                          f"book {t} rebuilt at {EFFECTIVE_LEVERAGE * vol_scale * credit_derisk:.2f}x "
+                          f"(x{credit_derisk:.2f}); the other books follow on their own days.")
+        elif credit_st and credit_st.get("ok"):
+            log.info(f"CREDIT-GATE: HY-OAS {credit_st['latest']:.2f} pctile {credit_st['pctile']:.1%} -> off (1.00)")
+        target_eff = EFFECTIVE_LEVERAGE * vol_scale * credit_derisk
+        if realized_vol is not None:
+            log.info(f"VOL-SCALE: realized_vol={realized_vol:.1%} target={VOL_TARGET:.0%} -> scale={vol_scale:.2f} "
+                     f"-> book {t} leverage target {target_eff:.2f}x")
+            send_telegram(f"📊 Vol-scale: vol {realized_vol:.0%} → book {t} lev target {target_eff:.2f}x ({vol_scale:.2f}× base)")
+        live_prices = {}
+        for sig in signals:
+            sym = sig["symbol"]
+            price = await self.get_market_price(Stock(sym, "SMART", "USD"))
+            self._last_progress = time.time()
+            if not price or price <= 0:
+                log.warning(f"Cannot get price for {sym} — skipping")
+                continue
+            live_prices[sym] = price
+        target_qty, sizing_mult, projected_gross = self._calibrate_quantities(
+            signals, live_prices, book_nav, vol_scale, credit_derisk, whole=False)
+        log.info(f"SIZING book {t} (account-level {ACCOUNT_ROUNDING}): NAV/{TRANCHES}=${book_nav:,.0f}, mult "
+                 f"{sizing_mult:.2f} -> virtual gross ${projected_gross:,.0f} = "
+                 f"{(projected_gross / book_nav if book_nav else 0):.2f}x book NAV (target {target_eff:.2f}x)")
+        old_book = dict(st["books"].get(str(t), {}))
+        new_book = self._virtual_book(old_book, target_qty, live_prices, book_nav)
+        books_after = {k: dict(v) for k, v in st["books"].items()}
+        books_after[str(t)] = new_book
+        orders = self._acct_orders(st["books"], books_after, st["acct_target"], live_prices, portfolio_value,
+                                   ACCOUNT_ROUNDING)
+        n_sell = sum(1 for _, d, _ in orders if d < 0)
+        send_telegram(f"🔄 Tranche rebalance — book {t}/{TRANCHES} (account-level {ACCOUNT_ROUNDING}): {n_sell} sells, "
+                      f"{len(orders) - n_sell} buys, book NAV ${book_nav:,.0f}, target {target_eff:.2f}x")
+        order_of = {sym: (d, new) for sym, d, new in orders}
+        changed = {s for s in set(old_book) | set(new_book) if abs(new_book.get(s, 0.0) - old_book.get(s, 0.0)) > 1e-12}
+        for sym in [s for s, _, _ in orders] + sorted(changed - set(order_of)):
+            if sym in order_of:
+                d, new = order_of[sym]
+                if d < 0:
+                    await self.sell_position(sym, -d, "tranche_exit" if new == 0 else "tranche_trim")
+                else:
+                    await self.buy_position(sym, d, "tranche_rebalance")
+                if new > 0:
+                    st["acct_target"][sym] = new
+                else:
+                    st["acct_target"].pop(sym, None)
+            if sym in new_book:
+                st["books"][str(t)][sym] = new_book[sym]
+                key = f"{t}:{sym}"
+                if new_book[sym] > old_book.get(sym, 0.0) and live_prices.get(sym, 0) > self.trailing_peaks.get(key, 0):
+                    self.trailing_peaks[key] = live_prices[sym]
+            else:
+                st["books"][str(t)].pop(sym, None)
+                self.trailing_peaks.pop(f"{t}:{sym}", None)
+            self._save_tranche_state()
+            self._save_trailing_peaks()
+            self._last_progress = time.time()
+        if TRANCHE_OVERLAY_DOWN:
+            try:
+                held_elsewhere = {s_ for tt, b_ in st["books"].items() if tt != str(t) for s_ in b_}
+                for sym in sorted(held_elsewhere - set(live_prices)):
+                    px_ = await self.get_market_price(Stock(sym, "SMART", "USD"))
+                    self._last_progress = time.time()
+                    if px_ and px_ > 0:
+                        live_prices[sym] = px_
+                after2 = self._virtual_overlay(st["books"], str(t), live_prices, book_nav, target_eff)
+                orders2 = [o for o in self._acct_orders(st["books"], after2, st["acct_target"], live_prices,
+                                                        portfolio_value, ACCOUNT_ROUNDING) if o[1] < 0]
+                moved = sorted(s_ for s_ in self._book_totals(st["books"])
+                               if abs(self._book_totals(after2).get(s_, 0.0) - self._book_totals(st["books"]).get(s_, 0.0)) > 1e-12)
+                if moved:
+                    log.info(f"OVERLAY de-risk: target {target_eff:.2f}x -> {len(moved)} virtual trims, "
+                             f"{len(orders2)} account sells")
+                    send_telegram(f"🪂 Overlay de-risk: books above the {target_eff:.2f}x target trimmed "
+                                  f"(vol-scale {vol_scale:.2f} x gate {credit_derisk:.2f}); {len(orders2)} account "
+                                  "sells; never levers up.")
+                    sells2 = {s_: (d_, n_) for s_, d_, n_ in orders2}
+                    for sym in moved:
+                        if sym in sells2:
+                            d_, n_ = sells2[sym]
+                            await self.sell_position(sym, -d_, "overlay_derisk")
+                            if n_ > 0:
+                                st["acct_target"][sym] = n_
+                            else:
+                                st["acct_target"].pop(sym, None)
+                        for bid in st["books"]:
+                            if bid == str(t):
+                                continue
+                            if sym in after2[bid]:
+                                st["books"][bid][sym] = after2[bid][sym]
+                            elif sym in st["books"][bid]:
+                                st["books"][bid].pop(sym, None)
+                                self.trailing_peaks.pop(f"{bid}:{sym}", None)
+                        self._save_tranche_state()
+                        self._save_trailing_peaks()
+                        self._last_progress = time.time()
+                else:
+                    log.info(f"OVERLAY de-risk: no book above the {target_eff:.2f}x target by more than "
+                             f"{1 - TRANCHE_OVERLAY_THR:.0%} — no trims")
+            except Exception as e:
+                log.error(f"OVERLAY de-risk step failed (books untouched beyond persisted fills): {e}")
+        st["stride_counter"] = 0
+        st["next_tranche"] = (t + 1) % TRANCHES
+        st["last_tranche"] = t
+        st["last_tranche_rebal"] = today
+        self._save_tranche_state()
+        self._save_trailing_peaks()
+        self._trading_days_since_rebal = 0
+        self._last_rebal_date = datetime.now().date()
+        self.last_rebalance = datetime.now()
+        self._save_rebal_state()
+        await self.update_positions()
+        log.info(f"Tranche rebalance complete (book {t}, account-level {ACCOUNT_ROUNDING}). "
+                 f"Positions: {list(self.positions.keys())}")
 
     # ═══════════════════════════════════════════════════════════════
     # SHORT SLEEVE

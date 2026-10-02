@@ -312,7 +312,14 @@ both horizons) and verdict. Highlights:
 - **Regime dependence.** The strategy is momentum-led; through-cycle drawdowns are deep (see the table above) and
   leverage amplifies them. Margin calls are not modeled.
 - **Whole shares on a small account.** Each book is NAV/4, so very expensive names (e.g. ~$1,000+ shares) can
-  round to zero in a book; the closed loop re-deploys the cash. Modeled in the backtest (≈0.2pp/yr at this size).
+  round to zero in every book (LITE and SNDK in Sep 2026). Measured at real historical prices with the account held
+  at today's ~$62K, this costs ≈1.6pp/yr on 2018-26 and ≈0.5pp/yr on 2001-26 versus fractional shares — more than
+  the figures above include, because the backtest's account grows past this size. An account-level rounding switch
+  that recovers most of it (floor or round the four books' sum; better on all 24 start dates of both horizons) is
+  built and **off by default** (`IBKR_ACCOUNT_ROUNDING`, research cycle 61).
+- **Credit-gate overlay (fix pending deploy, 2026-10-02).** In a gate event the backtest flattens all four books on
+  the next tranche day; the live overlay skipped a zero target, so the other books would wait for their own
+  rebuilds. Fixed in code and tested; goes live with the next engine deploy.
 - **Execution at the open.** Live fills one overnight after the signal close (bounded at −0.35pp/yr).
 - **Fundamentals freshness.** The fundamentals dataset is updated periodically; between updates only ROE is refreshed
   (EDGAR overlay).
