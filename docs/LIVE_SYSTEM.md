@@ -27,7 +27,7 @@ backtest = ml_service/main_production_backtest.py (WRDS data), SHARES the sleeve
 | Take-profit | none | none (deleted 2026-06-25) | none |
 | Sizing | **closed-loop** (2026-07-04): `_calibrate_quantities` targets 1.49x × vol_scale of MEASURED gross; old `LEVERAGE=1.8` is only a safety ceiling | `MAX_CASH_DEPLOY_PCT=1.49` × volScale — **FIXED 2026-07-12 from 1.60** (it was deploying ~1.60x: live gross/equity 1.55x with top pos 13.8%, 15% cap not binding, so the "caps→1.49" premise was false; fractional shares mean the constant IS the deployed leverage) | overlay leverage on 1x returns |
 | Vol-scaling | target 0.15 1x-equiv (0.2235 on levered NAV), lookback 40d, floor 0.30, **de-risk-only cap 1.0** | same policy | `vol_scaling` flags (+ `vol_scale_cap: 1.0` via research fork) |
-| Whole shares | each book `int()`s its NAV/4 slice (`IBKR_ACCOUNT_ROUNDING=off`); **account-level floor/round built behind the flag 2026-10-02 (EXP-063), owner's call** | whole shares on a ~$1.5M account (negligible) | clean room `int()` on a compounding NAV at ADJUSTED prices — understates the live drag; `research/EXP063_account_rounding.py` measures it at real prices and the live size (~1.6pp/yr 2018-26, ~0.5pp/yr 2001-26 vs fractional) |
+| Whole shares | **account-level ROUND since 2026-10-02 16:21 ET** (`IBKR_ACCOUNT_ROUNDING=round`, EXP-063): books keep fractional virtual shares, the account holds round(Σ books) never up through 15% of NAV; `off` = each book `int()`s its NAV/4 slice | whole shares on a ~$1.5M account (negligible) | clean room `int()` on a compounding NAV at ADJUSTED prices — understates the live drag; `research/EXP063_account_rounding.py` measures it at real prices and the live size (~1.6pp/yr 2018-26, ~0.5pp/yr 2001-26 vs fractional) |
 | **Credit de-risk gate (LIVE 2026-07-18; depth 0.50 → 0.00 on 2026-09-08)** | **`DERISK = 0.0`: the sub-book being rebuilt goes FLAT** while HY-OAS ≥ p95 (one book per 5 sessions, so the de-risk is gradual by construction; the 0.5 depth was chosen for the single book where 0.0 would have been a one-day liquidation). Was: halve gross-leverage target while HY-OAS ≥ p95 of its expanding history (`credit_gate.py`; FRED BAMLH0A0HYM2; cron 8:35 refreshes `data/credit_signal_live.parquet`; engine reads file only, FAIL-SAFE 1.0; applies at rebalance + /deploy, exactly the validated cadence; Telegram on gate-ON + on stale feed) | not ported (paper mirror) | `livemirror_backtest` gate_cols=[hy_oas] p95×0.5 — 26yr MaxDD −63.5→−56.6 at +0.3pp CAGR; OOS +16.6pp DD (`research/THREAD_T_FINDINGS.md`) |
 | Financing | IBKR margin ~6.3%/yr on the borrowed portion | paper (model the same) | overlay (`research/leverage_financing_test.py`) |
 | Shorts / GLD / VIXM / SPY-parking / trend bucket | all OFF | all OFF (order-path inventory closed 2026-07-10) | all OFF (defaults 0) |
@@ -417,7 +417,21 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
-## Account-level rounding (EXP-063) — BUILT BEHIND A FLAG, OFF, owner's call · credit-gate overlay bug — FIXED IN CODE, pending deploy (2026-10-02)
+## Account-level rounding (EXP-063) — ROUND LIVE 2026-10-02 16:21 ET (owner's go) · credit-gate overlay bug — FIXED + DEPLOYED with it
+**Deploy record (2026-10-02):** box `git pull --ff-only` bundles 567174c..47f5b92 (15:05 ET) and ..0c82c08 (plain-text
+switch-on Telegram); all 20 test files pass on the box (venv, Telegram unset). DRY RUN on copies of the live ledger,
+peaks, today's signals (14:56 build) and prices, real vol-scale and credit gate (live files' checksums unchanged): the
+round-mode stop check adopts all 33 positions (target == broker), trades nothing; book-0 rebuild (due 10-07) current
+rule 10 sells / 19 buys -> 22/24 BUY names, 1.48x; round 10 sells / 17 buys -> 22/24, 1.46x (cheap names the per-book
+closed loop over-weights trimmed: OGN 440->425, DOCS 137->133, CARG 107->104); book-0 virtual LITE 0.47 / SNDK 0.30, so
+they reach whole shares as books 1-3 add their slices (10-14 / 10-21 / 10-28). After the close (session normal: 15:50
+stop check, no stops, NAV 10-02 $63,895.91 recorded): `.env` backed up to `.env.bak_20261002_before_round`, ONE line
+added `IBKR_ACCOUNT_ROUNDING=round` (no inline comment — start script `export $(cat .env | xargs)`), `pm2 restart
+ibkr-engine` ONLY at 16:21:28. Startup: "EXP-063 account-level rounding (IBKR_ACCOUNT_ROUNDING): round", overlay ON,
+counter 2/5 next book 0, connected U25698604 port 4001, NAV $63,869; process environ has the flag; NAV history and
+ledger byte-identical; 0 errors. The stop path runs only in market hours: the switch-on (`_acct_init`: "ACCOUNT ROUNDING
+ROUND active … adopted", Telegram "🧮 Account-level rounding is now ROUND …", no trades) happens at Monday 10-05's open.
+**Rollback:** `IBKR_ACCOUNT_ROUNDING=off` (or delete the line) + `pm2 restart ibkr-engine` — trades nothing.
 **Why:** LITE / SNDK were BUY signals at every rebuild in Sep 2026 and held 0 shares: each book truncates its own
 NAV/4 slice, and a bear-weight momentum slot (~$567) is 0.58 of a ~$1,000 share in every book. **Research**
 (research/LOG.md cycle 61; real prices, shares counted as a $62k account, 24 starts, both horizons): the per-book
@@ -442,7 +456,7 @@ when the gate's target is 0 (depth 0.00) — the clean room does (`tgt2 <= 0`) a
 assume it. `_overlay_trims` returned no trims when `target_eff <= 0`, so in a gate event 3 of 4 books would have
 stayed invested for up to 15 sessions. Fixed in code (target 0 → f = 0); `tests/test_overlay_trims.py` asserted the
 old behaviour and its random parity test never drew 0 — both corrected. Gate off at the fix (HY-OAS pctile ~12%).
-**Not deployed:** both changes need an engine restart after a close and the owner's go.
+**Deployed 2026-10-02 16:21 ET** (record above): round on, the overlay fix live with it.
 
 ## Alpaca paper mirror: held names were never topped up — FIXED 2026-10-01 (deployed after the close)
 The owner asked why LITE sits in Alpaca but not IBKR. Same `:5001` signals, different book mechanics: LITE was a BUY at
