@@ -4108,7 +4108,9 @@ round-to-nearest is useless (four independent ±0.5-share errors). Verdict: impl
 a flag (`IBKR_ACCOUNT_ROUNDING`, off by default; `ibkr_engine.py`, `tests/test_account_rounding.py`: the live rule
 == the harness rule on 10,000 random steps); round vs floor is the owner's risk choice.
 
-**Side finding (parity bug, fixed in code 2026-10-02, pending deploy):** the live de-risk overlay returned no trims
+**Deployment (2026-10-02 16:21 ET, owner's go after the 26yr stress completed):** `IBKR_ACCOUNT_ROUNDING=round` live
+together with the overlay fix below; dry run on copies of the live ledger first (docs/LIVE_SYSTEM.md has the record).
+**Side finding (parity bug, fixed 2026-10-02, deployed with the switch):** the live de-risk overlay returned no trims
 when its target was 0, so with the credit gate ON (depth 0.00) only the rebuilding book went to cash and the other
 three stayed invested until their own rebuilds; the clean room (and the validated package numbers) flatten every
 book on that tranche day. `_overlay_trims` now trims to 0; the parity test now draws target 0 in 20% of cases.
