@@ -12,9 +12,16 @@ scripts/build_universe_v2.chain_adjusted anchors at the security's LAST price an
 that later split 56:1 is priced at ~1/56 of what it cost. Both understate truncation. Here:
   raw_px    : shares are counted at the REAL close of that day (CRSP DlyClose/|DlyPrc| to 2025-12-31; Compustat
               Security Daily prccd for 2026, linked to PERMNO exactly as build_universe_v2.load_prices does); P&L stays
-              on the total-return series (book quantities are kept in total-return units).
-  fixed_cap : the account is swept back to the cap at every close (profits withdrawn / losses topped up), so EVERY year
-              of history is traded at today's size. Daily return = P&L / cap; compounded only to compute metrics.
+              on the total-return series (book quantities are kept in total-return units). Verified: 99%+ coverage,
+              == adjusted at the 2025-12-31 anchor, == the live vendor's 2026 closes for LITE/SNDK/MU.
+CAPITAL MODELS (R is the primary evidence; C and F must agree in sign):
+  R<k> ref_cap  : the account compounds exactly like the validated engine, but whole shares are counted as a $k
+                  account would count them (real price x NAV / ref_cap) — every year traded with that size's rounding.
+  C62           : start at $62k at real prices and compound — the realistic forward path (rounding fades with growth).
+  F<k> fixed_cap: swept back to $k at every close. STRESS VIEW ONLY: the sweep keeps positions while withdrawing
+                  profits, so leverage drifts up after gains and down after losses (F62_frac != compounding frac).
+`sanity` asserts: R62_frac == compounding frac (exact); F-sweep scale-consistent at 2^14 x (exact); the account layer
+is lossless without rounding (exact); book and account rounding converge to fractional at a $1e12 reference size.
 ROUNDING RULES (books are virtual ledgers; the broker position is what is actually held, traded and charged):
   book_floor : every book holds int(target / real price)                    <- THE LIVE RULE (ibkr_engine, clean room)
   book_round : every book rounds to nearest, never rounding up through the 15% cap
@@ -31,6 +38,7 @@ PARITY GUARD: with every new switch off the patched engine must reproduce the EX
 Run from ml_service/:
   python3 research/EXP063_account_rounding.py <8yr|26yr> validate                 parity guard
   python3 research/EXP063_account_rounding.py <8yr|26yr> raw                      build + sanity-check real prices
+  python3 research/EXP063_account_rounding.py <8yr|26yr> sanity                   plumbing identities (must PASS)
   python3 research/EXP063_account_rounding.py <8yr|26yr> <stage1|stage2> run <arm> [arm ...]   (EXP063_SHARD=k/n)
   python3 research/EXP063_account_rounding.py <8yr|26yr> <stage1|stage2> analyse [baseline]
 """
@@ -60,32 +68,46 @@ STARTS = E.STARTS[0::3] if STAGE == "stage1" else E.STARTS
 PKG = dict(E.FIN, leverage=1.49, cap=0.15, overlay_down=True, mom_equal=True, mom_w=0.80, val_w=0.15, lv_w=0.05)
 
 
+def R(cap, rule, **kw):
+    """PRIMARY model. The account compounds exactly like the validated engine, but whole shares are counted as a
+    `cap`-sized account would count them (real price x NAV / cap): every year is traded with that size's rounding."""
+    return dict(PKG, raw_px=True, ref_cap=float(cap), initial_capital=62_000.0, rounding=rule, **kw)
+
+
 def F(cap, rule, **kw):
-    """Fixed-capital arm at real prices."""
+    """STRESS VIEW ONLY. The account is swept back to `cap` at every close at real prices. The sweep withdraws profits
+    but keeps the positions, so leverage drifts UP after gains and DOWN after losses — not how the live account
+    behaves (found 2026-10-02: F62_frac != compounding frac on the same starts by up to 2pp CAGR, by construction)."""
     return dict(PKG, raw_px=True, fixed_cap=float(cap), initial_capital=float(cap), rounding=rule, **kw)
 
 
-ARMS = {
-    "VAL_pkg": dict(PKG),                                  # every new switch off: must equal EXP-059 cap0.15_package
-    "F62_book_floor": F(62_000, "book_floor"),             # the live rule at the live size (BASELINE)
-    "F62_book_round": F(62_000, "book_round"),
-    "F62_acct_round": F(62_000, "acct_round"),
-    "F62_acct_floor": F(62_000, "acct_floor"),
-    "F62_frac": F(62_000, "frac"),
-    "F62_acct_frac": F(62_000, "acct_frac"),
-    # robustness of the candidate(s): per-order minimum, double costs
-    "F62_book_floor_minc1": F(62_000, "book_floor", min_comm=1.0),
-    "F62_acct_round_minc1": F(62_000, "acct_round", min_comm=1.0),
-    "F62_book_floor_cost2": F(62_000, "book_floor", cost_mult=2.0),
-    "F62_acct_round_cost2": F(62_000, "acct_round", cost_mult=2.0),
-    # account size line
-    "F31_book_floor": F(31_000, "book_floor"), "F31_acct_round": F(31_000, "acct_round"), "F31_frac": F(31_000, "frac"),
-    "F125_book_floor": F(125_000, "book_floor"), "F125_acct_round": F(125_000, "acct_round"), "F125_frac": F(125_000, "frac"),
-    "F250_book_floor": F(250_000, "book_floor"), "F250_acct_round": F(250_000, "acct_round"), "F250_frac": F(250_000, "frac"),
-    # the realistic forward path: start at $62k at real prices and let the account compound
-    "C62_book_floor": dict(PKG, raw_px=True, initial_capital=62_000.0, rounding="book_floor"),
-    "C62_acct_round": dict(PKG, raw_px=True, initial_capital=62_000.0, rounding="acct_round"),
+def C(rule, **kw):
+    """Realistic forward path: start at $62k at real prices and compound; rounding matters less as the account grows."""
+    return dict(PKG, raw_px=True, initial_capital=62_000.0, rounding=rule, **kw)
+
+
+RULES = ("book_floor", "book_round", "acct_round", "acct_floor", "frac", "acct_frac")
+ARMS = {"VAL_pkg": dict(PKG)}                              # every new switch off: must equal EXP-059 cap0.15_package
+for _rule in RULES:                                        # *_book_floor = THE LIVE RULE (baseline)
+    ARMS[f"R62_{_rule}"] = R(62_000, _rule)
+    ARMS[f"F62_{_rule}"] = F(62_000, _rule)
+    ARMS[f"C62_{_rule}"] = C(_rule)
+for _cap in (31_000, 125_000, 250_000):                    # account-size line
+    for _rule in ("book_floor", "acct_round", "acct_floor", "frac"):
+        ARMS[f"R{_cap // 1000}_{_rule}"] = R(_cap, _rule)
+for _rule in ("book_floor", "acct_round", "acct_floor"):   # cost stress: IBKR fixed-plan $1 minimum per order; 2x costs
+    ARMS[f"R62_{_rule}_minc1"] = R(62_000, _rule, min_comm=1.0)
+    ARMS[f"R62_{_rule}_cost2"] = R(62_000, _rule, cost_mult=2.0)
+# PLUMBING CHECKS (mode `sanity`): identities / limits the harness must satisfy before any arm is believed
+SANITY = {
+    "S_C62_frac_adj": dict(PKG, rounding="frac", initial_capital=62_000.0),        # == R62_frac exactly (frac is scale-free)
+    "S_F62x16384_frac": F(62_000 * 2 ** 14, "frac"),                               # == F62_frac exactly (power-of-2 scale)
+    "S_frac_cost0": dict(PKG, rounding="frac", cost_mult=0.0, initial_capital=62_000.0),
+    "S_acct_frac_cost0": dict(PKG, rounding="acct_frac", cost_mult=0.0, initial_capital=62_000.0),  # == S_frac_cost0 exactly
+    "S_R1e12_book_floor": R(1e12, "book_floor"),                                   # -> R62_frac as rounding vanishes
+    "S_R1e12_acct_round": R(1e12, "acct_round"),                                   # -> R62_acct_frac as rounding vanishes
 }
+ARMS.update(SANITY)
 
 # ---- patches on top of the EXP-059 frontier engine (its validated `reps`, parsed verbatim from its source) ----------
 HELPERS = """        stop = float(cfg.get('stop', 0.40)); vol_stop_k = cfg.get('vol_stop'); stop_of = {}
@@ -96,21 +118,29 @@ HELPERS = """        stop = float(cfg.get('stop', 0.40)); vol_stop_k = cfg.get('
         assert not cfg.get('raw_px') or _RAW is not None, 'raw_px arm without a real-price matrix'
         FIXCAP = float(cfg['fixed_cap']) if cfg.get('fixed_cap') else None
         assert not FIXCAP or abs(float(cfg.get('initial_capital', 50_000.0)) - FIXCAP) < 1e-6
+        REFCAP = float(cfg['ref_cap']) if cfg.get('ref_cap') else None
+        assert not (FIXCAP and REFCAP), 'fixed_cap and ref_cap are alternative capital models'
         MINC = float(cfg.get('min_comm', 0.0))
         resid = {}; _vprev = {}
         _st = dict(rebuilds=0, names=0, zero=0, trades=0, cost=0.0, cap_hold=0, raw_hits=0, raw_miss=0, gross_sum=0.0, days=0, maxw=0.0)
         self._r_stats = _st
         def _rawp(s_, p_):
+            # the price whole shares are counted at: the real close (raw_px), and with ref_cap scaled by NAV / ref_cap so
+            # the account rounds exactly as a ref_cap-sized account would while its P&L compounds normally
+            v_ = p_
             if _RAW is not None:
                 try:
-                    v_ = _RAW.at[d, s_]
+                    r_ = _RAW.at[d, s_]
                 except KeyError:
-                    v_ = float('nan')
-                if v_ == v_ and v_ > 0:
+                    r_ = float('nan')
+                if r_ == r_ and r_ > 0:
                     _st['raw_hits'] += 1
-                    return float(v_)
-                _st['raw_miss'] += 1
-            return p_
+                    v_ = float(r_)
+                else:
+                    _st['raw_miss'] += 1
+            if REFCAP:
+                v_ = v_ * nav / REFCAP
+            return v_
         def _vcost(v_):
             if ACCT:
                 return 0.0
@@ -205,16 +235,18 @@ EXTRA = [
      "                        tot += q * prc.get(s, lastpx.get(s, 0.0))\n                for s, r_ in resid.items():\n"
      "                    tot += r_ * prc.get(s, lastpx.get(s, 0.0))\n                return tot\n"),
     ("                        q = int(tnav * min(w0 * mult, cap_pos) / p)   # integer shares\n",
-     "                        _tv = tnav * min(w0 * mult, cap_pos); _pr = _rawp(s, p)\n"
-     "                        if RMODE == 'book_floor':\n"
-     "                            _n = int(_tv / _pr)\n"
-     "                        elif RMODE == 'book_round':\n"
-     "                            _n = int(_tv / _pr + 0.5)\n"
-     "                            if _n * _pr > tnav * cap_pos * 1.0000001:\n"
-     "                                _n -= 1\n"
+     "                        _tv = tnav * min(w0 * mult, cap_pos)\n"
+     "                        if RMODE in ('book_floor', 'book_round'):\n"
+     "                            _pr = _rawp(s, p)\n"
+     "                            if RMODE == 'book_floor':\n"
+     "                                _n = int(_tv / _pr)\n"
+     "                            else:\n"
+     "                                _n = int(_tv / _pr + 0.5)\n"
+     "                                if _n * _pr > tnav * cap_pos * 1.0000001:\n"
+     "                                    _n -= 1\n"
+     "                            q = _n if _pr == p else _n * _pr / p   # books are kept in total-return units\n"
      "                        else:\n"
-     "                            _n = _tv / _pr\n"
-     "                        q = _n if _pr == p else _n * _pr / p   # books are kept in total-return units\n"),
+     "                            q = _tv / p                             # fractional (virtual) book: scale-free\n"),
     ("                for s in list(books[t]):\n                    if s not in tgt:\n"
      "                        p = prc.get(s, lastpx.get(s, 0.0))\n                        q = books[t].pop(s); peaks[t].pop(s, None)\n"
      "                        cash += q * p\n                        cash -= abs(q * p) * cost_r\n",
@@ -382,6 +414,39 @@ def mode_validate():
     print("  PARITY OK")
 
 
+def mode_sanity():
+    """Plumbing identities. Any failure means no EXP-063 number may be quoted."""
+    install(extra=True)
+    cr = CleanRoom(_bt())
+    cr._raw = build_raw(cr.px)
+    starts = [E.STARTS[0], E.STARTS[7]]
+    cache = {}
+
+    def curve(nm, s):
+        if (nm, s) not in cache:
+            cache[(nm, s)] = cr.run(s, ARMS[nm])["curve"]
+        return cache[(nm, s)]
+
+    ok = True
+    for a, b, kind in (("R62_frac", "S_C62_frac_adj", "exact"),          # real prices + ref size are inert for frac
+                       ("F62_frac", "S_F62x16384_frac", "exact"),        # the fixed-capital sweep is scale-consistent
+                       ("S_frac_cost0", "S_acct_frac_cost0", "exact"),   # the account layer is lossless without rounding
+                       ("R62_frac", "S_R1e12_book_floor", "limit"),      # book rounding vanishes at a huge size
+                       ("R62_acct_frac", "S_R1e12_acct_round", "limit")):  # account rounding vanishes at a huge size
+        for s in starts:
+            va, vb = curve(a, s), curve(b, s)
+            ra, rb = va.pct_change().dropna(), vb.pct_change().dropna()
+            j = ra.index.intersection(rb.index)
+            mx = float((ra[j] - rb[j]).abs().max()) if len(j) else float("nan")
+            ca, cb = E.st(va)[0], E.st(vb)[0]
+            good = (mx < 1e-12) if kind == "exact" else (abs(ca - cb) < 0.001)
+            ok = ok and good
+            print(f"  {'OK ' if good else 'BAD'} {kind:<5} {a} vs {b} {s}: max |daily return diff| {mx:.3g}"
+                  f"  CAGR {ca:+.3%} vs {cb:+.3%}", flush=True)
+    print("  SANITY " + ("PASSED" if ok else "FAILED — do not use EXP-063 results"))
+    assert ok
+
+
 def mode_run(names):
     for nm in names:
         assert nm in ARMS, nm
@@ -431,13 +496,15 @@ def mech(nm, cols):
                 agg.setdefault(k, []).append(v)
     if not agg:
         return ""
-    yrs = np.mean([(pd.read_parquet(f"{CACHE}/{STAGE}_{nm}/{s_}.parquet").index[-1] - pd.Timestamp(s_)).days / 365.25 for s_ in cols])
+    curves = {s_: pd.read_parquet(f"{CACHE}/{STAGE}_{nm}/{s_}.parquet")[s_].dropna() for s_ in cols}
+    yrs = np.mean([(c.index[-1] - pd.Timestamp(s_)).days / 365.25 for s_, c in curves.items()])
     cap = ARMS[nm].get("fixed_cap")
     z = sum(agg["zero"]) / max(sum(agg["names"]), 1)
     out = (f"zeroed {z:.1%} of target names | trades/yr {np.mean(agg['trades']) / yrs:.0f} | gross {sum(agg['gross_sum']) / max(sum(agg['days']), 1):.2f}x"
            f" | max name {np.max(agg['maxw']):.1%}")
-    if cap:
-        out += f" | costs {np.mean(agg['cost']) / yrs / cap:.2%}/yr of capital"
+    # costs per year as a share of the capital actually at work (fixed cap, or the run's average NAV when compounding)
+    denom = [cap if cap else float(curves[s_].mean()) for s_ in cols]
+    out += f" | costs {np.mean([c_ / yrs / dn for c_, dn in zip(agg['cost'], denom)]):.2%}/yr of NAV"
     if sum(agg["raw_hits"]) + sum(agg["raw_miss"]):
         out += f" | real-price hits {sum(agg['raw_hits']) / (sum(agg['raw_hits']) + sum(agg['raw_miss'])):.1%}"
     if sum(agg["cap_hold"]):
@@ -476,6 +543,12 @@ def mode_analyse(base):
         m = mech(nm, cols)
         if m:
             print(f"  {'':<22} {m}")
+        # GATE059 check (0): is the gain just more exposure? Vol-matched CAGR and drawdown per unit of vol.
+        vb_ = np.mean([B[c].dropna().pct_change().std() * np.sqrt(252) for c in cols])
+        va_ = np.mean([A[c].dropna().pct_change().std() * np.sqrt(252) for c in cols])
+        print(f"  {'':<22} risk: vol {vb_:.2%} -> {va_:.2%} | CAGR vol-matched to baseline {a[:, 0].mean() * vb_ / va_:+.2%}"
+              f" vs {bb[:, 0].mean():+.2%} ({(a[:, 0].mean() * vb_ / va_ - bb[:, 0].mean()) * 100:+.2f}pp)"
+              f" | MaxDD/vol {bb[:, 2].mean() / vb_:.2f} -> {a[:, 2].mean() / va_:.2f}")
         if STAGE == "stage2" and len(cols) >= 12:
             # GATE059-style checks: bootstrap dSharpe, sub-periods, untouched starts, best-5 days removed
             shd = []
@@ -513,9 +586,11 @@ if __name__ == "__main__":
         mode_validate()
     elif STAGE == "raw":
         mode_raw()
+    elif STAGE == "sanity":
+        mode_sanity()
     elif MODE == "run":
         mode_run(ONLY)
     elif MODE == "analyse":
-        mode_analyse(ONLY[0] if ONLY else "F62_book_floor")
+        mode_analyse(ONLY[0] if ONLY else "R62_book_floor")
     else:
         print(__doc__)

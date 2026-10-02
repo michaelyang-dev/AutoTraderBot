@@ -4046,6 +4046,67 @@ Read: smaller than the 8yr (the 2018-25 momentum names are more volatile, so the
 same sign on every start and every metric — including MaxDD, so intraday stops bought no crash protection in
 2001-02, 2008 or 2020 either. Verdict: align live to the validated close-based stop (e572e7e). Closed 2026-09-30 04:05.
 
+## Cycle 61 — EXP-063 · whole-share rounding at the live account size: per-book truncation vs account-level rounding (2026-10-01/02)
+
+Owner's question after LITE / SNDK were BUY signals at every rebuild yet held 0 shares: each of the 4 books truncates
+its own slice, and a bear-weight momentum slot (~$567 of a NAV/4 book) is 0.58 of a ~$1,000 share -> int() -> 0 in
+every book. Would rounding the books' SUM at the account level help — and do no harm? ("extensive research ... fully
+confirm"). Harness: `research/EXP063_account_rounding.py` (the EXP-059 frontier engine, its reps parsed verbatim, plus
+switches). Rules: `book_floor` (= live), `book_round`, `acct_round` (round(Σ books), never up through 15% of NAV),
+`acct_floor` (floor(Σ books)), `frac` (fractional ceiling), `acct_frac` (frac + net execution).
+
+**Why the existing numbers could not answer it.** The clean room compounds from $50k (a few years in it sizes a far
+larger account) and counts shares at total-return-ADJUSTED prices anchored at each security's last price — 2015
+NVDA $0.54 adjusted vs $22.30 real, AAPL $29 vs $131. EXP-059 batch 11's "$60k vs $1M: −0.22pp" understated it.
+Fix: real prices (CRSP close to 2025-12-31 + Compustat secd prccd for 2026 through the universe builder's own CCM
+link; 99%+ coverage, == adjusted at the 2025-12-31 anchor, == the live vendor's 2026 closes for LITE/SNDK/MU to
+0.0000%) and three capital models: **R62** (primary: compounds like the engine, shares counted as a $62k account
+would — real price x NAV/62k), **C62** (start at $62k, compound: the realistic forward path), **F62** (fixed $62k via
+a daily cash sweep — STRESS ONLY: it keeps positions while withdrawing profits, so leverage drifts with P&L;
+F62_frac != compounding frac by up to 2pp per start, found in stage 1 and the reason R62 replaced it).
+**Guards:** parity with every switch off == the EXP-059 cap0.15_package curves exactly (max diff 0, 2,176 days);
+`sanity` (exact, 0 diff): R62_frac == compounding frac; the F sweep is scale-consistent at 2^14x; the account layer
+is lossless without rounding; book and account rounding converge to frac at a $1e12 reference size (~1e-9/day).
+
+### EXP-063 stage 2 — 24 starts, R62 (vs the live rule, book_floor)
+
+| rule | 8yr dCAGR (+) | dSharpe (+) | dMaxDD (better) | vol-matched | 26yr dCAGR (+) | dSharpe (+) | dMaxDD (better) | vol-matched |
+|---|---|---|---|---|---|---|---|---|
+| live (book_floor) | +34.39% / 1.105 / −31.1% | zeroes 7.4% of names | gross 1.00x | | +19.12% / 0.769 / −41.4% | zeroes 5.2% | gross 1.05x | |
+| frac (ceiling) | +1.63pp (24/24) | +0.022 (24/24) | −0.21pp (12) | +0.91pp | +0.51pp (24/24) | +0.008 (24/24) | −0.13pp (5) | +0.24pp |
+| **acct_round** | **+1.89pp (24/24)** | **+0.029 (24/24)** | −0.17pp (9) | +1.21pp | **+0.59pp (24/24)** | **+0.011 (24/24)** | −0.10pp (5) | +0.33pp |
+| **acct_floor** | **+0.87pp (24/24)** | **+0.021 (24/24)** | +0.39pp (18) | +0.90pp | **+0.29pp (24/24)** | **+0.008 (24/24)** | +0.15pp (14) | +0.26pp |
+| acct_frac | +1.67pp | +0.023 | | | +0.54pp | +0.009 | | |
+| book_round | −0.33pp (4/24) | −0.006 | | | +0.00pp | −0.000 | | |
+
+GATE059: acct_round FAILS the 8yr (2021-22 sub-period −0.033 — more exposure in 2022, −2.5pp that year; top year
+40.4% of the gain) and PASSES the 26yr (P 86%, 14/25 years, top year 33%, every sub-period ≥ −0.008). acct_floor
+PASSES the 8yr (P 86%, 4/8 years, top year 38%, min sub −0.019) and FAILS the 26yr on years-better only (11/25:
+2001-16 is noise — real prices were low and truncation rarely bound). Every other check passes for both.
+8yr robustness (each vs the live rule under the SAME condition, 24/24 starts unless noted): $1 minimum per order
+— acct_round +2.11pp / +0.035, acct_floor +1.08pp / +0.027 (MaxDD better 23/24); 2x costs — +1.96pp / +0.033 and
++1.02pp / +0.025; C62 forward path — +0.56pp / +0.009 (23/24) and +0.43pp / +0.013; F62 stress — +1.77pp and
++0.76pp; size line (acct_round / acct_floor / frac): $31k +1.94 / +1.68 (+0.040 Sharpe, MaxDD better 24/24) / +2.58;
+$62k +1.89 / +0.87 / +1.63; $125k +0.59 / +0.41 / +0.65; $250k +0.47 / +0.44 / +0.49.
+
+Read: (1) at the live size the whole-share drag is ~1.6pp/yr on 2018-26 and ~0.5pp/yr on 2001-26 (frac − live),
+not ~0.2 — concentrated in 2023/2024/2026, the years of $1,000+ momentum leaders, so today's regime is the costly
+one. The quoted package numbers (compounding, adjusted prices) overstate a ~$62k account by ~1.4pp (8yr) / ~0.7pp
+(26yr) if it stayed that size; on the realistic C62 path (it grows) by ~0.3pp (8yr). (2) Account-level rounding is better than the live rule on EVERY start
+of both horizons, for CAGR and Sharpe, under every cost, size and capital model tested. (3) acct_round captures the
+whole drag (and a little more: fewer trades) by restoring the INTENDED exposure (vol +0.4-0.6pp), which costs in
+down years (2022 −2.5pp). acct_floor fixes the composition (in the engine test scenario per-book truncation leaves 11
+of 25 signal names unheld after a full rotation; both account rules hold all 25) with no added exposure and
+equal-or-better drawdowns, for about half the gain. (4) Per-book
+round-to-nearest is useless (four independent ±0.5-share errors). Verdict: implement account-level rounding behind
+a flag (`IBKR_ACCOUNT_ROUNDING`, off by default; `ibkr_engine.py`, `tests/test_account_rounding.py`: the live rule
+== the harness rule on 10,000 random steps); round vs floor is the owner's risk choice.
+
+**Side finding (parity bug, fixed in code 2026-10-02, pending deploy):** the live de-risk overlay returned no trims
+when its target was 0, so with the credit gate ON (depth 0.00) only the rebuilding book went to cash and the other
+three stayed invested until their own rebuilds; the clean room (and the validated package numbers) flatten every
+book on that tranche day. `_overlay_trims` now trims to 0; the parity test now draws target 0 in 20% of cases.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
