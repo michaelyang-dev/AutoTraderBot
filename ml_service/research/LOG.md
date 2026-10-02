@@ -4088,6 +4088,12 @@ PASSES the 8yr (P 86%, 4/8 years, top year 38%, min sub −0.019) and FAILS the 
 +1.02pp / +0.025; C62 forward path — +0.56pp / +0.009 (23/24) and +0.43pp / +0.013; F62 stress — +1.77pp and
 +0.76pp; size line (acct_round / acct_floor / frac): $31k +1.94 / +1.68 (+0.040 Sharpe, MaxDD better 24/24) / +2.58;
 $62k +1.89 / +0.87 / +1.63; $125k +0.59 / +0.41 / +0.65; $250k +0.47 / +0.44 / +0.49.
+26yr robustness (completed 2026-10-02 05:56, 768 runs, 0 errors; same pairing, 24/24 starts unless noted): $1 minimum
+per order — acct_round +0.71pp / +0.015 (P 94%, 18/25 years), acct_floor +0.41pp / +0.012 (MaxDD better 24/24);
+2x costs — +0.70pp / +0.016 and +0.43pp / +0.013; size line round / floor: $31k +0.70 / +0.56, $62k +0.59 / +0.29,
+$125k +0.21 / +0.16, $250k +0.17 / +0.15; F62 +0.56 / +0.26; C62 (start 2001-02 at $62k and compound — the account
+outgrows the problem within a few years, frac itself +0.01pp) +0.04pp (23/24) / +0.02pp (20/24): no harm, nothing
+left to gain on that path. Every capital model, cost level and size agrees in sign with the primary result.
 
 Read: (1) at the live size the whole-share drag is ~1.6pp/yr on 2018-26 and ~0.5pp/yr on 2001-26 (frac − live),
 not ~0.2 — concentrated in 2023/2024/2026, the years of $1,000+ momentum leaders, so today's regime is the costly
