@@ -1269,7 +1269,7 @@ class IBKREngine:
         self._save_tranche_state()
         log.warning(f"ACCOUNT ROUNDING {ACCOUNT_ROUNDING.upper()} active (was {prev or 'off'}): "
                     f"{len(st['acct_target'])} positions adopted as the account's whole-share target")
-        send_telegram(f"🧮 Account-level rounding is now <b>{ACCOUNT_ROUNDING}</b>: books keep fractional shares and "
+        send_telegram(f"🧮 Account-level rounding is now {ACCOUNT_ROUNDING.upper()}: books keep fractional shares and "
                       f"only the account rounds to whole shares. {len(st['acct_target'])} current positions adopted "
                       "unchanged — nothing is traded by the switch itself.")
 
