@@ -417,6 +417,23 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Book 0, 2026-10-07 — FIRST REBUILD UNDER ACCOUNT-LEVEL ROUND: CLEAN (deep check 14:46-15:00 ET)
+09:30:01 `Tranche day count: 5/5` → 24 BUY signals (NTAP, ADMA new since Friday) → credit gate off (HY-OAS 3.12, pctile
+14.6%) → vol-scale 0.98 (realized 22.7%) → book-0 target 1.47x → `SIZING book 0 (account-level round): NAV/4=$16,193,
+mult 1.52 -> virtual gross $23,759 = 1.47x` → 12 sells 09:31:59-09:32:37 (BSY 1, CORT 2, DELL 2, GKOS 5, NFLX 9, NTNX 8,
+PAYO 122, PTC 5, SNDK 1, TGTX 15, WDAY 3, WDC 1) + 16 buys 09:32:40-09:33:32 (ADBE 1, ADMA 73, AMD 2, AXTI 7, CARG 8,
+DOCS 32, DUOL 5, FTNT 1, HUBS 4, MRNA 3, MXL 4, NTAP 5, OGN 15, OKTA 5, PANW 3, PAYX 2) → overlay: no book >5% above
+1.47x, no trims → complete 09:34:09. DELL's sell read "fill pending" at its 3-second check and filled (broker 4 = books
+1+2). **Independent broker check (read-only clientId 7):** 28 (side, symbol) execution groups today = 344 shares, exactly
+the engine's logged orders, nothing extra, no open orders; broker positions (31 names) == `acct_target` on every name;
+`acct_target` == round(Σ virtual books) on every name; no non-positive virtual holding; 85 per-book peaks, no orphans,
+none missing. NAV $65,965, gross 1.41x (book 0 at 1.47x, books 1-3 drifted since their builds), max weight MXL 15.5%
+(sized ≤15% at 09:31 prices, rallied intraday — drift the backtest also allows). Book-0 virtual fractions: LITE 0.49,
+SNDK 0.33 (account 0 until books 1-3 add their slices: LITE reaches 1 share at book 1 on 10-14). Monday's adoption
+(09:30:07 "ACCOUNT ROUNDING ROUND active ... 33 positions adopted", no trades) and the Mon/Tue 15:50 close-window stop
+checks on virtual holdings ran as rehearsed. Overnight 00:14-00:20: clientId-2 clash after the gateway's 19:59 restart
+(Error 326) → connection watchdog force-restart → clean start 00:20:23 with round loaded (known pattern, self-healed).
+
 ## Account-level rounding (EXP-063) — ROUND LIVE 2026-10-02 16:21 ET (owner's go) · credit-gate overlay bug — FIXED + DEPLOYED with it
 **Deploy record (2026-10-02):** box `git pull --ff-only` bundles 567174c..47f5b92 (15:05 ET) and ..0c82c08 (plain-text
 switch-on Telegram); all 20 test files pass on the box (venv, Telegram unset). DRY RUN on copies of the live ledger,
