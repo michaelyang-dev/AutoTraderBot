@@ -417,6 +417,31 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Book 1, 2026-10-14 — CLEAN; NAV −4.17% on the day = tech/semis selloff on a 1.5x book, not a malfunction (deep check 19:00-19:40 ET)
+09:30:09 `Tranche day count: 5/5` → 24 BUY signals from the 10-13-close build (18:24; breadth 32.4%, blend 0; new: DDOG, BL,
+CRWD, ABBV; gone: OGN, PAYO, MU, AMD, ELF, DELL, GKOS, BX) → credit gate off (HY-OAS 3.11, pctile 14.3%) → vol-scale 1.00
+(realized 22.0% — recomputed independently from the NAV history: 22.0% → 1.00; the last 5 sessions alone run 29%, which
+the 40-day window dilutes until book 2 on 10-21) → book-1 target 1.49x → `SIZING book 1 (account-level round): NAV/4=$15,489,
+mult 1.49 -> virtual gross $23,078 = 1.49x` → 10 sells 09:32:05-09:32:36 (BSY 5, BX 5, CORT 8, DELL 2, DOCS 8, ELF 8, GKOS 6,
+NTNX 10, OGN 108, PAYO 167) + 17 buys 09:32:40-09:33:36 (ABBV 4, ADBE 1, AXTI 8, BL 25, CARG 5, CRWD 4, DDOG 4, DUOL 1, FTNT 1,
+HUBS 3, **LITE 1**, MXL 3, NTAP 5, OKTA 3, PANW 1, PAYX 7, **SNDK 1**) → overlay: no trims → complete 09:34:17; 15:50 stop check,
+no stops. **Independent broker check (read-only clientId 7):** 27 execution groups / 404 shares == the engine's 27 orders,
+nothing extra, no open orders; broker (34 names) == `acct_target` == round(Σ virtual books) on every name; peaks consistent.
+**Strategy check:** book 1 = exactly the 24 signals; virtual gross 1.489x; weights in signal-rank order with 0 violations,
+max 12.5% (MXL) under the 15% cap. LITE 0.49+0.53 = 1.02 → 1 share, SNDK 0.33+0.36 = 0.69 → 1 share: the ROUND rule's
+first whole shares of the two names that motivated EXP-063. **Execution:** 27 fills, mean +0.26% vs the open (median
+−0.05%), total slippage $42 on $19,680 traded.
+**The loss, attributed exactly (Σ per-name contributions −$2,616 vs NAV −$2,639; residual −$23 = commissions):** MXL −11.1%
+→ −$938 (held in all 4 books, ~13% of NAV, the #1 signal), NTNX −$262, DELL −$211 (−11.3%; book 1 sold its 2 at 09:32),
+AMD −$208, OKTA −$174, FTNT −$163, MU −$156, PANW −$153, RDDT −$147, NTAP −$117; 12 names up / 23 down, equal-weight
+average −2.27%. Market: SPY −1.08%, XLK −2.98%, XLV +2.53%. Week since 10-07 close: NAV −7.54% (daily −2.2 / +2.5 / −2.4 /
+−1.4 / −4.2) vs SPY −0.98%, XLK −5.44% — a levered, semis-heavy momentum book in a tech drawdown; nothing traded that the
+strategy did not prescribe. Closest to the 40% stop: AXTI (book 3) −30.6%, MXL −29.3% in every book, SNDK (book 0) −28.2%.
+Margin: gross 1.50x, maintenance $22.5k vs NAV $60.1k, available funds $36.4k. Routine: 00:14-00:20 clientId clash after
+the gateway's nightly restart → watchdog force-restart → round loaded at 00:20:19.
+**Alpaca mirror's 10-08 rebalance (log rotated; Alpaca API):** 41 sells + 59 buys incl. 11 top-ups of already-held names
+(ADBE, BSY, CARG, CORT, FTNT, LITE, MU, MXL, NTNX, OGN, PAYX — impossible under the old code); now 1.49x invested (was 0.83x).
+
 ## Book 0, 2026-10-07 — FIRST REBUILD UNDER ACCOUNT-LEVEL ROUND: CLEAN (deep check 14:46-15:00 ET)
 09:30:01 `Tranche day count: 5/5` → 24 BUY signals (NTAP, ADMA new since Friday) → credit gate off (HY-OAS 3.12, pctile
 14.6%) → vol-scale 0.98 (realized 22.7%) → book-0 target 1.47x → `SIZING book 0 (account-level round): NAV/4=$16,193,
