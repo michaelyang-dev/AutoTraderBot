@@ -417,6 +417,38 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## Selection / sizing / data-source verification 2026-10-14 19:40-21:10 ET (owner: "are the positions sizing and the actual stock selection correct ... are all data sources valid") — ALL REPRODUCE; 1 freshness gap found (EDGAR patcher)
+**Selection (shared strategy code re-run offline on the live cache, Telegram unset, live files untouched):** rebuilt as of
+the 10-13 close with the 10-13 overlay archive → the SAME 24 BUY names the engine logged at 09:30, probabilities MXL 0.9500
+… SNDK 0.2460; rebuilt as of now → identical to the served `/signals` (symbols and probabilities to 4 dp). Sleeve
+attribution: momentum {AXTI, LITE, MRNA, MXL, SNDK} (equal weight) · lowvol {ABBV, CORT, CRWD, DDOG, FTNT, MXL, NTAP,
+NTNX, OKTA, PANW} · value {ADBE, ADSK, BL, BSY, CARG, DOCS, DUOL, HUBS, PAYX, RDDT}; every BUY name comes from a sleeve;
+MXL is in two (hence the top weight). An INDEPENDENT momentum top-5 from raw closes (12-1 score, consolidation ×1.15, ROE
+×1.05, above SMA200, S&P 1500 members) == the sleeve's picks. Features recomputed from raw closes vs the universe's maps
+(172 names): max |diff| ret_252d 6.7e-07, ret_20d 5.9e-08, dist_sma200 2.2e-16, vol_20d/60d 2.7e-07. Regime inputs:
+breadth 32.4% (09:30) / 29.2% (tonight) recomputed to the decimal → blend 0 (bear weights 11/33/56); UMD 20d +0.034 (no
+crash); SPY above SMA200; credit gate off (HY-OAS 3.11 = FRED to the cent on every common date; the live file lags FRED's
+posting by one day — FRED showed 10-13 = 3.16 by tonight; percentile 14.3% either way).
+**Sizing (book 1 vs the backtest rule on those probabilities):** `_calibrate_quantities(whole=False)` → mult 1.490, gross
+1.490x, max 12.8%; virtual ledger / rule median ratio 0.9996, 19/24 within 1% (RDDT 1.067, MXL 0.980 = quote→fill moves
+and the 0.3% no-trade band); same 24 names.
+**Data sources:** prices — 35 names (every BUY + every holding) × 251 sessions vs IBKR's own daily bars: 0 cells differ by
+> 0.1%, max |diff| last 5 sessions 0.0024%, 0 missing sessions. Membership — SSGA SPY as of 12-Oct: 503 = FMP's 503 except
+PSKY→SKYD (ticker renamed 10-06; FMP stale, ours current; SKYD has 378 cached bars). Fundamentals — the live Compustat row
+of 21 BUY names vs FMP's statement for the same fiscal quarter: net income / equity / revenue 0.0% on 20 (CORT NI 2.0%);
+COGS and debt differ by vendor definition (known); ADBE/LITE/SNDK quarter-ends differ by fiscal-calendar convention with
+identical figures; ABBV ROE NaN by the seqq>0 rule (backtest parity). EDGAR overlay reconciliation: walk-forward 99.0%
+(n=8,021). Vol-scale 22.0% recomputed from the NAV history = the engine's.
+**🔴 FINDING (data freshness, not today's trades): the EDGAR ROE patcher cannot refresh 51 pool names.** The 09-07 Compustat
+file carries a PLACEHOLDER newest row for them (datadate 2026-08-31, no rdq, NaN niq/seqq: ADBE, PAYX, MU, ORCL, COST, NKE,
+FDX, ACN, …). The live loader (rdq-based `tail(1)`) correctly skips it and uses the May quarter; the patcher
+(`scripts/edgar_fundamentals_patch.py` `overlap_end = last_rows.loc[sym]["datadate"]`, newest by datadate) takes the
+placeholder's date, so a filed quarter ending ≤ 09-20 is never "newer" — ADBE's Aug-28 10-Q (filed 09-22, in EDGAR) is
+not overlaid. Result: ROE one quarter stale for 51/1,498 names (3.4%), overlay refreshes 0 of them. Effect on selection is
+small (ROE = ×1.05 momentum boost + lowvol/value quality inputs; ADBE's stale 0.60 vs fresh 0.62) but it is a parity gap vs
+the backtest's point-in-time fundamentals. Fix (proposed, NOT applied): make the patcher's overlap row the same row the
+live loader uses (newest with rdq and non-null niq/seqq) + a regression test; or re-pull fundamentals. Owner's call.
+
 ## Book 1, 2026-10-14 — CLEAN; NAV −4.17% on the day = tech/semis selloff on a 1.5x book, not a malfunction (deep check 19:00-19:40 ET)
 09:30:09 `Tranche day count: 5/5` → 24 BUY signals from the 10-13-close build (18:24; breadth 32.4%, blend 0; new: DDOG, BL,
 CRWD, ABBV; gone: OGN, PAYO, MU, AMD, ELF, DELL, GKOS, BX) → credit gate off (HY-OAS 3.11, pctile 14.3%) → vol-scale 1.00
