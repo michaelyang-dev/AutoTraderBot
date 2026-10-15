@@ -38,6 +38,9 @@ import pandas as pd
 import requests
 
 ML = Path(__file__).resolve().parent.parent
+import sys  # noqa: E402
+sys.path.insert(0, str(ML))
+from compustat_rows import live_rows  # noqa: E402  — the SAME "current quarter" rule as the live signals (2026-10-14)
 DATA = ML / "data"
 FUND = DATA / "wrds" / "compustat_fundamentals_quarterly.parquet"
 OVERLAY = DATA / "edgar_feature_overlay.json"
@@ -264,12 +267,40 @@ def item_anchors(g, item, depth):
     return rows
 
 
+def overlap_rows(fund):
+    """(newest row by datadate, the LIVE row) per ticker. The live row — compustat_rows.live_rows, newest by report
+    date, placeholders excluded — is the overlap end a fresher EDGAR quarter must beat, because it is the quarter
+    signal_builder actually serves. FOUND 2026-10-14: this function's predecessor used the newest DATADATE, which for
+    51 S&P 1500 names was a preliminary placeholder (datadate stamped, no rdq, NaN figures: ADBE, PAYX, MU, ORCL, COST,
+    NKE, FDX, ACN ...), so the quarter they had FILED (ADBE's Aug-28 10-Q, filed 09-22) was never "newer" and their
+    live ROE stayed one quarter stale with no alarm. The datadate-newest row is kept only as the fallback for a ticker
+    with no reported quarter at all (then live has no Compustat row either and any EDGAR value is better than none)."""
+    fund = fund.copy()
+    fund["datadate"] = pd.to_datetime(fund["datadate"])
+    last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
+    live = live_rows(fund)
+    return last_rows, live
+
+
+def overlap_row(sym, last_rows, live):
+    return live.loc[sym] if sym in live.index else last_rows.loc[sym]
+
+
+def is_fresher(period_end, overlap_end):
+    """An EDGAR period counts as a fresher quarter when it ends more than 20 days after the overlap end (Compustat
+    month-end datadates vs 4-4-5 fiscal ends sit up to ~2 weeks apart; see value_at)."""
+    return pd.Timestamp(period_end) > pd.Timestamp(overlap_end) + pd.Timedelta(days=20)
+
+
 def main():
     members = json.load(open(DATA / "sp1500_members.json"))
     syms = sorted(set(members["sp500"] + members["sp400"] + members["sp600"]))
     fund = pd.read_parquet(FUND)
     fund["datadate"] = pd.to_datetime(fund["datadate"])
-    last_rows = fund.sort_values("datadate").drop_duplicates("tic", keep="last").set_index("tic")
+    last_rows, live = overlap_rows(fund)
+    n_placeholder = sum(1 for s in syms if s in live.index and s in last_rows.index
+                        and last_rows.loc[s, "datadate"] > live.loc[s, "datadate"])
+    print(f"  overlap end = the LIVE row's quarter; {n_placeholder} symbols have a newer placeholder row that is ignored")
     by_tic = {t: g.sort_values("datadate") for t, g in fund.groupby("tic")}
     cik_map = load_cik_map()
 
@@ -289,7 +320,7 @@ def main():
         facts = fetch_facts(cik)
         if facts is None:
             continue
-        row = last_rows.loc[sym]
+        row = overlap_row(sym, last_rows, live)      # the live quarter (fallback: newest by datadate)
         overlap_end = row["datadate"]
         g = by_tic[sym]
 
@@ -335,7 +366,7 @@ def main():
                 if resolved[it] == "ZERO":
                     continue
                 q, _a = series_for_concept(facts, resolved[it][0])
-                base_ends |= {d for d in (q or {}) if d > overlap_end + pd.Timedelta(days=20)}
+                base_ends |= {d for d in (q or {}) if is_fresher(d, overlap_end)}
             for end in sorted(base_ends, reverse=True):
                 vals, rdq, complete = {}, None, True
                 for it in inputs:
@@ -411,6 +442,7 @@ def main():
     print(f"  item failures: {fail_items}")
     json.dump({"generated": time.strftime("%Y-%m-%d %H:%M:%S"),
                "compustat_max_datadate": str(fund['datadate'].max().date()),
+               "placeholder_newest_rows": n_placeholder,
                "stats": stats, "fail_items": fail_items,
                "features": overlay}, open(OVERLAY, "w"), indent=1)
     json.dump({"stats": stats, "fail_items": fail_items}, open(REPORT, "w"), indent=1)

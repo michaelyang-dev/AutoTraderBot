@@ -17,7 +17,9 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
+from compustat_rows import live_rows, live_datadate
 from sp500_history import get_sp500_on_date
 from sp1500_membership import get_sp1500_on_date
 from strategies.multi_strategy_engine import (
@@ -525,10 +527,6 @@ def _fill_fundamentals(features, data_dir):
         try:
             fund = pd.read_parquet(wrds_fund)
             fund["datadate"] = pd.to_datetime(fund["datadate"])
-            # Use rdq (report date) for point-in-time if available, else datadate
-            date_col = "rdq" if "rdq" in fund.columns else "datadate"
-            fund[date_col] = pd.to_datetime(fund[date_col], errors="coerce")
-            fund = fund.dropna(subset=[date_col])
             # WHOLE latest row per ticker (2026-09-30 parity fix). GroupBy.last() returns the last
             # NON-NULL value of EACH COLUMN separately: where Compustat left a field blank in the
             # newest quarter (dlcq for 208 of 1,496 pool names on 2026-09-29; seqq for VSXY/MDT;
@@ -536,7 +534,10 @@ def _fill_fundamentals(features, data_dir):
             # backtest (build_universe_v2: one record per quarter, NaN stays NaN, missing debt
             # counts as 0) does not. A/B on 2026-09-29 data: identical BUY list, PAYX/NTNX weights
             # move in the 4th decimal — parity, not a pick change.
-            latest = fund.sort_values(date_col).groupby("tic").tail(1).set_index("tic")
+            # The row is chosen by the SHARED rule (compustat_rows.live_rows: newest by report date,
+            # placeholders without an rdq excluded) that the EDGAR vintage guard and the EDGAR patcher
+            # use too — 2026-10-14 fix, see that module's docstring.
+            latest = live_rows(fund)
 
             # Compute fundamentals from Compustat fields
             # gross_margin = (saleq - cogsq) / saleq
@@ -744,10 +745,15 @@ def _load_edgar_overlay(data_dir):
                         tgt.setdefault(feat, e)
             except Exception:
                 pass
-        fund = pd.read_parquet(data_dir / "wrds" / "compustat_fundamentals_quarterly.parquet",
-                               columns=["tic", "datadate"])
-        fund["datadate"] = pd.to_datetime(fund["datadate"])
-        last_dd = fund.groupby("tic")["datadate"].max()
+        # VINTAGE = the datadate of the row _fill_fundamentals actually uses (shared rule), NOT the file's
+        # newest datadate: for a name with a preliminary placeholder row (datadate stamped, no rdq, NaN
+        # figures) the max datadate is the placeholder, and a filed quarter ending before it was rejected
+        # here as "not newer" while live served the quarter before — 51 names on 2026-10-14 (ADBE's
+        # Aug-28 10-Q, filed 09-22, never applied).
+        _fund_cols = ["tic", "datadate"] + (["rdq"] if "rdq" in pq.ParquetFile(
+            data_dir / "wrds" / "compustat_fundamentals_quarterly.parquet").schema.names else [])
+        fund = pd.read_parquet(data_dir / "wrds" / "compustat_fundamentals_quarterly.parquet", columns=_fund_cols)
+        last_dd = live_datadate(fund)
         # LIVE-ELIGIBLE FEATURES ONLY — calibrated 2026-07-12: roe extractions test at
         # 99.2% next-quarter accuracy (deploy); gross_margin (~92%) and debt_to_equity
         # (~93%) are NOT provable to the 99% bar at any gate depth -> they stay
