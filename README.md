@@ -324,7 +324,9 @@ both horizons) and verdict. Highlights:
   rebuilds. Live now matches the backtest.
 - **Execution at the open.** Live fills one overnight after the signal close (bounded at −0.35pp/yr).
 - **Fundamentals freshness.** The fundamentals dataset is updated periodically; between updates only ROE is refreshed
-  (EDGAR overlay).
+  (EDGAR overlay). Fixed 2026-10-15: the overlay and the signals now use one rule for "the current quarter" (newest by
+  report date), so a quarter filed after the dataset's placeholder rows is refreshed too — 28 more names on the day of
+  the fix; names whose latest filing fails the 99% proof gate stay on the dataset's quarter by design.
 - **Vendor quirks.** Per-ticker vendor history can splice two securities after a ticker change (e.g. BNY); such
   names are truncated and treated as short-history until clean history accrues.
 - **Paper mirror ≠ live.** The Alpaca engine runs the same signals as a single 20-day book on a ~$1.5M paper

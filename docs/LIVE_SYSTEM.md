@@ -446,8 +446,23 @@ FDX, ACN, …). The live loader (rdq-based `tail(1)`) correctly skips it and use
 placeholder's date, so a filed quarter ending ≤ 09-20 is never "newer" — ADBE's Aug-28 10-Q (filed 09-22, in EDGAR) is
 not overlaid. Result: ROE one quarter stale for 51/1,498 names (3.4%), overlay refreshes 0 of them. Effect on selection is
 small (ROE = ×1.05 momentum boost + lowvol/value quality inputs; ADBE's stale 0.60 vs fresh 0.62) but it is a parity gap vs
-the backtest's point-in-time fundamentals. Fix (proposed, NOT applied): make the patcher's overlap row the same row the
-live loader uses (newest with rdq and non-null niq/seqq) + a regression test; or re-pull fundamentals. Owner's call.
+the backtest's point-in-time fundamentals.
+**FIXED 2026-10-15 (owner's go), commit 022cf58:** ONE shared rule, `compustat_rows.live_rows` (newest quarter by report
+date, placeholders without an rdq excluded, ties broken by datadate, stable sort), now called by `_fill_fundamentals`,
+by `_load_edgar_overlay`'s vintage guard (which ALSO used the max datadate — it would have rejected ADBE's 08-28
+period even if extracted) and by the patcher's overlap end (`overlap_rows` / `overlap_row` / `is_fresher`). The rule
+picks the identical row to the old loader for all 1,498 pool names (checked on the live file; 152 tickers have
+duplicate report dates, none changed). `tests/test_compustat_live_row.py` reproduces the ADBE case end to end (25
+checks: rule, loader ROE, vintage guard incl. the old guard's rejection, patcher overlap/freshness); full suite 21/21
+locally and on the box. **Verification run on the box (real Compustat file + EDGAR cache, output to a temp dir, live
+files untouched, 115 s):** `placeholder_newest_rows` 51; ROE fresher-quarter extractions 23 → 51 (+28, 0 lost, 0
+changed, 1 jump-guarded); ADBE 0.595 → 0.621 (period 08-28, filed 09-22), PAYX 0.450 → 0.464 (08-31, filed 09-24),
+MU 1.122 → 1.090 (09-03, filed 10-09), NKE 0.288 → 0.187 (08-31, filed 10-02); the fixed loader applies all 51 (was
+23), every value inside the bounds and newer than its live quarter. The 23 placeholder names still without a fresh
+value (COST, ORCL, AZO, FDX, JBL, ACN, …) have Aug/Sept fiscal quarter-ends not yet filed or fail the 99%-proof gate —
+the designed "unproven stays stale". **Rollout:** code on the box 12:14 ET (tests green); live overlay regenerated
+after the 16:30 build window closes (the running server's OLD loader would reject the ≤08-31 periods until it restarts);
+the 17:50 cron restart loads the new loader + overlay; verified below.
 
 ## Book 1, 2026-10-14 — CLEAN; NAV −4.17% on the day = tech/semis selloff on a 1.5x book, not a malfunction (deep check 19:00-19:40 ET)
 09:30:09 `Tranche day count: 5/5` → 24 BUY signals from the 10-13-close build (18:24; breadth 32.4%, blend 0; new: DDOG, BL,

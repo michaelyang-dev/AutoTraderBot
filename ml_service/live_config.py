@@ -76,7 +76,7 @@ LIVE_PRICE_CACHE_RULE = ("reuse a Massive file only if <18h old AND written afte
                          "refetch any cached symbol whose last bar lags the session most symbols end on")  # LIVE 2026-09-30 01:39
 LIVE_PRICE_BASIS = "split-adjusted price-only (backtest: total-return; A/B 2026-09-29: identical BUY list)"
 LIVE_VOL_WINDOW = "40 close-to-close NAV returns ending at the last COMPLETED close"  # eea223f LIVE 2026-09-30 16:14
-LIVE_FUNDAMENTALS_ROW = "whole newest Compustat quarter per ticker (backtest parity)"   # eea223f — deployed to disk 2026-09-30 ~02:10, loaded at the next signal-server restart
+LIVE_FUNDAMENTALS_ROW = "whole newest Compustat quarter per ticker BY REPORT DATE, placeholders excluded (compustat_rows.live_rows — the same rule for the loader, the EDGAR vintage guard and the EDGAR patcher since 2026-10-15, 022cf58)"   # eea223f row-wise 2026-09-30; shared rule 2026-10-15
 LIVE_MEMBERSHIP_SOURCE = "SSGA holdings SPY/MDY/SPSM (>=90% overlap guard) -> Wikipedia -> last-good"  # scrape_sp1500.py, 06:00 weekdays; baf7a8a
 # PARITY AUDIT 2026-09-30 (docs/LIVE_SYSTEM.md "Live-vs-backtest parity audit") — a2967dc: engine LIVE 2026-09-30 16:14, signal server at the 17:50 restart:
 LIVE_SPLIT_HANDLING = "day's splits (Polygon reference) scale book shares and stop peaks before any reconciliation"
