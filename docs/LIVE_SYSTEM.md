@@ -462,7 +462,14 @@ MU 1.122 → 1.090 (09-03, filed 10-09), NKE 0.288 → 0.187 (08-31, filed 10-02
 value (COST, ORCL, AZO, FDX, JBL, ACN, …) have Aug/Sept fiscal quarter-ends not yet filed or fail the 99%-proof gate —
 the designed "unproven stays stale". **Rollout:** code on the box 12:14 ET (tests green); live overlay regenerated
 after the 16:30 build window closes (the running server's OLD loader would reject the ≤08-31 periods until it restarts);
-the 17:50 cron restart loads the new loader + overlay; verified below.
+the 17:50 cron restart loads the new loader + overlay. **Verified:** patcher run 16:35-17:00:55 ET (1,537 s — the SEC
+fact cache had aged past its 20 h TTL, full refetch) → live overlay `placeholder_newest_rows` 51, ROE entries **52** (ADBE
+0.621 / 08-28, PAYX 0.464 / 08-31, MU 1.090 / 09-03); signal server restarted 17:50 by cron → 17:52:55 "Fundamentals
+loaded from WRDS Compustat (13232 tickers)", **17:53:10 "EDGAR overlay loaded: {'roe': 52} fresh symbols"** (was 23 at the
+09:19 build), 17:53:12 build 1506 total / 24 BUY, "OVERLAY LIVE: 24 BUY vs baseline 24 | overlay-added=[] overlay-dropped=[]"
+— the fresher ROE values change no pick tonight (ROE is a ×1.05 boost and a quality input; a one-quarter refresh rarely
+flips a rank), which is the expected size of the effect. Note tonight's breadth 35.7% → blend 0.03: the first step off the
+pure bear mix since 09-22.
 
 ## Book 1, 2026-10-14 — CLEAN; NAV −4.17% on the day = tech/semis selloff on a 1.5x book, not a malfunction (deep check 19:00-19:40 ET)
 09:30:09 `Tranche day count: 5/5` → 24 BUY signals from the 10-13-close build (18:24; breadth 32.4%, blend 0; new: DDOG, BL,
