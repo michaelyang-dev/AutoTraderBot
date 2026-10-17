@@ -4115,6 +4115,33 @@ when its target was 0, so with the credit gate ON (depth 0.00) only the rebuildi
 three stayed invested until their own rebuilds; the clean room (and the validated package numbers) flatten every
 book on that tranche day. `_overlay_trims` now trims to 0; the parity test now draws target 0 in 20% of cases.
 
+## Cycle 62 — EXP-064 · the vol-scaling overlay ON vs OFF on the DEPLOYED package (2026-10-16, owner's question after a −6.6% day: "deleveraging when we are down — how are we supposed to recover?")
+
+Never run on the package itself (VERIFY3's noOvl arm was on the pre-package book). `research/EXP064_vol_overlay_ab.py`
+(EXP-059 harness, stage 2 = 24 starts, both horizons): `pkg_noVol` (vol_overlay=False: constant 1.49x × credit gate) and
+`pkg_floor0.60` (de-risk at most to 0.60×; live floor 0.30), vs `cap0.15_package` (live).
+
+| horizon | arm | CAGR | Sharpe (+starts) | MaxDD (+starts) | vol | years better |
+|---|---|---|---|---|---|---|
+| 8yr | live | +35.79% | 1.125 | −31.4% | 31.7% | — |
+| 8yr | floor 0.60 | +37.00% (+1.21pp) | 1.116 (−0.008, 4/24) | −31.9% (−0.57pp, 2/24) | 33.2% | 4/8 |
+| 8yr | **OFF** | +41.45% (+5.67pp) | 1.096 (−0.028, 5/24) | **−41.1% (−9.76pp, 0/24)** | 38.4% | 7/8 |
+| 26yr | live | +19.81% | 0.786 | −41.3% | 28.1% | — |
+| 26yr | floor 0.60 | +20.22% (+0.41pp) | 0.787 (+0.002, 11/24) | −41.6% (−0.31pp, 8/24) | 28.7% | 13/25 |
+| 26yr | **OFF** | +22.39% (+2.57pp) | 0.780 (−0.005, 8/24) | **−49.5% (−8.13pp, 0/24)** | 32.9% | 17/25 |
+
+Years (26yr, live → OFF): 2002 −25.8 → −29.5; 2008 −20.4 → −24.9; 2018 −5.3 → −11.1; 2022 +4.7 → −0.5; rebounds 2003 +68.9 → +77.4,
+2009 +35.4 → +52.8, 2020 +4.7 → +17.4, 2021 +50.6 → +59.1, 2026 +80.3 → +108.3. Worst-start MaxDD −51.6% (live) vs −56.2% (OFF);
+8yr −33.7% vs −43.6%.
+
+Read: (1) the owner's intuition is correct about the COST — the overlay gives up the sharp rebounds (2009, 2020, 2026) and
+~2.6pp/yr (26yr) / ~5.7pp/yr (8yr) of CAGR. (2) It is bought with exposure, not alpha: vol 28→33% / 32→38%, Sharpe equal or
+lower (OFF better on only 8/24 and 5/24 starts), max drawdown 8-10pp deeper on EVERY start, and the bad years (2002, 2008,
+2018, 2022) all worse — OFF ≈ the live book at ~1.75x. Raising leverage does the same thing more cleanly if more risk is
+wanted. (3) Floor 0.60 is a wash (the floor rarely binds outside crashes). Verdict: the overlay stays as deployed; the
+leverage dial (1.25 / 1.49 / 1.65, batch 13) is the owner's instrument for the return-vs-drawdown trade, not the brakes.
+No gate run — nothing to promote. Closed 2026-10-16 21:00.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
