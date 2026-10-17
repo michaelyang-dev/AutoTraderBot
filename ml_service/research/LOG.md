@@ -4142,6 +4142,32 @@ wanted. (3) Floor 0.60 is a wash (the floor rarely binds outside crashes). Verdi
 leverage dial (1.25 / 1.49 / 1.65, batch 13) is the owner's instrument for the return-vs-drawdown trade, not the brakes.
 No gate run — nothing to promote. Closed 2026-10-16 21:00.
 
+## Cycle 63 — EXP-065 · THE REBOUND PROBLEM: faster re-leverage after crashes on the deployed package (2026-10-16/17)
+
+Owner (10-16, after a −6.6% day and EXP-064): "increase CAGR without increasing the drawdown much — fix the rebound". The
+cost of the overlay sits in the sharp recoveries (2009, 2020, 2026): the 40d realised vol stays high ~40 sessions, each
+book is rebuilt at a low scale on its own day and the deployed overlay only trims. `research/EXP065_rebound.py` (EXP-059
+harness + a vol-estimator switch), stage 1 = 8 starts, both horizons, vs the live package:
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD (+) · yrs | 26yr dCAGR / dSharpe (+) / dMaxDD (+) · yrs | read |
+|---|---|---|---|
+| pkg_overlay_all (weekly prompt re-lever BOTH ways) | +2.47pp / +0.023 (8/8) / −0.40pp · 6/8 | −0.19pp / **−0.032 (0/8)** / −0.35pp · 13/25 | 8yr gain is exposure (vol 31.5→32.9%); 26yr worse on every start — re-levering books back to target in calm years buys the drift (2010 −4.2, 2014 −7.6, 2017 −4.6). DEAD |
+| pkg_semivol (downside-only vol, rally-blind) | −3.57pp / +0.006 (6/8) / +5.19pp (8/8) · 2/8 | −2.82pp / −0.021 (0/8) / +6.86pp (8/8) · 6/25 | a de-lever in disguise (vol 28→24.5%); vol-matched CAGR flat; 2026 −19pp | DEAD (leverage dial) |
+| pkg_ewma15 (half-life 15d, forgets spikes faster) | −1.27pp / −0.022 (0/8) / +0.26pp · 2/8 | −0.30pp / −0.004 (0/8) / +0.70pp · 10/25 | no better than the 40d window on either horizon | DEAD |
+| pkg_recov (post-crash kicker: DD ≥ 15% & 10d vol < 40d → scale on 10d) | −1.01pp / **−0.033 (0/8)** / −1.76pp (0/8) · 3/8 | +0.07pp / −0.004 (3/8) / −0.75pp · 15/25 | re-levering into the recovery LOSES (2022 −4.1, 2025 −4.1): the first legs after a crash are the book's worst, as the momentum-crash literature says | DEAD |
+| pkg_all_semivol | −2.28 / +0.012 / +4.17 · 4/8 | −2.93 / −0.044 (0/8) / +5.57 · 11/25 | | DEAD |
+| pkg_all_recov | +1.54 / −0.014 (3/8) / −3.39 (0/8) · 5/8 | +0.27 / −0.029 (0/8) / −0.70 · 12/25 | | DEAD |
+
+Read: every way of re-levering sooner after a crash costs Sharpe on the 26yr (0/8 starts on five of six arms) — the slow
+re-lever is not a bug in the overlay, it is why the overlay works for a momentum book: the post-crash high-vol weeks
+are its worst weeks, not its best (the recovery kicker, which does exactly what the owner asked for, is the clearest
+loser). Variants that lower drawdown further (semivol) do it by running less exposure. With EXP-064 (overlay OFF = more
+exposure, equal/lower Sharpe, 8-10pp deeper DD), batch 8 (floor inert, vol target = a dial), batch 4 (lb20 dead) and
+batch 13 (leverage line, Sharpe flat), the vol-scaling overlay is at its frontier in every dimension tested: lookback,
+estimator, floor, target, threshold, cadence, direction. No stage 2. The honest answer to "more CAGR, not much more
+drawdown": on this book that trade is the leverage dial (batch 13: 1.49→1.65x = +0.6pp CAGR for −2pp MaxDD on the
+26yr) plus the one gate-passing addition not yet deployed, the gold 10-15% line (EXP-060 batch 15). Closed 2026-10-17.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
