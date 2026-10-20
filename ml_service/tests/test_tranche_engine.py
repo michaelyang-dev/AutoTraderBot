@@ -29,6 +29,8 @@ import ibkr_engine as E  # noqa: E402
 E.send_telegram = lambda m: None
 E.IBKREngine._fetch_splits_on = lambda self, day: {}   # no network in tests; split handling: tests/test_split_handling.py
 E.STOP_AT_CLOSE = False   # these tests exercise stop LOGIC; the close-window timing is tests/test_stop_at_close.py
+E.ACCOUNT_ROUNDING = "off"  # these tests exercise the PER-BOOK whole-share path; the account-level path is tests/test_account_rounding.py.
+                           # Hermetic on purpose: a shell that exports the live .env (IBKR_ACCOUNT_ROUNDING=round) must not change the test.
 FAILS = []
 
 

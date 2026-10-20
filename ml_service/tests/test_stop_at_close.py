@@ -23,6 +23,7 @@ if "ib_insync" not in sys.modules:
 sys.argv = ["x"]
 os.environ.setdefault("IBKR_TRANCHES", "4")
 import ibkr_engine as E  # noqa: E402
+E.ACCOUNT_ROUNDING = "off"   # the close-window logic is tested on the per-book path; hermetic to the live env var
 
 E.send_telegram = lambda m: None
 ET = ZoneInfo("US/Eastern")
