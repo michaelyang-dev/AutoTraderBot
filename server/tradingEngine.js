@@ -6,7 +6,7 @@
 //
 //  PARITY: this Alpaca PAPER engine runs the SAME v12 strategy as the IBKR LIVE
 //  engine (ml_service/ibkr_engine.py) — same :5001 signals, 20-day rebalance, 30
-//  max positions, 15% cap, 40% stop, ~1.49x effective leverage. The momentum /
+//  max positions, 15% cap, 40% stop, ~1.65x effective leverage (1.49x until 2026-10-20). The momentum /
 //  mean_reversion / mega_cap buckets below are DISABLED (0 slots); all picks come
 //  from the factor (v12) signal. See docs/LIVE_SYSTEM.md for the verified details.
 //  Differences that remain BY DESIGN: one 20-day book (IBKR runs 4 tranche books), and
@@ -37,7 +37,7 @@ const RISK = {
   STOP_LOSS_PCT: -0.40,               // v12: -40% trailing stop from peak
   TAKE_PROFIT_PCT: 1.00,              // UNUSED — take-profit DELETED for parity (see `else if (false)` below). Backtest & IBKR have none.
   MAX_OPEN_POSITIONS: 30,             // hold all combined sleeve picks (~25-28 positions, matches backtest)
-  MAX_CASH_DEPLOY_PCT: 1.49,          // = IBKR EFFECTIVE_LEVERAGE. Each position gets (prob/ΣProb)*this*volScale, so ΣtargetPct = this*volScale when the 15% cap isn't binding (it rarely is — top pos ~14%). With fractional shares there is ~no rounding drag, so this constant IS the deployed leverage. FIXED 2026-07-12: was 1.60 on a false "caps drag it to 1.49" premise — live proof was gross/equity=1.55x with top pos 13.8% (cap NOT binding), i.e. it deployed ~1.60x, over-levering the paper mirror ~7% vs IBKR's closed-loop 1.49x.
+  MAX_CASH_DEPLOY_PCT: 1.65,          // = IBKR EFFECTIVE_LEVERAGE (1.49 -> 1.65 on 2026-10-20, owner's risk choice; VOL_TARGET stays 0.2235 like IBKR). Each position gets (prob/ΣProb)*this*volScale, so ΣtargetPct = this*volScale when the 15% cap isn't binding (it rarely is — top pos ~14%). With fractional shares there is ~no rounding drag, so this constant IS the deployed leverage. FIXED 2026-07-12: was 1.60 on a false "caps drag it to 1.49" premise — live proof was gross/equity=1.55x with top pos 13.8% (cap NOT binding), i.e. it deployed ~1.60x, over-levering the paper mirror ~7% vs IBKR's closed-loop 1.49x.
   TRAILING_STOP_PCT: 0.40,            // v12: -40% trailing stop (wider = fewer whipsaws, better CAGR)
   USE_TRAILING_STOP: true,            // v12: trailing stop enabled
   ATR_TARGET_PCT: 0.01,
@@ -1557,8 +1557,9 @@ module.exports = function createTradingEngine({ alpaca, fetchEarningsFromFMP }) 
             }
             addLog(`[rehydrate] ${p.symbol} tagged as ${entry.strategy} from journal (bought ${entry.submitted_at})`, "system");
           } else {
-            // Tag GLD/VIXM as hedge even without journal entry
-            const hedgeSymbols = new Set(["GLD", "VIXM"]);
+            // Tag VIXM as hedge even without journal entry. GLD removed 2026-10-20: it is now an ordinary v12 signal
+            // (the gold sleeve); a "hedge" tag would exclude it from stops, slots and rebalance resizing.
+            const hedgeSymbols = new Set(["VIXM"]);
             if (hedgeSymbols.has(p.symbol)) {
               positionStrategy[p.symbol] = "hedge";
               addLog(`[rehydrate] ${p.symbol} tagged as hedge (known hedge symbol)`, "system");

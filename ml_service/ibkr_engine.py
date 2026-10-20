@@ -17,7 +17,7 @@ Architecture:
 Features:
     - Fetches all BUY signals (up to MAX_POSITIONS=30; ~22-25 held)
     - Rebalances to match signals every REBAL_DAYS (20) trading days
-    - Closed-loop sizing to EFFECTIVE_LEVERAGE (1.49) × vol_scale; 15% position cap
+    - Closed-loop sizing to EFFECTIVE_LEVERAGE (1.65 since 2026-10-20; was 1.49) × vol_scale; 15% position cap
     - 40% trailing stop per position
     - Runs continuously during market hours
     - Telegram command bot + trade alerts
@@ -90,9 +90,15 @@ MIN_TRADE_PCT = 0.01    # don't trade if delta < 1% of portfolio (existing holdi
 # all 4 major selloffs; lowers turnover. Ramps in once 20+ NAV days accumulate.
 VOL_SCALING = True
 VOL_TARGET_1X = 0.15    # backtest semantic: target for the UNLEVERED (1x) portfolio vol
-EFFECTIVE_LEVERAGE = 1.49  # account runs ~1.49x, so its NAV vol ~= 1.49 x the 1x vol.
+EFFECTIVE_LEVERAGE = float(os.getenv("IBKR_EFFECTIVE_LEVERAGE", "1.65"))  # 2026-10-20: 1.49 -> 1.65 (owner's risk choice;
+# EXP-059 batch 13: 26yr +0.6pp CAGR / -2pp MaxDD, Sharpe flat). Env override = instant rollback (IBKR_EFFECTIVE_LEVERAGE=1.49).
+assert 1.0 <= EFFECTIVE_LEVERAGE <= 1.80, f"IBKR_EFFECTIVE_LEVERAGE out of range: {EFFECTIVE_LEVERAGE}"
 # We measure the LEVERAGED NAV vol, so compare it against the leveraged target:
-VOL_TARGET = VOL_TARGET_1X * EFFECTIVE_LEVERAGE  # ~0.22 account-NAV-vol target
+# VOL TARGET IS PINNED, NOT SCALED WITH THE LEVERAGE (backtest parity, 2026-10-20). The clean room's overlay targets
+# 0.15 x 1.49 = 22.35% account-NAV vol for EVERY leverage arm — the batch-13 numbers for 1.65x were produced with
+# this constant. Scaling it with EFFECTIVE_LEVERAGE would have raised it to 24.75% at 1.65x: brakes applied later
+# and more weakly than anything validated.
+VOL_TARGET = VOL_TARGET_1X * 1.49  # 0.2235 account-NAV-vol target (== the clean room's VOL_TARGET)
 VOL_LOOKBACK = 40       # trading days of NAV history for the vol estimate
 VOL_SCALE_FLOOR = 0.30  # never cut effective leverage below 30% of base
 

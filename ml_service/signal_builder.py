@@ -10,6 +10,7 @@ This module is imported by signal_server.py.
 """
 
 import json as _json
+import os
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,14 @@ from strategies.multi_strategy_engine import (
 # (PROD_WEIGHTS_*) — shared with the backtest so they can't drift apart.
 STRATEGY_CONFIG_BULL = list(PROD_WEIGHTS_BULL.items())
 STRATEGY_CONFIG_BEAR = list(PROD_WEIGHTS_BEAR.items())
+# GOLD SLEEVE (EXP-060 batch 5/15 + EXP-066 re-derivation, deployed 2026-10-20 at the owner's request): GLD at
+# GOLD_SLEEVE_W of the bull weight set, scaled by the breadth blend like the stock sleeves (0 in bear/crash). Off = 0.
+GOLD_SLEEVE_W = float(os.getenv("GOLD_SLEEVE_W", "0") or 0)
+GOLD_SLEEVE_MODE = (os.getenv("GOLD_SLEEVE_MODE", "blend") or "blend").strip().lower()   # blend (validated) | const
+GOLD_SYMBOL = "GLD"
+GOLD_MIN_BARS = 200          # the backtest arm holds GLD only once it has 200 sessions of history
+assert 0.0 <= GOLD_SLEEVE_W <= 0.30, f"GOLD_SLEEVE_W out of range: {GOLD_SLEEVE_W}"
+assert GOLD_SLEEVE_MODE in ("blend", "const"), GOLD_SLEEVE_MODE
 
 log = logging.getLogger("signal_server")
 
@@ -812,6 +821,49 @@ class _EdgarOverlayUniverse:
         return base
 
 
+def combine_sleeves(targets, blend, crash_weights, paused=(), gold_w=0.0, gold_mode="blend",
+                    bull=None, bear=None, cap=0.15, min_weight=0.005):
+    """The book's combined weights from the sleeves' targets — PURE, unit-tested (tests/test_gold_sleeve.py), and the
+    exact maths of the clean-room backtest (research/EXP059_frontier.py + EXP066_gold.py):
+      sleeve weight = bull_pct x blend + bear_pct x (1 - blend)   (crash: bull set replaced by the crash set)
+      gold ("blend"): bull set = {stock sleeves x (1 - w), gold: w}; bear/crash sets have no gold -> gold = w x blend
+      gold ("const"): every regime's set x (1 - w), gold = w
+      then: single-name cap, gross normalised to <= 1.0, names under min_weight dropped."""
+    bull = list(STRATEGY_CONFIG_BULL if bull is None else bull)
+    bear = dict(STRATEGY_CONFIG_BEAR if bear is None else bear)
+    sets = {"bull": dict(bull), "bear": dict(bear), "crash": dict(crash_weights) if crash_weights else None}
+    if gold_w > 0:
+        if gold_mode == "const":
+            for k in sets:
+                if sets[k] is not None:
+                    sets[k] = {n: p * (1 - gold_w) for n, p in sets[k].items()}; sets[k]["gold"] = gold_w
+        else:
+            sets["bull"] = {n: p * (1 - gold_w) for n, p in sets["bull"].items()}; sets["bull"]["gold"] = gold_w
+    active = sets["crash"] if sets["crash"] is not None else sets["bull"]
+    combined = {}
+    for name in set(active) | set(sets["bear"]):
+        if name in paused:
+            continue
+        pct = active.get(name, 0.0) * blend + sets["bear"].get(name, 0.0) * (1 - blend)
+        if pct <= 0:
+            continue
+        for sym, w in targets.get(name, {}).items():
+            if w > 0:
+                combined[sym] = combined.get(sym, 0.0) + w * pct
+    # Apply constraints (must match backtest exactly)
+    # 1) Single-name cap: 15% (v12: matches backtest cap=0.15)
+    for sym in list(combined):
+        if combined[sym] > cap:
+            combined[sym] = cap
+    # 2) Sector cap: removed (backtest has no sector cap)
+    # 3) Gross exposure cap: 100%
+    gross = sum(combined.values())
+    if gross > 1.0:
+        for sym in combined:
+            combined[sym] /= gross
+    return {s: w for s, w in combined.items() if w >= min_weight}
+
+
 def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     """
     Build signals using the v12 multi-sleeve strategy.
@@ -1060,31 +1112,23 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
     else:
         crash_weights = None
 
-    # Combine with dynamic allocation
-    combined = {}
-    for name, bull_pct in STRATEGY_CONFIG_BULL:
-        if name in paused:
-            continue
-        if crash_weights:
-            bull_pct = crash_weights.get(name, 0)
-        bear_pct = dict(STRATEGY_CONFIG_BEAR).get(name, 0)
-        cap = bull_pct * blend + bear_pct * (1 - blend)
-        for sym, w in targets.get(name, {}).items():
-            if w > 0:
-                combined[sym] = combined.get(sym, 0) + w * cap
+    # GOLD SLEEVE (EXP-060/066, 2026-10-20): a fixed-weight GLD sleeve beside the three stock sleeves, once GLD has
+    # GOLD_MIN_BARS of history. Validated form ("blend"): gold takes GOLD_SLEEVE_W of the BULL weight set and the stock
+    # sleeves are scaled by (1 - w), so gold's weight = w x breadth-blend — it fades with the bull mix and is 0 in bear
+    # and crash regimes, exactly as the gated backtest arm. "const" holds w in every regime (research alternative).
+    gold_ok = False
+    if GOLD_SLEEVE_W > 0:
+        try:
+            _gp = uni.prices[GOLD_SYMBOL].loc[:today].dropna() if GOLD_SYMBOL in uni.prices.columns else None
+            gold_ok = _gp is not None and len(_gp) >= GOLD_MIN_BARS
+            if not gold_ok:
+                log.warning(f"Gold sleeve ON but {GOLD_SYMBOL} has {0 if _gp is None else len(_gp)} bars (< {GOLD_MIN_BARS}) — sleeve empty")
+        except Exception as e:
+            log.warning(f"Gold sleeve: could not read {GOLD_SYMBOL} history ({e}) — sleeve empty")
+    targets["gold"] = {GOLD_SYMBOL: 1.0} if gold_ok else {}
 
-    # Apply constraints (must match backtest exactly)
-    # 1) Single-name cap: 15% (v12: matches backtest cap=0.15)
-    for sym in list(combined):
-        if combined[sym] > 0.15:
-            combined[sym] = 0.15
-    # 2) Sector cap: removed (backtest has no sector cap)
-    # 3) Gross exposure cap: 100%
-    gross = sum(combined.values())
-    if gross > 1.0:
-        for sym in combined:
-            combined[sym] /= gross
-    combined = {s: w for s, w in combined.items() if w >= 0.005}
+    combined = combine_sleeves(targets, blend, crash_weights, paused,
+                               gold_w=GOLD_SLEEVE_W if gold_ok else 0.0, gold_mode=GOLD_SLEEVE_MODE)
 
     # Convert to signal format
     # Normalize scores to 0-1 range for trading bot compatibility
@@ -1095,8 +1139,9 @@ def build_signals_v9(raw, enhanced_data=None, top_n=5, edgar_overlay=False):
 
     # All SP1500 symbols should appear in the output (falls back to SP500 if Norgate unavailable)
     members = get_sp1500_on_date(today)
+    out_syms = set(members) | ({GOLD_SYMBOL} if GOLD_SLEEVE_W > 0 else set())   # GLD is not an index member
     signals = []
-    for sym in sorted(members):
+    for sym in sorted(out_syms):
         raw_score = combined.get(sym, 0.0)
         # Normalize: top pick → ~0.95, others scale proportionally
         norm_prob = min(0.95, (raw_score / max_score) * 0.95) if raw_score > 0 else 0.0

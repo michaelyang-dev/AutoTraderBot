@@ -101,7 +101,7 @@ sigs = [{"symbol": f"S{i}", "probability": 0.9 - i * 0.02} for i in range(25)]
 px = {f"S{i}": 40.0 + 60 * i for i in range(25)}                    # up to $1,480 a share
 qw, _, gw = X._calibrate_quantities(sigs, px, 15_500.0, 0.98, 1.0)
 qf, _, gf = X._calibrate_quantities(sigs, px, 15_500.0, 0.98, 1.0, whole=False)
-check("fractional sizing hits the target gross exactly", abs(gf - 15_500.0 * 1.49 * 0.98) < 1e-6, f"{gf:.2f}")
+check("fractional sizing hits the target gross exactly", abs(gf - 15_500.0 * E.EFFECTIVE_LEVERAGE * 0.98) < 1e-6, f"{gf:.2f}")
 check("fractional sizing keeps the expensive names whole-share sizing drops",
       len(qf) == 25 and len(qw) < 25, f"whole {len(qw)} names, fractional {len(qf)}")
 check("whole=True (default) unchanged: integers", all(isinstance(v, int) for v in qw.values()))
@@ -269,7 +269,7 @@ for MODE in ("off", "floor", "round"):
     E.TRANCHE_STATE_FILE = tmp
     FakeDT._now = _dt.datetime(2026, 10, 7, 10, 0, tzinfo=_ZI("US/Eastern"))
     # the LIVE situation: a whole-share per-book ledger from the old regime, books == broker
-    legacy = {f"N{i:02d}": max(0, int(1.49 * NAV / N / PX[f"N{i:02d}"])) for i in range(N)}
+    legacy = {f"N{i:02d}": max(0, int(E.EFFECTIVE_LEVERAGE * NAV / N / PX[f"N{i:02d}"])) for i in range(N)}
     e = Eng(legacy, NAV, SIG, PX, tmp)
     e._tranche["books"] = X._split_books({s: q for s, q in legacy.items() if q > 0}, 4)
     e._tranche["initialized"] = True
@@ -379,7 +379,7 @@ E.ACCOUNT_ROUNDING = "floor"
 tmp3 = Path(tempfile.mkdtemp()) / "tranche_state.json"
 E.TRANCHE_STATE_FILE = tmp3
 FakeDT._now = _dt.datetime(2026, 10, 7, 10, 0, tzinfo=_ZI("US/Eastern"))
-legacy3 = {f"N{i:02d}": max(0, int(1.49 * NAV / N / PX[f"N{i:02d}"])) for i in range(N)}
+legacy3 = {f"N{i:02d}": max(0, int(E.EFFECTIVE_LEVERAGE * NAV / N / PX[f"N{i:02d}"])) for i in range(N)}
 # three NEW cheap names enter the signal list, so book 0's rebuild has to buy (and the 2nd buy crashes)
 SIG3 = SIG[:22] + [{"symbol": f"M{i}", "signal": "BUY", "probability": 0.9} for i in range(3)]
 PX.update({f"M{i}": 30.0 + i for i in range(3)})

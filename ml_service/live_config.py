@@ -59,7 +59,13 @@ V12_LEGACY_VALIDATED_CONFIG = {
     "bear_weights": {"mom": 0.10, "val": 0.30, "s5": 0.50, "s3": 0.10},
 }
 
-LIVE_LEVERAGE = 1.49          # closed-loop measured-gross target (x vol_scale)
+LIVE_LEVERAGE = 1.65          # closed-loop measured-gross target (x vol_scale). 2026-10-20: 1.49 -> 1.65 (owner's risk
+# choice; EXP-059 batch 13 on the package, 24 starts: 26yr +19.71->+20.33% CAGR / 0.779->0.778 Sharpe / -41.2->-43.2% MaxDD;
+# 8yr +35.54->+36.55% / 1.122->1.114 / -31.4->-32.7%). ibkr_engine.EFFECTIVE_LEVERAGE (env IBKR_EFFECTIVE_LEVERAGE), Alpaca
+# MAX_CASH_DEPLOY_PCT. The vol target stays 0.2235 (= 0.15 x 1.49) on BOTH engines — the backtest's constant for every arm.
+LIVE_GOLD_SLEEVE_W = 0.15     # 2026-10-20: GLD sleeve at 15% of the bull weight set, scaled by the breadth blend (0 in bear/crash) —
+# signal_builder.combine_sleeves, env GOLD_SLEEVE_W (0 = off). EXP-060 batch 5/15 + EXP-066 re-derivation: 26yr +0.32pp CAGR /
+# +0.023 Sharpe (24/24 starts) / +0.9pp MaxDD, 15/25 years; 8yr +0.51pp / +0.035 (24/24) / +0.8pp (2025-heavy). Gate PASS 26yr.
 LIVE_FINANCING_RATE = 0.063   # IBKR small-account margin, borrowed portion only
 LIVE_VOL_SCALE_CAP = 1.0      # de-risk only — never levers above LIVE_LEVERAGE
 LIVE_VOL_SCALE_FLOOR = 0.30

@@ -75,7 +75,7 @@ check("a book can never sell shares that belong to the other books", never == []
 sigs = [{"symbol": f"S{i}", "probability": 0.9 - i * 0.02} for i in range(25)]
 px = {f"S{i}": 40.0 + i for i in range(25)}
 q, m, gross = E.IBKREngine._calibrate_quantities(sigs, px, 15_000.0, 1.0, 1.0)
-check("book sizing hits ~1.49x of the BOOK NAV", 1.35 <= gross / 15_000.0 <= 1.55, f"gross/book {gross/15000:.2f}, mult {m:.2f}")
+check(f"book sizing hits ~{E.EFFECTIVE_LEVERAGE:.2f}x of the BOOK NAV", E.EFFECTIVE_LEVERAGE - 0.14 <= gross / 15_000.0 <= E.EFFECTIVE_LEVERAGE + 0.06, f"gross/book {gross/15000:.2f}, mult {m:.2f}")
 check("no position above 15% of the book NAV", max(q[s] * px[s] for s in q) <= 0.15 * 15_000.0 * 1.0001 + max(px.values()))
 q0, _, g0 = E.IBKREngine._calibrate_quantities(sigs, px, 15_000.0, 1.0, 0.0)
 check("credit gate x0.00 sizes the book to zero", g0 == 0.0 and not q0)
@@ -250,7 +250,7 @@ N = 25
 sig25 = [{"symbol": f"N{i:02d}", "signal": "BUY", "probability": 0.95 - i * 0.02} for i in range(N)]
 px25 = {f"N{i:02d}": 20.0 + 2 * i for i in range(N)}
 NAV = 60_000.0
-legacy = {f"N{i:02d}": int(1.49 * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
+legacy = {f"N{i:02d}": int(E.EFFECTIVE_LEVERAGE * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
 eng = ScenarioEngine(legacy, NAV, sig25, px25)
 eng._cur_sym_price = None
 eng._tranche = eng._tranche_default(); eng._tranche["last_counted_day"] = None   # deployed after the close
@@ -279,7 +279,7 @@ for session in range(1, 23):
         rebuilt.append((session, eng._tranche["last_tranche"]))
         b = eng._tranche["books"][str(eng._tranche["last_tranche"])]
         gross = sum(q_ * px25[s_] for s_, q_ in b.items())
-        if not (1.30 <= gross / (NAV / 4) <= 1.60):
+        if not (E.EFFECTIVE_LEVERAGE - 0.19 <= gross / (NAV / 4) <= E.EFFECTIVE_LEVERAGE + 0.11):
             inv_ok = False; print(f"    rebuilt book gross {gross/(NAV/4):.2f}x at session {session}")
         if not set(b) <= set(px25):
             inv_ok = False
@@ -324,7 +324,7 @@ class CrashEngine(ScenarioEngine):
 
 tmp2 = Path(tempfile.mkdtemp()) / "tranche_state.json"; E.TRANCHE_STATE_FILE = tmp2
 FakeDT._now = _dt.datetime(2026, 9, 16, 9, 35, tzinfo=_ZI("US/Eastern"))
-legacy2 = {f"N{i:02d}": int(1.49 * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
+legacy2 = {f"N{i:02d}": int(E.EFFECTIVE_LEVERAGE * NAV / N / px25[f"N{i:02d}"]) for i in range(N)}
 ce = CrashEngine(legacy2, NAV, sig25, px25); ce._cur_sym_price = None
 ce._tranche = ce._tranche_default(); ce._tranche["last_counted_day"] = None; ce._tranche["initialized"] = True
 ce._tranche["books"] = E.IBKREngine._split_books(legacy2, 4)
