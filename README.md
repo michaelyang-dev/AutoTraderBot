@@ -1,15 +1,16 @@
 # AutoTrader v12
 
 Autonomous long-only equity system that trades the S&P 1500 with a momentum / value / low-volatility-quality
-sleeve mix, ~1.49x closed-loop leverage, and a four-book staggered ("tranched") rebalance. Live money runs on
+sleeve mix, ~1.65x closed-loop leverage (1.49x until 2026-10-21), and a four-book staggered ("tranched") rebalance. Live money runs on
 Interactive Brokers; an Alpaca paper account mirrors the same signals. Data pipeline, signal generation, sizing,
 execution, risk controls and monitoring are fully automated on one AWS EC2 host.
 
-> **Status — 2026-10-01.** Live on IBKR. Last tranche rebuild: book 3 on 2026-09-30 (30/30 orders filled,
-> ledger == broker). Next rebuild: book 0 on 2026-10-07. Market breadth is ~19% of S&P 1500 members above their
-> 50-day average, so the sleeve mix is fully on its defensive (bear) weights. Every live data input was
-> independently re-verified on 2026-09-30 ([Data status](#data-status)), and a live-vs-backtest parity audit the
-> same day fixed the remaining gaps ([Parity](#live-vs-backtest-parity)).
+> **Status — 2026-10-21.** Live on IBKR. Last tranche rebuild: book 1 on 2026-10-14 (ledger == broker, 34/34
+> names re-verified 2026-10-21 02:42). Next rebuild: book 2 at the 2026-10-21 open — the first at the new 1.65x
+> base (vol-scale 0.79 → 1.30x book target). Market breadth is 42.5% of S&P 1500 members above their 50-day
+> average (blend 0.30). On 2026-10-21 the price-quality gate was changed to repair or quarantine bad vendor bars
+> per symbol, after a single bad bar had switched the whole universe to a one-session-stale fallback build
+> ([Data status](#data-status)). A gold sleeve is built behind a flag and **not enabled** (see Research).
 
 **Sources of truth:** [`docs/LIVE_SYSTEM.md`](docs/LIVE_SYSTEM.md) (operating ledger: every deploy, incident and
 verification, dated) · [`ml_service/live_config.py`](ml_service/live_config.py) (canonical machine-readable config)
@@ -47,7 +48,8 @@ dates per horizon, ending 2026-08-31:
 | 2001 → 2026 | **+19.8%** (+17.0% … +23.0%) | 0.79 | **−41.3%** (−51.6%) |
 
 What is inside those numbers: point-in-time S&P 1500 membership; survivorship-free total-return prices;
-point-in-time quarterly fundamentals by report date; 1.49x closed-loop leverage built from **whole shares at
+point-in-time quarterly fundamentals by report date; 1.49x closed-loop leverage (the live base since 2026-10-21 is
+1.65x: 2001-26 **+20.3%** / 0.78 / **−43.2%**, 2018-26 **+36.6%** / 1.11 / **−32.7%** on the same 24 starts) built from **whole shares at
 NAV/4 per book, starting from $50K**; the vol-scaling overlay; the credit gate at depth 0.00; trailing stops on
 closing prices; **10 bps per trade** (5 commission + 5 slippage); margin interest from a **time-varying** broker
 financing curve (benchmark + spread: ~3.3% average over 2001-26, ~3.9% over 2018-26, ~5.8% today). No look-ahead
@@ -108,8 +110,8 @@ alone. Bookkeeping is per book (`data/ibkr_tranche_state.json`) and reconciled a
 
 | Control | Rule |
 |---|---|
-| **Leverage** | each rebuilt book is sized **closed-loop** to 1.49x × vol-scale × credit-gate of its NAV, in whole shares (four passes over integer quantities; the backtest sizes identically) |
-| **Vol-scale** | `clamp(0.15×1.49 / realised 40-day NAV vol, 0.30, 1.0)` — de-risk only; window ends at the last **completed** close |
+| **Leverage** | each rebuilt book is sized **closed-loop** to 1.65x × vol-scale × credit-gate of its NAV (1.49x until 2026-10-21), in whole shares (four passes over integer quantities; the backtest sizes identically) |
+| **Vol-scale** | `clamp(0.2235 / realised 40-day NAV vol, 0.30, 1.0)` — de-risk only; the 22.35% target is a fixed constant that does not rise with the leverage base; window ends at the last **completed** close |
 | **Credit gate** | HY-OAS ≥ 95th percentile of its expanding history → the rebuilding book goes **flat** (depth 0.00); FRED data, fail-safe 1.0 |
 | **De-risk overlay** | on each rebuild day, any other book more than 5% above today's target is trimmed pro rata; never levers up |
 | **Position cap** | 15% of the book's NAV per name |
@@ -154,7 +156,7 @@ Last full verification **2026-09-30** (`docs/LIVE_SYSTEM.md` → "Live data veri
 
 | Input | Source | Refresh | Verified 2026-09-30 |
 |---|---|---|---|
-| **Daily prices** (1,541 symbols incl. ETFs) | Massive (Polygon) split-adjusted daily bars; yfinance only for names whose vendor history is short | full refetch after each session settles (17:50 restart); the pre-open build reuses those final bars; 15-min rebuilds in market hours | closes **equal IBKR's to the cent** on 80 names (all buys, all holdings, 40 random), no missing sessions; features equal an independent recomputation exactly |
+| **Daily prices** (1,541 symbols incl. ETFs) | Massive (Polygon) split-adjusted daily bars; a bad vendor bar is repaired (range) or quarantined (dead) per symbol since 2026-10-21; yfinance only for names whose vendor history is short, or for the whole universe when coverage, staleness or recency fail | full refetch after each session settles (17:50 restart); the pre-open build reuses those final bars; 15-min rebuilds in market hours | closes **equal IBKR's to the cent** on 80 names (all buys, all holdings, 40 random), no missing sessions; features equal an independent recomputation exactly |
 | **Index membership** | SSGA daily holdings of SPY / MDY / SPSM (Wikipedia fallback, then last-good) | 06:00 weekdays | **equal the funds' holdings exactly** (503 / 400 / 603); the Wikipedia S&P 600 page had missed the September rebalance |
 | **Fundamentals** (ROE, gross margin, debt/equity) | standardized quarterly fundamentals, newest whole row per company by report date; EDGAR ROE overlay for companies that filed after the last update | periodic dataset updates (last 2026-09-07); EDGAR patch 18:40 + reconciliation 18:55 | net income and equity **equal FMP's** for the same quarter; GM / D/E differ only by vendor definition (the backtest uses the same source as live) |
 | **Credit spread** | FRED ICE BofA US High Yield OAS | 08:35 weekdays | **equals FRED**; gate off (11.8th percentile on 2026-09-30) |
@@ -300,10 +302,14 @@ both horizons) and verdict. Highlights:
 - **Shipped:** tranched rebalance (risk shaping); credit gate (HY-OAS p95, depth 0.00); EXP-059 package
   (equal-weight momentum, 80/15/5 bull split, de-risk-only overlay); real-time price-based crash detector; EDGAR ROE
   freshness overlay; close-based stops (EXP-062 parity fix).
-- **Kept after re-testing:** the breadth blend and its thresholds (EXP-061); 1.49x leverage; the 40% stop.
+- **Kept after re-testing:** the breadth blend and its thresholds (EXP-061); the 40% stop; the vol-scaling overlay
+  (EXP-064: off = more CAGR bought with 8-10pp deeper drawdowns on every start). **Changed:** the leverage base,
+  1.49x → 1.65x on 2026-10-21 (+0.6pp CAGR, 2pp deeper MaxDD, Sharpe flat on 24 starts of both horizons).
 - **Rejected:** ML rankers (IC ≈ 0.01), fundamental factor blends inside momentum, short interest, FMP enhanced
   data, news/NLP sentiment, weather and attention data, short strategies, crypto momentum, VIX gates, timing rules
-  for leverage, second return engines (EXP-060; a small gold line is the only survivor).
+  for leverage, faster re-leverage after crashes (EXP-065), second return engines (EXP-060/066; a gold sleeve is the
+  only survivor — built behind a flag and **not enabled**: its +0.4pp CAGR edge disappears once its best two years are
+  neutralised, while its drawdown benefit is real but small).
 
 ---
 

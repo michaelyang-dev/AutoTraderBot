@@ -59,15 +59,17 @@ V12_LEGACY_VALIDATED_CONFIG = {
     "bear_weights": {"mom": 0.10, "val": 0.30, "s5": 0.50, "s3": 0.10},
 }
 
-LIVE_LEVERAGE = 1.65          # closed-loop measured-gross target (x vol_scale). 2026-10-20: 1.49 -> 1.65 (owner's risk
+LIVE_LEVERAGE = 1.65          # closed-loop measured-gross target (x vol_scale). LIVE 2026-10-21 02:39 ET: 1.49 -> 1.65 (owner's risk
 # choice; EXP-059 batch 13 on the package, 24 starts: 26yr +19.71->+20.33% CAGR / 0.779->0.778 Sharpe / -41.2->-43.2% MaxDD;
 # 8yr +35.54->+36.55% / 1.122->1.114 / -31.4->-32.7%). ibkr_engine.EFFECTIVE_LEVERAGE (env IBKR_EFFECTIVE_LEVERAGE), Alpaca
 # MAX_CASH_DEPLOY_PCT. The vol target stays 0.2235 (= 0.15 x 1.49) on BOTH engines — the backtest's constant for every arm.
-LIVE_GOLD_SLEEVE_W = 0.15     # 2026-10-20/21: GLD sleeve at 15% of the book in EVERY regime (GOLD_SLEEVE_MODE=const), the stock
-LIVE_GOLD_SLEEVE_MODE = "const"  # sleeves x 0.85 — signal_builder.combine_sleeves, env GOLD_SLEEVE_W / GOLD_SLEEVE_MODE (0 = off).
-# EXP-066 (second engine, 24 starts): 26yr +0.43pp CAGR / +0.035 Sharpe (24/24) / +1.8pp MaxDD, 15/25 years, bootstrap CI
-# [+0.003, +0.066] -> GATE PASS; 8yr +1.00pp / +0.063 (24/24) / +2.2pp (2025-heavy: fails the top-year rule only). The EXP-060
-# "blend" form (gold fades with the breadth blend, 0 in bear/crash) reproduced but is dominated by const on every metric.
+LIVE_GOLD_SLEEVE_W = 0.0      # GOLD SLEEVE BUILT BUT **NOT ENABLED** (decision 2026-10-21 02:30 ET, owner's test "not a few years masking the
+LIVE_GOLD_SLEEVE_MODE = "const"  # return"). Code: signal_builder.combine_sleeves, env GOLD_SLEEVE_W / GOLD_SLEEVE_MODE (const = w in every regime).
+# EXP-066 (second engine, 24 starts) const 15%: 26yr +0.43pp CAGR / +0.035 Sharpe (24/24) / +1.8pp MaxDD, GATE PASS — but the
+# CAGR edge is two gold bull markets: best year (2025) neutralised +0.13pp, best 2 years (2005, 2025) +0.01pp (14/24), best 3
+# -0.12pp (0/24); ex the 2005-07/2009-11 gold boom -0.13pp (5/24); Sharpe 2009-16 -0.005 (1/24); 2013 (gold -28%) cost -10.6pp.
+# Robust part = risk: MaxDD shallower 24/24, positive in 2008/2011/2018/2020/2022, vol 28.1 -> 26.9%. Drawdown insurance with an
+# uncertain price, not a proven return improvement. To enable: .env GOLD_SLEEVE_W=0.15 GOLD_SLEEVE_MODE=const + restarts.
 LIVE_FINANCING_RATE = 0.063   # IBKR small-account margin, borrowed portion only
 LIVE_VOL_SCALE_CAP = 1.0      # de-risk only — never levers above LIVE_LEVERAGE
 LIVE_VOL_SCALE_FLOOR = 0.30
@@ -83,6 +85,9 @@ LIVE_SESSION_SETTLE_HOUR_ET = 17  # a daily bar is final from 17:00 ET: massive_
 LIVE_PRICE_CACHE_RULE = ("reuse a Massive file only if <18h old AND written after the last settled close; "
                          "refetch any cached symbol whose last bar lags the session most symbols end on")  # LIVE 2026-09-30 01:39
 LIVE_PRICE_BASIS = "split-adjusted price-only (backtest: total-return; A/B 2026-09-29: identical BUY list)"
+LIVE_PRICE_QUALITY_GATE = ("OHLCV range violations repaired per symbol, dead last-5-bar symbols quarantined (count as missing); the "
+                           "universe falls back to yfinance ONLY on coverage <95% / stale / null / recency; fallback end=tomorrow + "
+                           "dash tickers")  # bf1404d LIVE 2026-10-21 02:38 ET: one bad CALY bar had sent 1,541 names to a session-stale fallback
 LIVE_VOL_WINDOW = "40 close-to-close NAV returns ending at the last COMPLETED close"  # eea223f LIVE 2026-09-30 16:14
 LIVE_FUNDAMENTALS_ROW = "whole newest Compustat quarter per ticker BY REPORT DATE, placeholders excluded (compustat_rows.live_rows — the same rule for the loader, the EDGAR vintage guard and the EDGAR patcher since 2026-10-15, 022cf58)"   # eea223f row-wise 2026-09-30; shared rule 2026-10-15
 LIVE_MEMBERSHIP_SOURCE = "SSGA holdings SPY/MDY/SPSM (>=90% overlap guard) -> Wikipedia -> last-good"  # scrape_sp1500.py, 06:00 weekdays; baf7a8a

@@ -4197,6 +4197,18 @@ the owner wants from gold in a drawdown. Live: `signal_builder.combine_sleeves` 
 on 3,000 random books; gold ON == this harness's maths on 3,000). Same deploy: base leverage 1.49 -> 1.65 (batch 13), with the
 vol target PINNED at 0.2235 (the clean room's constant for every leverage arm — scaling it with the leverage would have
 weakened the brakes vs anything validated; found and fixed while implementing). Closed 2026-10-21 01:50.
+**ROBUSTNESS ADDENDUM (2026-10-21 02:30, owner: "make sure it is not just a few years making really high gains") — DECISION
+REVERSED: gold NOT deployed.** Year-by-year on the cached 24-start curves (const 15%, 26yr): years better 15/26, median yearly
++0.46pp, but the CAGR edge is two gold bull markets — best year (2025) neutralised (arm takes the base return that year) +0.13pp
+(24/24); best 2 (2005, 2025) +0.01pp (14/24); best 3 −0.12pp (0/24); best 5 −0.30pp. Ex 2024-26 +0.26pp (24/24); ex the
+2005-07 & 2009-11 gold boom −0.13pp (5/24). Sharpe by sub-period: 2001-08 +0.056 (24/24), 2009-16 −0.005 (1/24), 2017-26
++0.054 (24/24). Rolling 3yr windows better 65%, 5yr 71%. Gold's bear years cost: 2013 −10.6pp, 2021 −3.5pp, 2015 −1.5pp,
+2014 −0.9pp. What IS robust: stress years all positive (2008 +1.6, 2011 +2.3, 2018 +0.5, 2020 +0.4, 2022 +1.2pp), MaxDD
+shallower 24/24, vol 28.1 → 26.9%. Verdict: drawdown insurance whose CAGR break-even depended on gold's own 2005-26 return
+(~10%/yr); a flat-gold decade costs ~1-2pp/yr vs the stock book. 8yr: best year neutralised −0.08pp (15/24), best 2 −0.39pp.
+Blend form is worse on every one of these tests. Gold stays BEHIND THE FLAG (GOLD_SLEEVE_W unset); leverage 1.65 deployed alone
+(LIVE 2026-10-21 02:39 ET). New standard for any "return improvement": neutralise the best 1-3 years before believing a dCAGR.
+
 
 ## Next
 

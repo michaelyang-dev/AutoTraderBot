@@ -434,14 +434,31 @@ and the regime. The vendor had corrected the bar by 01:50 (low 13.82).
 `end=10-21` exclusive → as of 10-20 → the right regime (yfinance vendor, 3 dotted names missing) — expected to land
 ~09:18-09:20, before the 09:30 rebuild. The clean fix (remove the stale CALY cache file, restart signal-server → Massive
 path, gate passes) needs a server-side action the session's permission mode refused; left for the owner.
-**Permanent fix (code, 2026-10-21, tests/test_quality_gate.py, NOT yet deployed):** `run_quality_gate` step 0 repairs
+**Permanent fix (code bf1404d, tests/test_quality_gate.py 16 checks, LIVE 2026-10-21 02:38 ET — see the DEPLOY section):** `run_quality_gate` step 0 repairs
 range violations per symbol in place (low/high widened to cover open/close; `close` untouched) and quarantines symbols
 with a non-positive close or zero volume in the last 5 bars (they count as missing → the 95% coverage rule is the only
 universe-level trigger left for this class); `_fetch_bars_yfinance_fallback` uses `end=tomorrow` (as the per-ticker patch
 path has since 09-30) and dash-spelled tickers mapped back to the dotted symbols. Deploy = box pull + the 17:50
 signal-server restart.
 
-## Gold sleeve (15%, every regime) + base leverage 1.65 — BUILT, TESTED, DEPLOYED INACTIVE 2026-10-20; activation pending the owner's go
+## DEPLOY 2026-10-21 02:37-02:40 ET (owner: "deploy all the fixes; no staleness; gold and leverage in if good")
+1. **Quality-gate fix LIVE** (bf1404d, box fc04c5d): `.env` untouched for it; stale `CALY_adj.parquet` removed (backup
+   /tmp/caly_bak); `pm2 restart signal-server` 02:37:56 → 02:38:02 "1541/1541 (1540 from cache, 1 fresh)", vendor-hole
+   scan clean, **gate PASSED**, EDGAR overlay 67 fresh, 02:39:05 "25 BUY (breadth=42.5%, blend=0.30)", Top 8 identical to
+   the 17:50 Massive build (LITE/MRNA/MU/MXL/SNDK 0.95 | CORT 0.7974 | RNG 0.6809 | ATRC 0.6412); served list == the
+   offline Massive rebuild (25 names). The refetched CALY bar is the vendor-corrected one (low 13.82).
+2. **Leverage 1.49 → 1.65 LIVE**: `.env` `IBKR_EFFECTIVE_LEVERAGE=1.65` (backup `.env.bak_20261021_before_lev165`),
+   `pm2 restart ibkr-engine` 02:39:06 (env verified in /proc), `pm2 restart trading-engine` 02:39:48 (Alpaca mirror,
+   `MAX_CASH_DEPLOY_PCT` 1.65). Vol target stays 22.35%. First effect: the 10-21 09:30 book-2 rebuild (dry run below).
+3. **Gold NOT enabled** — owner's test ("not a few years making really high gains") fails: see the section below and
+   research/LOG.md cycle 64 addendum. `GOLD_SLEEVE_W` unset; one-line enable if the owner decides otherwise.
+
+## Gold sleeve (15%, every regime) + base leverage 1.65 — BUILT, TESTED 2026-10-20; **leverage LIVE 10-21, gold NOT ENABLED (CAGR edge = two gold bull markets)**
+**Robustness check 2026-10-21 (24 starts, const 15%, 26yr):** best year (2025) neutralised → dCAGR +0.13pp (24/24); best 2
+years (2005, 2025) → +0.01pp (14/24); best 3 → −0.12pp (0/24); ex 2024-26 +0.26pp; ex the 2005-07/2009-11 gold boom
+−0.13pp (5/24); Sharpe 2009-16 −0.005 (1/24); 2013 (gold −28%) −10.6pp, 2021 −3.5pp. Robust part: stress years 2008/2011/
+2018/2020/2022 all positive, MaxDD shallower 24/24, vol 28.1 → 26.9%. Drawdown insurance with an uncertain price, not a
+proven return improvement → kept behind the flag.
 **Why (owner, 10-20: "I want both the gold and the leverage change, but first make sure gold actually helps"):** EXP-060
 found a GLD sleeve passes the gate; EXP-064/065 showed the vol overlay is at its frontier and the leverage dial is the
 return-vs-drawdown instrument. **Double-check (research/LOG.md cycle 64, `EXP066_gold.py`):** gold re-derived on the
