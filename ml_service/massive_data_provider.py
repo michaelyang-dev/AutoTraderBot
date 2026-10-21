@@ -13,7 +13,8 @@ Architecture:
 Features:
   - Adjusted prices for features, unadjusted for live quotes
   - Parallel validation vs yfinance (first month)
-  - Data quality gate: stale price detection, symbol count verification
+  - Data quality gate: stale price detection, symbol count verification; OHLCV range violations are
+    REPAIRED per symbol and dead bars QUARANTINED per symbol (2026-10-21) — never a universe-wide fallback
   - Disk cache to avoid repeated cold starts
 
 Usage:
@@ -639,7 +640,52 @@ class MassiveDataProvider:
         """
         issues = []
 
-        # 1. Symbol coverage
+        # 0. OHLCV consistency — PER-SYMBOL repair / quarantine (2026-10-21). Until this date one inconsistent
+        #    vendor bar in ANY of ~1,541 names failed the whole gate and sent the ENTIRE universe to the yfinance
+        #    fallback (CALY 2026-10-20: open 13.84 < low 13.86; DMC 2026-10-19/20). That fallback is a different
+        #    vendor, cannot fetch dotted tickers (BF.B / BRK.B / MOG.A) and used an exclusive end=today, so every
+        #    post-close fallback build was a SESSION STALE: the 2026-10-20 18:22 build served 10-19's close
+        #    (breadth 34.9%, blend 0.00 = full bear weights) instead of 10-20's (42.5%, 0.30) into the 10-21
+        #    book-2 rebuild. Now: range violations (high < low, open/close outside [low, high]) are REPAIRED in
+        #    place by widening low/high to cover open and close — `close`, the only field the signals read, is
+        #    untouched; a symbol with a non-positive close ANYWHERE or zero volume in its LAST 5 bars is QUARANTINED
+        #    (removed from `bars`, so it counts as missing for the coverage check below); older zero-volume rows
+        #    are reported only. The universe leaves Massive only if coverage, staleness, null
+        #    prices or recency fail. NOTE: `bars` is modified in place (callers rely on it).
+        repaired, quarantined, bad_ohlcv_symbols, total_violations = [], [], [], 0
+        for sym in list(bars):
+            df = bars[sym]
+            if len(df) < 5:
+                continue
+            rng = ((df["high"] < df["low"]) | (df["open"] > df["high"]) | (df["open"] < df["low"])
+                   | (df["close"] > df["high"]) | (df["close"] < df["low"]))
+            n_rng = int(rng.sum())
+            n_dead = int((df["close"] <= 0).sum() + (df["volume"] <= 0).sum())
+            if n_rng + n_dead:
+                bad_ohlcv_symbols.append((sym, n_rng + n_dead))
+                total_violations += n_rng + n_dead
+            if n_rng:
+                df.loc[rng, "low"] = df.loc[rng, ["open", "low", "close"]].min(axis=1).astype(df["low"].dtype)
+                df.loc[rng, "high"] = df.loc[rng, ["open", "high", "close"]].max(axis=1).astype(df["high"].dtype)
+                repaired.append((sym, n_rng))
+            recent = df.iloc[-5:]
+            # A non-positive close is never legitimate (it corrupts every return / SMA through that row) ->
+            # quarantine wherever it sits; zero volume is fatal only when RECENT (an illiquid day long ago is
+            # reported, not fatal).
+            if bool((df["close"] <= 0).any() or (recent["volume"] <= 0).any()):
+                quarantined.append(sym)
+                del bars[sym]
+        if repaired:
+            log.warning("OHLCV repaired in place (low/high widened to cover open/close; close untouched): %s",
+                        ", ".join(f"{s_}({n})" for s_, n in repaired[:10]) + (" ..." if len(repaired) > 10 else ""))
+        if quarantined:
+            log.warning("OHLCV quarantined (non-positive close anywhere, or zero volume in the last 5 bars): %s",
+                        ", ".join(quarantined[:10]) + (" ..." if len(quarantined) > 10 else ""))
+        if bad_ohlcv_symbols:
+            log.warning("BAD_OHLCV symbols (first 10): %s — handled per symbol, not a gate failure",
+                        ", ".join(f"{s_}({n})" for s_, n in bad_ohlcv_symbols[:10]))
+
+        # 1. Symbol coverage (quarantined symbols count as missing)
         received = set(s for s, df in bars.items() if len(df) > 0)
         expected = set(expected_symbols)
         missing = expected - received
@@ -688,25 +734,13 @@ class MassiveDataProvider:
 
         # 5. OHLCV consistency: high >= low, open/close within [low,high],
         #    no zero/negative prices, no zero volume
-        bad_ohlcv_symbols = []
-        total_violations = 0
-        for sym, df in bars.items():
-            if len(df) < 5:
-                continue
-            v = 0
-            v += int((df["high"] < df["low"]).sum())
-            v += int(((df["open"] > df["high"]) | (df["open"] < df["low"])).sum())
-            v += int(((df["close"] > df["high"]) | (df["close"] < df["low"])).sum())
-            v += int((df["close"] <= 0).sum())
-            v += int((df["volume"] <= 0).sum())
-            if v > 0:
-                bad_ohlcv_symbols.append((sym, v))
-                total_violations += v
-        if bad_ohlcv_symbols:
-            issues.append(f"BAD_OHLCV: {len(bad_ohlcv_symbols)} symbols, "
-                          f"{total_violations} total violations")
-            log.warning("BAD_OHLCV symbols (first 10): %s",
-                        ", ".join(f"{s}({n})" for s, n in bad_ohlcv_symbols[:10]))
+        #    -> handled PER SYMBOL in step 0 (repair / quarantine; counts kept in bad_ohlcv_symbols /
+        #       total_violations). Post-repair sanity: a range violation that survived step 0 cannot happen by
+        #       construction; if one ever does it is logged loudly but is NOT a universe-wide gate failure.
+        _left = [sym for sym, df in bars.items() if len(df) >= 5 and bool(((df["high"] < df["low"])
+                 | (df["close"] > df["high"]) | (df["close"] < df["low"])).any())]
+        if _left:
+            log.error("OHLCV range violations survived repair (unexpected): %s", _left[:10])
 
         passed = len(issues) == 0
         result = {
@@ -720,6 +754,12 @@ class MassiveDataProvider:
             "n_bad_ohlcv": len(bad_ohlcv_symbols),
             "most_recent_date": str(most_recent.date()) if most_recent > pd.Timestamp.min else "N/A",
             "issues": issues,
+            # step 0 (2026-10-21) — per-symbol OHLCV handling
+            "n_ohlcv_violations": total_violations,
+            "n_repaired": len(repaired),
+            "n_quarantined": len(quarantined),
+            "repaired": repaired,
+            "quarantined": quarantined,
         }
 
         if not passed:
@@ -914,14 +954,21 @@ def _fetch_bars_yfinance_fallback(symbols: list,
 
     log.warning("FALLING BACK TO YFINANCE for %d symbols", len(symbols))
     start = (datetime.today() - timedelta(days=warmup_days)).strftime("%Y-%m-%d")
-    end = datetime.today().strftime("%Y-%m-%d")
+    # yfinance `end` is EXCLUSIVE (fixed here 2026-10-21; the per-ticker patch path above was fixed 2026-09-30):
+    # end=today dropped the session that just closed for every post-close fallback build — the 2026-10-20 18:22
+    # build served 10-19's regime (blend 0.00) into the next morning's rebuild. end=tomorrow includes the latest
+    # session; an in-progress bar is trimmed by signal_builder's partial-session guard.
+    end = (datetime.today() + timedelta(days=1)).strftime("%Y-%m-%d")
     CHUNK_SIZE = 100
 
     raw = {}
     for i in range(0, len(symbols), CHUNK_SIZE):
         chunk = symbols[i:i + CHUNK_SIZE]
+        # yfinance spells share classes with a dash (BRK-B, BF-B, MOG-A); Massive and the universe use dots.
+        # Until 2026-10-21 these three were "possibly delisted" on every fallback build and vanished from the universe.
+        yf_chunk = [sym_.replace(".", "-") for sym_ in chunk]
         try:
-            batch = yf.download(chunk, start=start, end=end,
+            batch = yf.download(yf_chunk, start=start, end=end,
                                 auto_adjust=True, progress=False, threads=True)
         except Exception as exc:
             log.error("yfinance fallback chunk failed: %s", exc)
@@ -930,7 +977,7 @@ def _fetch_bars_yfinance_fallback(symbols: list,
         for sym in chunk:
             try:
                 if isinstance(batch.columns, pd.MultiIndex):
-                    df = batch.xs(sym, axis=1, level=1).copy()
+                    df = batch.xs(sym.replace(".", "-"), axis=1, level=1).copy()
                 else:
                     df = batch.copy()
                 df.columns = df.columns.str.lower()
