@@ -417,6 +417,55 @@ engine started 15:45:51 and reloaded `counter 0/5, next book 2` — no reconcile
 phantom exits had freed was already spent by book 1's build); gross ≈ 1.02x NAV, inside the 1.80 ceiling; the
 next rebuilds (book 2 on 09-23, book 3 on 09-30) resize normally. Engine down 15:45:38–15:45:51 only.
 
+## INCIDENT 2026-10-20 18:22 → 10-21: one bad vendor bar sent the whole universe to a one-session-stale yfinance build (regime flipped to full bear)
+**Found 2026-10-21 01:50 ET** while verifying the gold dry run (the "gold OFF == served" check failed). Chain: the 17:50
+cron build passed the gate (Massive, breadth 42.5%, blend 0.30, momentum top-5 at 0.95). CALY's 10-20 bar arrived late
+from the vendor with open 13.84 < low 13.86 (a 2-cent inconsistency in a name the book does not hold); the 18:22 restart
+refetched it, `run_quality_gate` counted it as BAD_OHLCV and **failed the whole gate → `_fetch_bars_yfinance_fallback`
+for all 1,541 symbols**. That fallback (a) is a different vendor, (b) cannot fetch BF.B / BRK.B / MOG.A ("possibly
+delisted" — yfinance spells them with a dash), and (c) used an EXCLUSIVE `end=today`, so the evening build was **one
+session stale**: it served 10-19's close — breadth 34.9%, **blend 0.00 = full bear weights (momentum 11% of the book,
+CORT top at 0.95)** — instead of 10-20's (42.5% / 0.30, momentum 32%). The 10-21 book-2 rebuild (09:30) consumes
+whatever is served. Same failure mode: DMC 10-19 18:24 (post-restart build) and 5 intraday builds 10-20 10:42-11:51
+(intraday the fallback's as-of is right, only the vendor differs). Read-only offline rebuild on the box with CALY's bar
+widened in memory reproduced the 17:50 list exactly (25 BUY, blend 0.30); vs the served stale list: +DT +INTU −NTAP −RDDT
+and the regime. The vendor had corrected the bar by 01:50 (low 13.82).
+**Mitigation for the 10-21 open:** the server's own pre-open refresh (market-hours window starts 09:15) rebuilds with
+`end=10-21` exclusive → as of 10-20 → the right regime (yfinance vendor, 3 dotted names missing) — expected to land
+~09:18-09:20, before the 09:30 rebuild. The clean fix (remove the stale CALY cache file, restart signal-server → Massive
+path, gate passes) needs a server-side action the session's permission mode refused; left for the owner.
+**Permanent fix (code, 2026-10-21, tests/test_quality_gate.py, NOT yet deployed):** `run_quality_gate` step 0 repairs
+range violations per symbol in place (low/high widened to cover open/close; `close` untouched) and quarantines symbols
+with a non-positive close or zero volume in the last 5 bars (they count as missing → the 95% coverage rule is the only
+universe-level trigger left for this class); `_fetch_bars_yfinance_fallback` uses `end=tomorrow` (as the per-ticker patch
+path has since 09-30) and dash-spelled tickers mapped back to the dotted symbols. Deploy = box pull + the 17:50
+signal-server restart.
+
+## Gold sleeve (15%, every regime) + base leverage 1.65 — BUILT, TESTED, DEPLOYED INACTIVE 2026-10-20; activation pending the owner's go
+**Why (owner, 10-20: "I want both the gold and the leverage change, but first make sure gold actually helps"):** EXP-060
+found a GLD sleeve passes the gate; EXP-064/065 showed the vol overlay is at its frontier and the leverage dial is the
+return-vs-drawdown instrument. **Double-check (research/LOG.md cycle 64, `EXP066_gold.py`):** gold re-derived on the
+clean-room engine, 24 starts, both horizons, in the validated "blend" form (gold = w x breadth-blend, 0 in bear/crash)
+and a "const" form (w in every regime). Blend reproduces EXP-060; **const dominates it on every metric**: 26yr +0.43pp
+CAGR / +0.035 Sharpe (24/24 starts) / +1.8pp shallower MaxDD, 15/25 years, top-year 24%, bootstrap CI [+0.003, +0.066]
+(GATE PASS); 8yr +1.00pp / +0.063 (24/24) / +2.2pp (fails only the top-year rule: 2025 = 50% of the 2018-26 gain).
+Vol-matched CAGR +21.1% vs +19.8%: diversification, not de-risking. Decision: **const 15%**.
+**Live implementation (fdba973 + bac0ab3):** `signal_builder.combine_sleeves` — the combination step as a pure function;
+gold OFF reproduces the pre-change formula bit for bit (3,000 random books), gold ON equals the harness maths (3,000);
+GLD needs 200 bars (live cache 378), goes through the 15% cap and 0.5% min weight, is added to the output symbols (not
+an index member). Property (parity, pinned in tests): the stock sleeves x 0.85 push pure low-vol names from 0.50% to
+0.43%, under the minimum — they drop out as in the backtest arm. Alpaca: GLD no longer auto-tagged "hedge". Flags:
+`GOLD_SLEEVE_W=0.15`, `GOLD_SLEEVE_MODE=const` (signal server env). **Leverage:** `ibkr_engine.EFFECTIVE_LEVERAGE`
+1.49 -> 1.65 (env `IBKR_EFFECTIVE_LEVERAGE` overrides; the box PINS 1.49 until activation), Alpaca
+`MAX_CASH_DEPLOY_PCT` 1.65. **Parity trap fixed:** `VOL_TARGET` was `0.15 x EFFECTIVE_LEVERAGE` and would have risen to
+24.75%; the clean room uses 0.15 x 1.49 = 22.35% for EVERY leverage arm (batch 13's 1.65x numbers included) — now pinned.
+Tests parametrized on the leverage; `tests/test_gold_sleeve.py` 14 checks; suite 22/22 locally. Per-book test suites
+pinned to `ACCOUNT_ROUNDING=off` (a shell exporting the live `.env` had made them fail on the box).
+**Expected numbers (24 starts, both changes, package base):** gold alone 26yr +20.25% / 0.820 / −39.5%; leverage alone
+26yr +20.33% / 0.778 / −43.2% (batch 13); together ≈ +20.8% CAGR, Sharpe ≈ 0.82, MaxDD ≈ −41% (not run jointly — the
+two effects are near-independent: a diversifier and a dial). First live effect: the next book rebuild after activation
+(GLD ~15% of that book ≈ 6 shares at ~$380; 1.65 x vol-scale target).
+
 ## Selection / sizing / data-source verification 2026-10-14 19:40-21:10 ET (owner: "are the positions sizing and the actual stock selection correct ... are all data sources valid") — ALL REPRODUCE; 1 freshness gap found (EDGAR patcher)
 **Selection (shared strategy code re-run offline on the live cache, Telegram unset, live files untouched):** rebuilt as of
 the 10-13 close with the 10-13 overlay archive → the SAME 24 BUY names the engine logged at 09:30, probabilities MXL 0.9500

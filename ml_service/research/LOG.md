@@ -4168,6 +4168,36 @@ estimator, floor, target, threshold, cadence, direction. No stage 2. The honest 
 drawdown": on this book that trade is the leverage dial (batch 13: 1.49→1.65x = +0.6pp CAGR for −2pp MaxDD on the
 26yr) plus the one gate-passing addition not yet deployed, the gold 10-15% line (EXP-060 batch 15). Closed 2026-10-17.
 
+## Cycle 64 — EXP-066 · GOLD SLEEVE re-derived on a second engine before deployment (2026-10-20/21, owner: "make sure gold actually helps, then implement carefully")
+
+`research/EXP066_gold.py`: the EXP-059 clean-room engine (never used for gold before) + a GLD sleeve, package base, 24 starts,
+both horizons. Two forms: **blend** = the EXP-060 arm's maths (gold takes w of the BULL weight set, stock sleeves x (1-w);
+bear/crash sets have no gold -> gold = w x breadth-blend, 0 in bear/crash), and **const** = w in every regime. GLD needs
+200 sessions (from 2004-11). Full GATE059 checks on the cached curves (bootstrap 1,500 blocks, years, top-year share,
+sub-periods, even-month starts, best-5 days removed):
+
+| arm | 8yr dCAGR / dSharpe (+) / dMaxDD · yrs · top-yr · P | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs · top-yr · P · CI90 | gate 8yr / 26yr |
+|---|---|---|---|
+| gld10_blend | +0.41pp / +0.025 (24/24) / +0.58pp · 5/8 · 52% · 85% | +0.24pp / +0.016 (24/24) / +0.93pp · 15/25 · 21% · 87% [-0.007,+0.040] | FAIL (conc) / borderline |
+| gld15_blend | +0.43pp / +0.033 (24/24) / +0.78pp · 5/8 · 43% · 87% | +0.24pp / +0.019 (24/24) / +1.01pp · 12/25 · 21% · 88% [-0.009,+0.045] | FAIL (conc) / FAIL (yrs 12/25) |
+| gld10_const | +0.79pp / +0.050 (24/24) / +1.75pp · 6/8 · 58% · 97% | +0.40pp / +0.029 (24/24) / +1.74pp · 16/25 · 24% · 97% [+0.002,+0.056] | FAIL (conc) / **PASS** |
+| **gld15_const** | +1.00pp / +0.063 (24/24) / +2.15pp · 5/8 · 50% · 97% | **+0.43pp / +0.035 (24/24) / +1.81pp · 15/25 · 24% · 96% [+0.003,+0.066]** | FAIL (conc) / **PASS** |
+
+Second-engine check of EXP-060: the blend form reproduces it (EXP-060 package arm 26yr +0.28/+0.020/+0.8pp vs +0.24/+0.016/+0.9pp
+here; the 15% arm's years-better is 12/25 on this engine vs 15/25 there — borderline, same character). NEW: the **const form
+dominates the blend form on every metric on both horizons** — more CAGR, more Sharpe, shallower MaxDD, more years — and its
+26yr bootstrap CI excludes zero (the blend form's does not). Vol-matched CAGR +21.09% vs +19.81% (26yr): diversification, not
+de-risking (vol 28.1 -> 26.9%). Sub-periods all >= -0.005. Costs: GLD is a fixed-weight ETF with negligible turnover (EXP-060's
+cost-2x arm was intact). The 8yr fails only the top-year concentration rule on every arm (2025, gold's +40% year, is 43-58% of
+the 2018-26 gain) — the 26yr with 25 calendar years is the horizon that can judge concentration, and it passes at 24%.
+Mechanics worth knowing: scaling the stock sleeves by (1-w) takes a pure low-vol name from 5%/10 = 0.50% to 0.43-0.45%, under
+the 0.5% minimum weight, so pure low-vol names drop out (the gated numbers include this; tests/test_gold_sleeve.py pins it).
+**Decision: deploy gold as CONST 15%** (GOLD_SLEEVE_W=0.15, GOLD_SLEEVE_MODE=const) — held in every regime, which is also what
+the owner wants from gold in a drawdown. Live: `signal_builder.combine_sleeves` (pure; gold OFF == the old formula bit for bit
+on 3,000 random books; gold ON == this harness's maths on 3,000). Same deploy: base leverage 1.49 -> 1.65 (batch 13), with the
+vol target PINNED at 0.2235 (the clean room's constant for every leverage arm — scaling it with the leverage would have
+weakened the brakes vs anything validated; found and fixed while implementing). Closed 2026-10-21 01:50.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
