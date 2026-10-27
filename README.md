@@ -302,7 +302,9 @@ both horizons) and verdict. Highlights:
 - **Shipped:** tranched rebalance (risk shaping); credit gate (HY-OAS p95, depth 0.00); EXP-059 package
   (equal-weight momentum, 80/15/5 bull split, de-risk-only overlay); real-time price-based crash detector; EDGAR ROE
   freshness overlay; close-based stops (EXP-062 parity fix).
-- **Kept after re-testing:** the breadth blend and its thresholds (EXP-061); the 40% stop; the vol-scaling overlay
+- **Kept after re-testing:** the breadth blend and its thresholds (EXP-061); the 40% close-based trailing stop (levels
+  30-50%, no stop, two-close confirmation, partial exits and re-entry after a stop all worse on both horizons, EXP-067);
+  the vol-scaling overlay
   (EXP-064: off = more CAGR bought with 8-10pp deeper drawdowns on every start). **Changed:** the leverage base,
   1.49x → 1.65x on 2026-10-21 (+0.6pp CAGR, 2pp deeper MaxDD, Sharpe flat on 24 starts of both horizons).
 - **Rejected:** ML rankers (IC ≈ 0.01), fundamental factor blends inside momentum, short interest, FMP enhanced

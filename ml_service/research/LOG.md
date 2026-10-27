@@ -4210,6 +4210,31 @@ Blend form is worse on every one of these tests. Gold stays BEHIND THE FLAG (GOL
 (LIVE 2026-10-21 02:39 ET). New standard for any "return improvement": neutralise the best 1-3 years before believing a dCAGR.
 
 
+## Cycle 65 — EXP-067 · STOP RULE AFTER THE STOP: confirmation, partial exit, RE-ENTRY (2026-10-27, owner: MXL stopped in all books 10-22/23, +9.5% on 10-27 — "are we missing the recovery?")
+
+Facts first: MXL's books were stopped by the deployed rule exactly as the backtest would have (per-book peak 109.30 from
+the 10-06 close, kept through rebuilds; 10-22 close 65.28 <= 0.6 x 109.30). MXL +9.5% on 10-27, still −43% from its June
+high; ~11% foregone on ~6% of NAV (~$400). Levels were settled before (30/35/45/50/none worse, cycle 42 + batch 8; intraday
+stops worse, EXP-062). Untested until now: what happens AFTER a stop. `research/EXP067_stops.py`, package at the LIVE 1.65x
+base, stage 1 (8 starts) both horizons; the patched engine reproduces the package curve exactly with default flags.
+
+| arm (vs stop 40%) | 8yr dCAGR / dSharpe (+) / dMaxDD · yrs · P | 26yr dCAGR / dSharpe (+) / dMaxDD · yrs · P |
+|---|---|---|
+| base 40% @1.65 | +34.81% / 1.079 / −32.9% (vol 32.7%) | +20.42% / 0.786 / −43.1% (vol 29.1%) — matches batch 13 |
+| no stop | −1.06pp / −0.041 (1/8) / −0.35pp · 3/8 · 20% | −0.36pp / −0.016 (0/8) / −0.01pp · 10/25 · 13% |
+| 2-close confirmation | −0.57pp / −0.024 (1/8) / +0.30pp · 4/8 · 30% | −0.02pp / −0.004 (1/8) / +0.49pp · 11/25 · 36% |
+| half at 40%, rest at 50% | −1.10pp / −0.029 (0/8) / +0.28pp · 3/8 · 10% | −0.29pp / −0.010 (0/8) / +0.21pp · 11/25 · 13% |
+| re-buy at the next tranche day (still a signal) | −0.92pp / −0.027 (0/8) / −0.35pp · 2/8 · 14% | −0.59pp / −0.019 (0/8) / −0.58pp · 6/25 · 1% |
+| re-buy on a 10% reclaim within 20 sessions | −1.82pp / −0.044 (0/8) / −0.19pp · 3/8 · 19% | −0.68pp / −0.020 (0/8) / −0.47pp · 9/25 · 6% |
+
+**ALL DEAD at stage 1 (nothing positive on either horizon's Sharpe).** The re-entry arms — the "don't miss the recovery"
+idea — are the worst: 2021 alone costs −5 to −17pp (8yr) / −10 to −17pp (26yr): names that bounce after a 40% stop mostly
+resume falling, and re-buying catches the second leg. Confirmation trades 0.5pp of shallower MaxDD for Sharpe in 7/8 starts
+(26yr) and is simply worse on the 8yr. Partial exits are worse on both. **Decision: no change.** The MXL case is the
+exception that makes the rule look wrong, not the typical case; the stopped name returns through the normal rebuilds
+(MXL re-enters book 3 on 10-28 at ~3% of the book). Do not re-test stop mechanics without a genuinely new mechanism.
+Closed 2026-10-27 13:05.
+
 ## Next
 
 Running: EXP-001 26yr · EXP-001b (capital + live-sizing control) · EXP-003 (I-21 filter vs
