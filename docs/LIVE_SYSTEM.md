@@ -453,6 +453,38 @@ signal-server restart.
 3. **Gold NOT enabled** — owner's test ("not a few years making really high gains") fails: see the section below and
    research/LOG.md cycle 64 addendum. `GOLD_SLEEVE_W` unset; one-line enable if the owner decides otherwise.
 
+## Book 3, 2026-10-28 — CLEAN at 1.65x base; drawdown audit (owner 21:30 ET: "why are we losing so much money? is the strategy followed strictly live?")
+**Rebuild (09:30-09:35 ET):** counter 5/5 → book 3; 25 served BUYs (09:15 build: Massive path, gate PASSED 1540/1540 as of 10-27,
+breadth 52.2% / blend 0.69); credit gate off (HY-OAS 3.30, pctile 20.5%); vol-scale 0.76 on 29.3% realised → book target
+1.26x; NAV/4 $15,099 → virtual gross $19,026 = 1.260x. 17 sells + 18 buys, every market order filled in ~3 s, no errors,
+no overlay trims (no book >5% above target). MXL re-entered book 3: 29 sh @ $75.86 = 11.6% of the book (dry run at the 10-27
+close said 30; the open was +1.6%). Broker vs ledger 38/38 at 09:52 and at the close; account gross 1.22x; NAV 61,007 at the close.
+**Strict-parity audit (21:30-22:10 ET, read-only, Telegram unset; `/tmp/indep_check_1028.py`):** (A) shared strategy code
+re-run offline on the live cache **as of the 10-27 close with the overlay vintage the server had at 09:15** (archive
+`overlay_2026-10-27.json`, generated 10-27 19:10, 221 fresh ROE) → Top 8 identical to the 09:15 build (LITE/MRNA/MU/MXL/SNDK
+0.95 | RNG 0.2055 | QLYS 0.1921 | ADBE 0.1911) and the same 25 names the engine logged; (B) `_calibrate_quantities(whole=False)`
+on those probabilities at the FILL prices vs the virtual book-3 ledger: median ratio 1.0023, 22/25 within 1%, none >2%
+(MXL rule 29.3 vs ledger 29.1 = quote→fill); top-5 weight 11.68% each; (C) as of the 10-28 close with the same vintage →
+equals the served `/signals` exactly (25/25 names, max |Δprob| 0.0000). A first offline run had used tonight's NEW overlay
+(19:07, 315 fresh ROE — Q3 10-Qs arriving) and differed by the 25th name (OLED vs TBBK, Δprob ≤ 0.0005): overlay vintage,
+not a divergence; the server loads the new file at its next build (mtime-keyed cache). Stops: every held name has a per-book
+peak and none sits below its 40% line. Fills vs the 09:30 open: +17 bps adverse on $30,335 traded (= 0.08% of NAV; backtest
+model 10 bps/side; MRNA +225, MU +132, SNDK +105, MXL −149 bps — 2-4 minute drift, noise-dominated on one day). Commissions
+could not be read back (`reqExecutions` empty after the gateway's 20:00 restart). Side effect of the offline run: the vendor
+loader refetched one stale cache file (MSGS) — the same refresh the server performs at its next build.
+**Where the money went (NAV history + per-name daily returns):** peak 65,745 on 10-09 → 61,007 on 10-28 = **−7.2%** (SPY −0.8%).
+Since the tranche deploy 09-09: −1.1% (SPY +1.3%); since the first NAV record 07-22: +18.0% (SPY +3.3%). The loss is the
+designed exposure: the momentum top-5 (LITE/MXL/SNDK/MU/AXTI, 0.95 each = ~47% of each bull-mix book, ~33% of NAV today)
+fell 15-26% between 10-09 and 10-16 (LITE −25%, MXL −26%, SNDK −18%, MU −15%) while the value/low-vol sleeves held
+growth-software names (OKTA −10%, NTAP −7% on 10-16); 10-14 −4.17% and 10-16 −6.30% were the two bad days, 10-22 −2.61%
+(MRNA −17.6%, MXL stop-out at the close). A static proxy (47% top-5 / 53% rest at 1.25x) reproduces the path (cum −5.7% vs
+−7.2%, daily corr 0.90). No deposits/withdrawals, no unexplained NAV jumps. **Is this normal for the strategy?** The 1.65x
+backtest (EXP-067 stage-1 base, 8 starts 2018-26): annual vol 32.7%; a 13-session loss ≥7.2% occurs in 8.9% of windows;
+it spends 61% of its time ≥7.2% below its peak and 32% ≥15% below; 6.8 days/yr ≤ −4% and 1.3 days/yr ≤ −6%; its own 2026
+max drawdown was −14.1% (through 08-31). Live realised vol 29% (40d) / 39% (20d) is in line. Verdict: strategy followed
+strictly; the drawdown is the strategy's own risk, not leakage. Reusable: `/tmp/indep_check_1028.py` (as-of rebuild with
+pinned overlay vintage + sizing ratio + served reproduction).
+
 ## Gold sleeve (15%, every regime) + base leverage 1.65 — BUILT, TESTED 2026-10-20; **leverage LIVE 10-21, gold NOT ENABLED (CAGR edge = two gold bull markets)**
 **Robustness check 2026-10-21 (24 starts, const 15%, 26yr):** best year (2025) neutralised → dCAGR +0.13pp (24/24); best 2
 years (2005, 2025) → +0.01pp (14/24); best 3 → −0.12pp (0/24); ex 2024-26 +0.26pp; ex the 2005-07/2009-11 gold boom
